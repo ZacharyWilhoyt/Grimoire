@@ -10,11 +10,11 @@ Completed increments are tested, committed and pushed individually.
   strict Clippy, unit tests and PostgreSQL integration tests. CI uses an isolated,
   disposable PostgreSQL service and requires no production credentials.
 
-## Next work
+## Current status
 
-- Continue section and saved-position indicators are now implemented and browser
-  verified for video, music, EPUB and CBZ; source revocation/user isolation tests pass.
-- Other small, reversible usability improvements supported by the existing design.
+The initial CI/progress work and subsequent completed increments are recorded
+below. Continue and saved-position indicators are implemented and browser verified
+for all media types. The remaining major product decisions are listed next.
 
 ## Deferred decisions / owner follow-up
 
@@ -209,3 +209,12 @@ failures have a read-only retry and aborted reads cannot overwrite later data.
 Verified production layout, refresh and keyboard focus on disposable sessions.
 All 62 frontend tests, 22 database/extraction tests, Clippy and build pass. Remote
 CI independently confirmed the preceding login-race fix and modal/backup commits.
+
+## Current implementation documentation
+
+Updated the main README to separate implemented capabilities from the broader
+vision and open owner decisions. Removed stale claims that PostgreSQL, subtitles
+and saved reading progress were undecided/unavailable. Added a capability/guide
+index, reproducible local checks and the current ignored-test prerequisites.
+Local documentation links and branding paths resolve; this increment changes no
+runtime behavior.

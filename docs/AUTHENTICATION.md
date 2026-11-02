@@ -176,7 +176,9 @@ cargo test
 DATABASE_URL='postgresql://TEST_ROLE:TEST_PASSWORD@localhost/TEST_DATABASE' cargo test -- --ignored
 ```
 
-The ignored tests use sqlx-managed temporary databases. Use a dedicated test role
+The ignored suite also includes an MKV/ASS extraction test requiring FFmpeg,
+FFprobe and DejaVu Sans (`fonts-dejavu-core` on Ubuntu); see [SUBTITLES.md](SUBTITLES.md).
+The database tests use sqlx-managed temporary databases. Use a dedicated test role
 and server, not production credentials. They exercise public registration, role
 injection, forged/missing cookies, CSRF/origin checks, source ownership, default-deny
 media access, session rotation/logout/expiry/disable, password changes, and throttling.

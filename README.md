@@ -17,11 +17,11 @@ Grimoire aims to bring together the features people appreciate across
 existing media platforms with a scalable, community-powered
 architecture.
 
-> **Project status:** Grimoire is in its planning and early development
-> phase. Architecture, implementation details, supported integrations,
-> and deployment instructions are still being established. This README
-> describes the intended goals and behavior, not a claim that every
-> feature is currently implemented.
+> **Project status:** Grimoire has a working local prototype with accounts,
+> source permissions, media playback/readers, metadata and saved progress.
+> Distributed contributor delivery, user uploads, acquisition requests and public
+> deployment remain planned. See [Development Status](#development-status) for
+> implemented capabilities and the remaining decisions.
 
 ## Table of Contents
 
@@ -40,6 +40,8 @@ architecture.
 -   [Planned Architecture
     Considerations](#planned-architecture-considerations)
 -   [Development Status](#development-status)
+-   [Local Development](#local-development)
+-   [Checks and Operations](#checks-and-operations)
 -   [Contributing](#contributing)
 -   [Responsible Use](#responsible-use)
 -   [License](#license)
@@ -284,8 +286,9 @@ distributed processing in the future
 This separation should allow the platform's coordination services to
 remain manageable while the community-powered delivery network grows.
 
-The exact application architecture, programming languages, frameworks,
-databases, and service topology have not yet been finalized.
+The current implementation uses React/TypeScript/Vite, Rust/Axum and PostgreSQL.
+Distributed source protocols and the deployment/service topology remain open
+design work.
 
 ## Security Principles
 
@@ -376,26 +379,46 @@ The following topics will be decided as development and design progress:
 -   Deployment, observability, backups, and disaster recovery
 -   Future identity federation
 
-Technology choices should be driven by the project requirements,
-maintainability, security, and operational needs---not by the assumption
-that a particular stack has already been selected.
+Further technology choices should follow project requirements, maintainability,
+security and operational needs while respecting the established implementation.
 
 ## Development Status
 
-Grimoire is under active planning and early development. The project
-objective and key product principles have been established, but the
-final architecture and implementation roadmap are still evolving.
+The local application implements the following capabilities. The vision sections
+above also describe the broader platform being developed.
 
-As development progresses, this README should be updated to distinguish
-implemented features from planned capabilities and to provide accurate
-setup, configuration, and deployment instructions.
+| Area | Available now | Details |
+| --- | --- | --- |
+| Accounts | Public username/password registration, PostgreSQL sessions, password changes, session activity/revocation, local operator commands | [Authentication](docs/AUTHENTICATION.md) |
+| Sources | Administrator-connected local directories, owner-managed visibility/media grants and separate stored acquisition policies | [Source permissions](docs/SOURCE_PERMISSIONS.md) |
+| Video | Protected byte-range streaming, browser controls, retry, saved position, sidecar/embedded MKV text subtitles with libass ASS rendering/fonts | [Subtitles](docs/SUBTITLES.md), [progress](docs/PROGRESS.md) |
+| Music | Browser playback, queue from visible files, shuffle/repeat, retry and saved position | [Media pages](docs/MEDIA_PAGES.md) |
+| Books | Sandboxed EPUB/CBZ readers, chapter titles, text/theme/width controls and saved chapter/page | [Media pages](docs/MEDIA_PAGES.md), [progress](docs/PROGRESS.md) |
+| Catalog | For you/Continue, Discover, personal library, search/filter/sort over loaded files and album/series folders | [Media groups](docs/MEDIA_GROUPS.md) |
+| Metadata | Embedded extraction, reviewed online matching, genre tags, group covers/tags, stoppable local scans and optional Arr library metadata | [Metadata](docs/METADATA.md), [Arr](docs/ARR_INTEGRATIONS.md) |
+| Operations | CI, liveness/readiness, bounded graceful shutdown, manual database backup helper and tested restore procedure | [Operations](docs/OPERATIONS.md), [backups](docs/BACKUPS.md) |
+
+The next major product work needs decisions about upload storage/quotas/sharing,
+contributor-node trust/routing, acquisition approval/resource policies and public
+deployment. Live Arr/provider validation also requires operator service setup.
+The written [follow-up list](docs/AUTONOMOUS_WORK.md)
+keeps these decisions separate from completed increments. Media transcoding,
+bitmap subtitle rendering, DRM and within-chapter reading-position restoration
+are not implemented. The current application is an early prototype; the security
+and distributed-delivery requirements remain ongoing engineering work.
 
 ## Local Development
 
-The initial application foundation lives in two small projects:
+The application lives in two projects:
 
 - `web/` is a React and TypeScript single-page app built with Vite.
 - `backend/` is a Rust HTTP API built with Axum.
+
+React was selected for contributor familiarity and its established ecosystem.
+Vite supplies the development server and production bundler; TypeScript adds
+static checks. Axum provides Rust HTTP routing, and PostgreSQL stores identity,
+permissions, catalog metadata and personal state. Distributed media delivery and
+future service boundaries remain separate architectural work.
 
 The frontend provides video/music playback and EPUB/CBZ reading. Local
 username/password accounts support public registration and PostgreSQL-backed
@@ -410,8 +433,9 @@ and run `cargo run -- bootstrap-admin YOUR_USERNAME` from `backend/`. Existing
 single-user sources can be explicitly imported with
 `cargo run -- import-legacy-sources YOUR_USERNAME`. The original JSON is preserved.
 
-Install Node.js (with npm) and Rust (with Cargo), then run the API in one
-terminal:
+Install Node.js with npm and Rust stable with Cargo. CI uses Node.js 24; the
+current Vite dependency declares Node.js compatibility as `^20.19.0 || >=22.12.0`.
+Follow the PostgreSQL/bootstrap steps above, then run the API in one terminal:
 
 ```sh
 cd backend
@@ -422,7 +446,7 @@ In another terminal, start the frontend:
 
 ```sh
 cd web
-npm install
+npm ci
 npm run dev
 ```
 
@@ -451,7 +475,8 @@ policies, and current limitations are documented in
 Select a connected source, optionally filter to **Music**, then press **Play**
 on a track. The player stays open while you browse and provides play/pause,
 seeking, volume, previous/next, and automatic advancement through the music
-files visible when playback starts. Closing the player or disconnecting its
+files visible when playback starts. Shuffle and repeat default to off; the controls
+allow repeat-one/repeat-all. A failed stream has an explicit retry. Closing the player or disconnecting its
 source stops playback. Restart the Rust API after updating the code.
 
 Audio is delivered through `GET /api/sources/{id}/audio?path=...`, with HTTP
@@ -473,14 +498,18 @@ and starting music closes video, so only one media item plays at a time.
 Video uses `GET /api/sources/{id}/video?path=...` with the same source checks,
 path restrictions, byte-range delivery, and private cache policy as audio.
 This endpoint accepts only recognized video extensions. Files stream directly;
-container and codec support depend on the browser, and there is no transcoding,
-external subtitle loading, or track selection UI yet. A listed file may therefore
+container and codec support depend on the browser. Companion subtitle files and
+embedded MKV text tracks are available through the subtitle selector. ASS uses
+libass with embedded font support; use **Fullscreen with subtitles** for overlays.
+See [subtitle setup and limits](docs/SUBTITLES.md). Transcoding, bitmap captions
+and a dedicated audio-track selector remain future work, so a listed file may
 need conversion before a browser can play it. Restart the Rust API after updating.
 
 ### EPUB and CBZ reading
 
 Select **Read** beside a book in a connected source. EPUB chapters appear in
-spine order with chapter selection and adjustable text size. CBZ displays raster
+spine order with table-of-contents titles, adjustable text size and Paper/Night
+themes. CBZ displays raster
 image pages in natural filename order, with page selection and a width control.
 Use the close button or Escape to return to browsing. Opening a reader stops
 music and video playback. Chapter/page positions now persist across sessions; see [progress](docs/PROGRESS.md).
@@ -494,11 +523,13 @@ archive entries; encrypted archives are rejected. EPUB HTML is sanitized using
 empty sandbox and a restrictive content security policy. Scripts, external
 resources, forms, and chapter hyperlinks are disabled. EPUB publisher styles
 are replaced by the reader's layout; complex fixed-layout books, SVG-only pages,
-DRM, bookmarks, and saved reading progress are not supported yet. CBZ supports
+and DRM are not supported. Named in-book bookmarks and within-chapter scroll
+restoration are not implemented; saved chapter/page positions are supported. CBZ supports
 JPEG, PNG, WebP, GIF, and AVIF images according to browser support. Corrupt or
 unsupported content produces a reader error.
 
-After updating, run `npm install` in `web/` and restart both development servers.
+After updating, run `npm ci` in `web/` when dependencies change and restart both
+development servers.
 Reader checks can be run with `npm test` in `web/` and `cargo test` in `backend/`.
 
 ### Personal media pages
@@ -540,6 +571,37 @@ extraction and online matching remain the default; Arr is optional. See
 URLs, folder mapping, API versions and operational limits. Download/acquisition
 requests remain future work.
 
+## Checks and Operations
+
+From the repository root, the normal local checks are below. Backup-helper tests
+use Linux/GNU tools, matching CI.
+
+```sh
+npm --prefix web ci
+npm --prefix web test
+npm --prefix web run build
+cargo fmt --manifest-path backend/Cargo.toml --check
+cargo clippy --locked --manifest-path backend/Cargo.toml --all-targets -- -D warnings
+cargo test --locked --manifest-path backend/Cargo.toml
+python3 -m unittest discover -s scripts/tests
+```
+
+PostgreSQL tests use a dedicated disposable role/database, not the live app's
+connection. SQLx needs permission to create its temporary test databases. The
+ignored test suite also includes a synthetic MKV/ASS/font extraction check and
+requires FFmpeg, FFprobe and DejaVu Sans (`fonts-dejavu-core` on Ubuntu). From
+`backend/`, with the test connection explicitly supplied:
+
+```sh
+DATABASE_URL='postgresql://TEST_ROLE:TEST_PASSWORD@localhost/TEST_DATABASE' cargo test --locked -- --ignored
+```
+
+See [authentication testing](docs/AUTHENTICATION.md), [subtitle requirements](docs/SUBTITLES.md)
+and the [CI workflow](.github/workflows/checks.yml). Operational guidance covers
+[shutdown/readiness](docs/OPERATIONS.md) and [manual backups/recovery](docs/BACKUPS.md).
+Production database roles, TLS/origin configuration, secret storage, media backup
+and deployment settings must be established for the target environment.
+
 ### Site branding
 
 The sidebar logo and browser icons use `Data/Assets/Grimoire_Icon.svg`.
@@ -555,15 +617,6 @@ python3 scripts/generate_brand_assets.py
 The conversion script requires Pillow and supports the embedded PNG layers
 in the current SVG. It fails if the source changes to an unsupported structure.
 
-### Initial stack choice
-
-React was selected for its broad adoption and contributor familiarity;
-the [2025 Stack Overflow Developer Survey](https://survey.stackoverflow.co/2025/technology/)
-lists React as the most-used web framework in its survey. Vite provides a small development server
-and production bundler, while TypeScript adds static checks to the
-frontend. Axum provides a Rust-native HTTP routing layer for the API.
-This is a starting point, not a commitment to a database, deployment
-model, or service topology.
 
 ## Contributing
 
@@ -601,7 +654,3 @@ content.
 
 A project license has not yet been specified. Licensing information will
 be added once the project owner selects a license.
-
-Video subtitle support and deployment requirements are documented in [SUBTITLES.md](docs/SUBTITLES.md).
-
-API shutdown/restart behavior is documented in [OPERATIONS.md](docs/OPERATIONS.md).
