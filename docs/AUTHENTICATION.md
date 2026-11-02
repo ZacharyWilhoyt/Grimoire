@@ -65,9 +65,9 @@ No files are moved or deleted. Skip this command for a fresh installation.
 Start the backend with `cargo run`, and run `npm install` and `npm run dev` in `web/`.
 Use **Create an account** for public registration. New accounts have no sources or
 media access. The initial administrator can see imported sources and connect server
-directories. All account sessions have access only to their own sources in this
-milestone; there is no implicit administrator bypass for another owner's media.
-Sharing grants and user uploads will be implemented separately.
+directories. Owners can grant per-user visibility and media access using the
+[source permissions editor](SOURCE_PERMISSIONS.md). There is no implicit administrator
+bypass for another owner's media. User uploads remain a separate planned workflow.
 
 ## Account operations
 
@@ -116,10 +116,10 @@ email recovery, or email verification is included.
   usernames incur a dummy Argon2 verification to reduce timing differences.
   Signup reports username availability because usernames are account identifiers.
 - Default-deny authorization: unauthenticated sources/scans/streams/books return
-  401. Source queries require owner_id; unauthorized source IDs return 404. Only
+  401. Source queries require ownership or explicit grants; unauthorized source IDs return 404. Only
   administrators may register API-host directories. Registration supplies no roles,
   source grants, upload grants, or acquisition grants. Media and byte-range requests
-  recheck the session and owner every time. Removing a source denies future requests.
+  recheck the session and ownership/explicit media grants every time. Removing a source denies future requests.
 - Files already delivered to a browser, decoded book pages, and a streaming response
   already in progress cannot be recalled on logout or revocation. New requests are
   denied. Local filesystem writers remain trusted; the existing path/symlink checks

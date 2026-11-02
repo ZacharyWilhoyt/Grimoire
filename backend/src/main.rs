@@ -9,6 +9,7 @@ mod admin;
 mod auth;
 #[cfg(test)]
 mod auth_integration;
+mod permissions;
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -35,7 +36,9 @@ struct Source {
     id: String,
     name: String,
     path: String,
-    owner_id: uuid::Uuid,
+    is_owner: bool,
+    can_access_media: bool,
+    acquisition_policy: String,
 }
 
 #[derive(Serialize)]
@@ -43,6 +46,9 @@ struct SourceSummary {
     id: String,
     name: String,
     available: bool,
+    is_owner: bool,
+    can_access_media: bool,
+    acquisition_policy: String,
 }
 
 #[derive(Deserialize)]
@@ -98,7 +104,7 @@ async fn list_sources(
     axum::Extension(identity): axum::Extension<auth::Identity>,
 ) -> Result<Json<Vec<SourceSummary>>, AppError> {
     let sources = sqlx::query_as::<_, Source>(
-        "SELECT id,name,path,owner_id FROM sources WHERE owner_id=$1 ORDER BY created_at,id",
+        "SELECT s.id,s.name,s.path,(s.owner_id=$1) AS is_owner,(s.owner_id=$1 OR COALESCE(p.can_discover AND p.can_access_media,false)) AS can_access_media,COALESCE(p.acquisition_policy,'auto_deny') AS acquisition_policy FROM sources s LEFT JOIN source_permissions p ON p.source_id=s.id AND p.user_id=$1 WHERE s.owner_id=$1 OR p.can_discover ORDER BY s.created_at,s.id",
     )
     .bind(identity.user.id)
     .fetch_all(&state.db)
@@ -111,6 +117,9 @@ async fn list_sources(
                 id: source.id,
                 name: source.name,
                 available: Path::new(&source.path).is_dir(),
+                is_owner: source.is_owner,
+                can_access_media: source.can_access_media,
+                acquisition_policy: source.acquisition_policy,
             })
             .collect(),
     ))
@@ -164,6 +173,9 @@ async fn add_source(
                 id,
                 name,
                 available: true,
+                is_owner: true,
+                can_access_media: true,
+                acquisition_policy: "auto_deny".into(),
             }),
         )),
         Err(error)
@@ -180,23 +192,20 @@ async fn add_source(
     }
 }
 
-async fn owned_root(
+async fn media_root(
     state: &AppState,
     user: &auth::User,
     source_id: &str,
 ) -> Result<PathBuf, AppError> {
-    let source = sqlx::query_as::<_, Source>(
-        "SELECT id,name,path,owner_id FROM sources WHERE id=$1 AND owner_id=$2",
-    )
-    .bind(source_id)
-    .bind(user.id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|_| auth::unavailable())?
-    .ok_or_else(|| AppError(StatusCode::NOT_FOUND, "Source not found.".into()))?;
-    // The database filter is the authorization boundary; never trust possession of a source ID.
-    debug_assert_eq!(source.owner_id, user.id);
-    Ok(PathBuf::from(source.path))
+    let path: Option<String> = sqlx::query_scalar(
+        "SELECT s.path FROM sources s WHERE s.id=$1 AND (s.owner_id=$2 OR EXISTS(SELECT 1 FROM source_permissions p WHERE p.source_id=s.id AND p.user_id=$2 AND p.can_discover AND p.can_access_media))",
+    ).bind(source_id).bind(user.id).fetch_optional(&state.db).await.map_err(|_| auth::unavailable())?;
+    path.map(PathBuf::from).ok_or_else(|| {
+        AppError(
+            StatusCode::NOT_FOUND,
+            "Source not found or media access not granted.".into(),
+        )
+    })
 }
 
 async fn remove_source(
@@ -204,15 +213,25 @@ async fn remove_source(
     axum::Extension(identity): axum::Extension<auth::Identity>,
     RoutePath(source_id): RoutePath<String>,
 ) -> Result<StatusCode, AppError> {
-    let removed = sqlx::query("DELETE FROM sources WHERE id=$1 AND owner_id=$2")
-        .bind(source_id)
-        .bind(identity.user.id)
-        .execute(&state.db)
-        .await
-        .map_err(|_| auth::unavailable())?;
-    if removed.rows_affected() == 0 {
+    let mut tx = state.db.begin().await.map_err(|_| auth::unavailable())?;
+    let owner: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT owner_id FROM sources WHERE id=$1 FOR UPDATE")
+            .bind(&source_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|_| auth::unavailable())?;
+    if owner != Some(identity.user.id) {
         return Err(AppError(StatusCode::NOT_FOUND, "Source not found.".into()));
     }
+    sqlx::query("INSERT INTO source_permission_audit(source_id,actor_id,target_id,action,before_state) SELECT source_id,$2,user_id,'revoked',json_build_object('can_discover',can_discover,'can_access_media',can_access_media,'acquisition_policy',acquisition_policy)::text FROM source_permissions WHERE source_id=$1")
+        .bind(&source_id).bind(identity.user.id).execute(&mut *tx).await.map_err(|_| auth::unavailable())?;
+    sqlx::query("DELETE FROM sources WHERE id=$1")
+        .bind(source_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| auth::unavailable())?;
+    tx.commit().await.map_err(|_| auth::unavailable())?;
+
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -221,7 +240,7 @@ async fn list_media(
     axum::Extension(identity): axum::Extension<auth::Identity>,
     RoutePath(source_id): RoutePath<String>,
 ) -> Result<Json<Vec<MediaFile>>, AppError> {
-    let root = owned_root(&state, &identity.user, &source_id).await?;
+    let root = media_root(&state, &identity.user, &source_id).await?;
     if !root.is_dir() {
         return Err(AppError(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -279,7 +298,7 @@ async fn stream_media(
     request: Request,
     kind: &str,
 ) -> Result<Response, AppError> {
-    let root = owned_root(&state, &user, &source_id).await?;
+    let root = media_root(&state, &user, &source_id).await?;
     let path = resolve_media_path(&root, &query.path, kind)?;
     serve_media_file(path, request, kind).await
 }
@@ -466,6 +485,14 @@ fn app(state: AppState) -> Router {
         )
         .route("/api/sources", get(list_sources).post(add_source))
         .route("/api/sources/{source_id}", delete(remove_source))
+        .route(
+            "/api/sources/{source_id}/permissions",
+            get(permissions::list),
+        )
+        .route(
+            "/api/sources/{source_id}/permissions/{username}",
+            axum::routing::put(permissions::save).delete(permissions::revoke),
+        )
         .route("/api/sources/{source_id}/media", get(list_media))
         .route("/api/sources/{source_id}/audio", get(stream_audio))
         .route("/api/sources/{source_id}/video", get(stream_video))
