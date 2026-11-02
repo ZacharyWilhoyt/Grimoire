@@ -164,3 +164,14 @@ open dialogs and unrelated editable controls alone, while remaining available in
 the workspace/search field. Unit/DOM tests and production-browser verification
 cover the lifecycle and keyboard behavior. No directory was registered during
 browser testing. All 56 frontend tests and the build pass.
+
+## Manual backup helper and recovery drill
+
+Added an explicit-service PostgreSQL custom-dump helper with private temporary/
+final files, archive validation, atomic no-overwrite publication and failure
+cleanup. No production database was backed up or restored. A real restore drill
+on the isolated disposable cluster compared all 19 public table row counts/data
+checksums and all 3 sequences; backup permissions and refusal to overwrite also passed. Added
+credential-free safety tests to CI. Scheduling, encryption/off-site destinations,
+retention, production service profiles and real-media recovery remain owner work.
+See BACKUPS.md, including security-state reconciliation after restoring old data.

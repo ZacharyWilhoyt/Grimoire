@@ -56,3 +56,7 @@ the listener. During shutdown the listener stops accepting new connections.
 
 Database integration tests verify readiness success, pool saturation/deadline,
 recovery, closed-pool failure and independent process liveness.
+
+Manual database backups and isolated restore drills are documented in
+[BACKUPS.md](BACKUPS.md). They complement, rather than replace, media/source and
+secret-management recovery procedures.

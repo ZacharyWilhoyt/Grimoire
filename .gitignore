@@ -5,3 +5,9 @@
 /web/tsconfig.tsbuildinfo
 .env
 .DS_Store
+
+# PostgreSQL backups contain private account/session data.
+*.dump
+*.pgdump
+__pycache__/
+.grimoire-backup.*

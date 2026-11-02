@@ -49,3 +49,9 @@ jobs:
       - run: cargo +stable test --locked --manifest-path backend/Cargo.toml
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
       - run: cargo +stable test --locked --manifest-path backend/Cargo.toml -- --ignored
+  operations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n scripts/backup-control-plane.sh
+      - run: python3 -m unittest discover -s scripts/tests
