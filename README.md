@@ -495,6 +495,21 @@ unsupported content produces a reader error.
 After updating, run `npm install` in `web/` and restart both development servers.
 Reader checks can be run with `npm test` in `web/` and `cargo test` in `backend/`.
 
+### Site branding
+
+The sidebar logo and browser icons use `Data/Assets/Grimoire_Icon.svg`.
+The original artwork is preserved; a lavender background provides contrast
+against dark browser tabs and the application theme. Web assets live in
+`web/public/` and are included by Vite. To regenerate the SVG copy, PNG icon,
+Apple touch icon, and multi-size ICO after changing the source, run:
+
+```sh
+python3 scripts/generate_brand_assets.py
+```
+
+The conversion script requires Pillow and supports the embedded PNG layers
+in the current SVG. It fails if the source changes to an unsupported structure.
+
 ### Initial stack choice
 
 React was selected for its broad adoption and contributor familiarity;

@@ -103,7 +103,7 @@ function App() {
 
   return <div className="app-shell">
     <aside className={`sidebar ${menuOpen ? 'open' : ''}`}>
-      <a className="brand" href="#home"><span className="brand-mark">g</span><span>grimoire<span className="brand-dot">.</span></span></a>
+      <a className="brand" href="#home"><img className="brand-logo" src="/logo.svg" alt="" aria-hidden="true" width="38" height="38" /><span>grimoire<span className="brand-dot">.</span></span></a>
       <div className="profile"><div className="avatar">M</div><div className="profile-copy"><strong>My space</strong><span>Personal library</span></div><ChevronDown size={15} /></div>
       <div className="side-label">YOUR SPACE</div>
       <nav className="main-nav">{nav.map(({ label, icon: Icon }) => <button key={label} className={`nav-item ${activeNav === label ? 'selected' : ''}`} onClick={() => { setActiveNav(label); setSelectedSource(null); setMenuOpen(false) }}><Icon size={18} strokeWidth={1.8} />{label}{label === 'My library' && <span className="nav-count">24</span>}</button>)}</nav>
