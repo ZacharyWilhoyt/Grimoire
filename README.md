@@ -402,8 +402,8 @@ point with video, music, and book views. The local single-user backend can
 register directories and list supported media file names, relative paths,
 types, and sizes. Directory registrations persist in `backend/data/`
 (or the directory set by `GRIMOIRE_DATA_DIR`). The sample catalog on the
-home page is still presentation data. Accounts, media delivery, playback,
-and authorization are not implemented.
+home page is still presentation data. Music playback from connected sources is available. Accounts and
+source/media authorization are not implemented.
 
 Install Node.js (with npm) and Rust (with Cargo), then run the API in one
 terminal:
@@ -431,14 +431,30 @@ computer running the Rust API (for example, `/home/you/Media`). Grimoire
 recursively lists common video (`mkv`, `mp4`, `webm`, and others), audio
 (`mp3`, `flac`, `m4a`, and others), EPUB, and CBZ files. It skips symbolic
 links, limits each scan to 10,000 media files and 100,000 directory
-entries, and does not read or serve file contents. Disconnecting a source
+entries, and serves audio only when a music file is selected for playback. Disconnecting a source
 only removes its registration; it never deletes files. The source registry
 is stored with owner-only permissions on Unix systems.
 
 This first version trusts the single local operator who can access the
 loopback API. It does not have user accounts or source-level authorization
-yet; do not expose the API to a network. Streaming, reading, and sharing
-remain future work.
+yet; do not expose the API to a network. Video playback, book reading, and multi-user sharing remain future work.
+
+### Music playback
+
+Select a connected source, optionally filter to **Music**, then press **Play**
+on a track. The player stays open while you browse and provides play/pause,
+seeking, volume, previous/next, and automatic advancement through the music
+files visible when playback starts. Closing the player or disconnecting its
+source stops playback. Restart the Rust API after updating the code.
+
+Audio is delivered through `GET /api/sources/{id}/audio?path=...`, with HTTP
+range support for seeking via [tower-http ServeFile](https://docs.rs/tower-http/0.6/tower_http/services/struct.ServeFile.html). Each request
+requires a registered source and a relative audio-file path within it;
+symlinks and traversal are rejected, and responses disable caching. This
+remains a local single-operator API, not a public sharing endpoint. Browser
+codec support determines which listed audio formats play; there is no
+transcoding yet. Local filesystem writers are trusted: files must not be
+replaced concurrently with symlinks while requests are being resolved.
 
 ### Initial stack choice
 

@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path as RoutePath, State},
+    extract::{Path as RoutePath, Query, Request, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{delete, get},
@@ -16,7 +16,7 @@ use std::{
     },
 };
 use tokio::sync::RwLock;
-use tower_http::trace::TraceLayer;
+use tower_http::{services::ServeFile, trace::TraceLayer};
 
 const MAX_MEDIA_FILES: usize = 10_000;
 const MAX_DIRECTORY_ENTRIES: usize = 100_000;
@@ -214,6 +214,78 @@ async fn list_media(
     Ok(Json(files))
 }
 
+#[derive(Deserialize)]
+struct AudioRequest {
+    path: String,
+}
+
+// This boundary currently trusts the single local operator. Keep loopback binding
+// until real identity and source/media authorization are implemented.
+async fn stream_audio(
+    State(state): State<AppState>,
+    RoutePath(source_id): RoutePath<String>,
+    Query(query): Query<AudioRequest>,
+    request: Request,
+) -> Result<Response, AppError> {
+    let sources = state.sources.read().await;
+    let root = sources
+        .iter()
+        .find(|source| source.id == source_id)
+        .ok_or_else(|| AppError(StatusCode::NOT_FOUND, "Source not found.".into()))?
+        .path
+        .clone();
+    let path = resolve_audio_path(&root, &query.path)?;
+    let response = ServeFile::new(path)
+        .try_call(request)
+        .await
+        .map_err(|_| AppError(StatusCode::NOT_FOUND, "Audio file is unavailable.".into()))?;
+    let mut response = response.map(axum::body::Body::new);
+    response
+        .headers_mut()
+        .insert("cache-control", "private, no-store".parse().unwrap());
+    response
+        .headers_mut()
+        .insert("x-content-type-options", "nosniff".parse().unwrap());
+    Ok(response)
+}
+
+fn resolve_audio_path(root: &Path, relative: &str) -> Result<PathBuf, AppError> {
+    let denied = || AppError(StatusCode::NOT_FOUND, "Audio file not found.".into());
+    let relative = Path::new(relative);
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        return Err(denied());
+    }
+    // Reject symlinks at every component, matching the directory scanner.
+    let mut path = root.to_path_buf();
+    for component in relative.components() {
+        path.push(component);
+        if fs::symlink_metadata(&path)
+            .map_err(|_| denied())?
+            .file_type()
+            .is_symlink()
+        {
+            return Err(denied());
+        }
+    }
+    let canonical = fs::canonicalize(&path).map_err(|_| denied())?;
+    if !canonical.starts_with(root) || !canonical.is_file() {
+        return Err(denied());
+    }
+    let extension = canonical
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if classify_extension(&extension) != Some("music") {
+        return Err(denied());
+    }
+    Ok(canonical)
+}
+
 fn classify_extension(extension: &str) -> Option<&'static str> {
     match extension {
         "mkv" | "mp4" | "m4v" | "mov" | "avi" | "webm" | "mpeg" | "mpg" | "ts" => Some("video"),
@@ -361,6 +433,7 @@ async fn main() {
         .route("/api/sources", get(list_sources).post(add_source))
         .route("/api/sources/{source_id}", delete(remove_source))
         .route("/api/sources/{source_id}/media", get(list_media))
+        .route("/api/sources/{source_id}/audio", get(stream_audio))
         .fallback(not_found)
         .with_state(state)
         .layer(TraceLayer::new_for_http());
@@ -372,4 +445,95 @@ async fn main() {
     println!("Grimoire API listening on http://{address}");
 
     axum::serve(listener, app).await.expect("API server failed");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture() -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "grimoire-audio-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("track.mp3"), b"0123456789").unwrap();
+        fs::write(root.join("private.txt"), b"private").unwrap();
+        fs::canonicalize(root).unwrap()
+    }
+
+    #[test]
+    fn audio_paths_deny_traversal_non_audio_and_symlinks() {
+        let root = fixture();
+        assert!(resolve_audio_path(&root, "track.mp3").is_ok());
+        for path in [
+            "../track.mp3",
+            "/etc/passwd",
+            "private.txt",
+            "missing.mp3",
+            "",
+        ] {
+            assert!(resolve_audio_path(&root, path).is_err(), "accepted {path}");
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("track.mp3"), root.join("link.mp3")).unwrap();
+            assert!(resolve_audio_path(&root, "link.mp3").is_err());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn audio_supports_ranges_and_requires_registered_source() {
+        let root = fixture();
+        let state = AppState {
+            sources: Arc::new(RwLock::new(vec![Source {
+                id: "local".into(),
+                name: "Local".into(),
+                path: root.clone(),
+            }])),
+            data_dir: Arc::new(root.clone()),
+            next_source_id: Arc::new(AtomicU64::new(2)),
+        };
+        let request = Request::builder()
+            .header("range", "bytes=2-4")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = stream_audio(
+            State(state.clone()),
+            RoutePath("local".into()),
+            Query(AudioRequest {
+                path: "track.mp3".into(),
+            }),
+            request,
+        )
+        .await
+        .unwrap_or_else(|_| panic!("stream failed"));
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.headers()["content-range"], "bytes 2-4/10");
+        assert_eq!(response.headers()["cache-control"], "private, no-store");
+        assert_eq!(
+            axum::body::to_bytes(response.into_body(), 10)
+                .await
+                .unwrap()
+                .as_ref(),
+            b"234"
+        );
+        state.sources.write().await.clear();
+        let result = stream_audio(
+            State(state),
+            RoutePath("local".into()),
+            Query(AudioRequest {
+                path: "track.mp3".into(),
+            }),
+            Request::new(axum::body::Body::empty()),
+        )
+        .await;
+        assert!(matches!(result, Err(AppError(StatusCode::NOT_FOUND, _))));
+        fs::remove_dir_all(root).unwrap();
+    }
 }

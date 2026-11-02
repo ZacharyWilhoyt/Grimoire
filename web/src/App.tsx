@@ -1,3 +1,4 @@
+import MusicPlayer from './MusicPlayer'
 import { useEffect, useState, type FormEvent } from 'react'
 import { AudioLines, BookOpen, Check, ChevronDown, Compass, FileAudio, FileText, Film, FolderOpen, Headphones, Library, Menu, Plus, Search, Settings2, Sparkles, Trash2, X } from 'lucide-react'
 
@@ -18,6 +19,7 @@ const items: MediaItem[] = [
 const art = (id: string, width = 800) => `https://images.unsplash.com/${id}?auto=format&fit=crop&w=${width}&q=85`
 
 function App() {
+  const [playback, setPlayback] = useState<{ source: Source; tracks: SourceFile[]; index: number } | null>(null)
   const [filter, setFilter] = useState<MediaKind>('All')
   const [query, setQuery] = useState('')
   const [activeNav, setActiveNav] = useState('For you')
@@ -85,6 +87,7 @@ function App() {
     if (!window.confirm(`Disconnect “${source.name}”? Grimoire will not delete files from your computer.`)) return
     const response = await fetch(`/api/sources/${encodeURIComponent(source.id)}`, { method: 'DELETE' })
     if (!response.ok) return
+    if (playback?.source.id === source.id) setPlayback(null)
     setSources(current => current.filter(item => item.id !== source.id))
     if (selectedSource?.id === source.id) setSelectedSource(null)
   }
@@ -116,8 +119,8 @@ function App() {
           {sourceLoading && <div className="source-message">Scanning this directory…</div>}
           {sourceError && <div className="source-message source-error">{sourceError}</div>}
           {!sourceLoading && !sourceError && filteredFiles.length === 0 && <div className="source-empty"><FolderOpen size={23}/><strong>No supported media found</strong><span>We look for common video, audio, EPUB, and CBZ files in this directory and its subfolders.</span></div>}
-          {!sourceLoading && !sourceError && filteredFiles.length > 0 && <div className="file-list">{filteredFiles.map(file => <article className="file-row" key={file.relative_path}><span className={`file-kind ${file.kind}`}>{file.kind === 'video' ? <Film size={16}/> : file.kind === 'music' ? <FileAudio size={16}/> : <FileText size={16}/>}</span><div className="file-copy"><strong>{file.name}</strong><span>{file.relative_path}</span></div><span className="file-type">{file.extension.toUpperCase()}</span><span className="file-size">{formatSize(file.size_bytes)}</span></article>)}</div>}
-          <p className="source-footnote">Grimoire lists file names and sizes only. Playback and reading are not available yet.</p>
+          {!sourceLoading && !sourceError && filteredFiles.length > 0 && <div className="file-list">{filteredFiles.map(file => <article className="file-row" key={file.relative_path}><span className={`file-kind ${file.kind}`}>{file.kind === 'video' ? <Film size={16}/> : file.kind === 'music' ? <FileAudio size={16}/> : <FileText size={16}/>}</span><div className="file-copy"><strong>{file.name}</strong><span>{file.relative_path}</span></div><span className="file-type">{file.extension.toUpperCase()}</span><span className="file-size">{formatSize(file.size_bytes)}</span>{file.kind === 'music' && <button className="track-play" aria-label={`Play ${file.name}`} onClick={() => { const tracks = filteredFiles.filter(track => track.kind === 'music'); setPlayback({ source: selectedSource, tracks, index: tracks.indexOf(file) }) }}>▶ Play</button>}</article>)}</div>}
+          <p className="source-footnote">Select Play on a music file to listen. Audio format support depends on your browser.</p>
         </section> : <>
 
         <section className="featured" aria-label="Featured media">
@@ -141,6 +144,7 @@ function App() {
         <footer className="footer"><span>MADE FOR THE MOMENTS BETWEEN</span><span>GRIMOIRE <b>·</b> EARLY ACCESS</span></footer>
       </div>
     </main>
+    {playback && <MusicPlayer sourceName={playback.source.name} sourceId={playback.source.id} tracks={playback.tracks} index={playback.index} onIndex={index => setPlayback(current => current ? { ...current, index } : null)} onClose={() => setPlayback(null)} />}
     {connectOpen && <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setConnectOpen(false) }}><form className="connect-modal" onSubmit={connectDirectory}><button className="modal-close" type="button" aria-label="Close" onClick={() => setConnectOpen(false)}><X size={17}/></button><span className="modal-icon"><FolderOpen size={19}/></span><div className="section-kicker">ADD A CONTENT SOURCE</div><h2>Connect a directory</h2><p>Choose an existing folder on the computer running Grimoire. We’ll scan its subfolders for supported media.</p><label htmlFor="directory-path">Directory path</label><input id="directory-path" autoFocus value={directoryPath} onChange={event => setDirectoryPath(event.target.value)} placeholder="/home/you/Media" required/><small className="path-hint">Use a full local path, such as <code>/home/you/Videos</code>.</small>{connectError && <div className="connect-error">{connectError}</div>}<button className="connect-submit" type="submit" disabled={connecting}>{connecting ? 'Connecting…' : 'Connect directory'}</button><span className="modal-note">Disconnecting a source never deletes its files.</span></form></div>}
   </div>
 }
