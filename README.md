@@ -401,8 +401,8 @@ The frontend provides video/music playback and EPUB/CBZ reading. Local
 username/password accounts support public registration and PostgreSQL-backed
 sessions. Sources and media default to private, with explicit per-user source grants; only administrators
 may connect directories on the API host. User uploads remain planned as a
-separate contribution workflow. The home page sample catalog is presentation
-data, not a grant of access to real media.
+separate contribution workflow. For you, Discover, and My library use accessible source files and persistent
+per-user saves/open history; see [media pages](docs/MEDIA_PAGES.md).
 
 Before starting the API, follow [account and PostgreSQL setup](docs/AUTHENTICATION.md):
 create a dedicated database role, copy `backend/.env.example` to `backend/.env`,
@@ -501,6 +501,13 @@ unsupported content produces a reader error.
 
 After updating, run `npm install` in `web/` and restart both development servers.
 Reader checks can be run with `npm test` in `web/` and `cargo test` in `backend/`.
+
+### Personal media pages
+
+Use **Discover** to browse accessible files, bookmark items into **My library**,
+and return to recently opened/saved media in **For you**. All three pages respect
+current source permissions. [Media pages](docs/MEDIA_PAGES.md) documents search,
+filters, sorting, personal-state storage, and current scan limits.
 
 ### Site branding
 

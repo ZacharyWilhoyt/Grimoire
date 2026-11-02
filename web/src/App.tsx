@@ -1,3 +1,6 @@
+import CatalogViews from './CatalogViews'
+import MediaCollection from './MediaCollection'
+import { filterMedia, pageFromHash, pageHashes, type MediaItem, type PersonalState, type PageName, type Sort } from './media'
 import SourcePermissions, { policyLabel, type AcquisitionPolicy } from './SourcePermissions'
 import AccountSettings from './AccountSettings'
 import Authentication, { type User } from './Authentication'
@@ -5,41 +8,49 @@ import { apiFetch } from './api'
 import BookReader from './BookReader'
 import VideoPlayer from './VideoPlayer'
 import MusicPlayer from './MusicPlayer'
-import { useEffect, useState, type FormEvent } from 'react'
-import { AudioLines, BookOpen, Check, ChevronDown, Compass, FileAudio, FileText, Film, FolderOpen, Headphones, Library, Menu, Plus, Search, Settings2, ShieldCheck, RefreshCw, Sparkles, Trash2, X } from 'lucide-react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { BookOpen, ChevronDown, Compass, Film, FolderOpen, Headphones, Library, Menu, Plus, Search, Settings2, ShieldCheck, RefreshCw, Sparkles, Trash2, X } from 'lucide-react'
 
 type MediaKind = 'All' | 'Video' | 'Music' | 'Books'
-type MediaItem = { title: string; subtitle: string; kind: Exclude<MediaKind, 'All'>; image: string; badge: string; progress?: number }
 type Source = { id: string; name: string; available: boolean; is_owner: boolean; can_access_media: boolean; acquisition_policy: AcquisitionPolicy }
-type SourceFile = { name: string; relative_path: string; kind: 'video' | 'music' | 'book'; extension: string; size_bytes: number }
-
-const items: MediaItem[] = [
-  { title: 'The Apothecary Diaries', subtitle: 'Season 2 · Episode 08', kind: 'Video', image: 'photo-1578632767115-351597cf2477', badge: 'CONTINUE', progress: 68 },
-  { title: 'A Silent Voice', subtitle: 'Film · 2h 10m', kind: 'Video', image: 'photo-1519608487953-e999c86e7455', badge: 'IN YOUR LIBRARY' },
-  { title: 'Blue Hour', subtitle: 'Kacey Musgraves · 12 tracks', kind: 'Music', image: 'photo-1470252649378-9c29740c9fa8', badge: 'RECENTLY ADDED' },
-  { title: 'The Left Hand of Darkness', subtitle: 'Ursula K. Le Guin · 304 pages', kind: 'Books', image: 'photo-1519682337058-a94d519337bc', badge: 'PICK UP READING', progress: 34 },
-  { title: 'Mushishi', subtitle: 'Season 1 · 26 episodes', kind: 'Video', image: 'photo-1470252649378-9c29740c9fa8', badge: 'IN YOUR LIBRARY' },
-  { title: 'Kind of Blue', subtitle: 'Miles Davis · 5 tracks', kind: 'Music', image: 'photo-1511379938547-c1f69419868d', badge: 'IN YOUR LIBRARY' },
-]
-
-const art = (id: string, width = 800) => `https://images.unsplash.com/${id}?auto=format&fit=crop&w=${width}&q=85`
+type CatalogResponse = { items: MediaItem[]; truncated: boolean; unavailable_sources: number }
+type PersonalPage = { items: MediaItem[]; has_more: boolean; next_offset: number; unavailable_items: number }
+async function readApi<T>(url: string, signal?: AbortSignal): Promise<T> {
+  const response = await apiFetch(url, { signal })
+  const data = await response.json()
+  if (!response.ok) throw new Error(data.error ?? 'Could not load your media.')
+  return data as T
+}
 
 function Workspace({ user, logout }: { user: User; logout: () => void }) {
   const [permissionsSource, setPermissionsSource] = useState<Source | null>(null)
   const [sourceRefresh, setSourceRefresh] = useState(0)
   const [sourcesError, setSourcesError] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [reading, setReading] = useState<{ source: Source; file: SourceFile } | null>(null)
-  const [video, setVideo] = useState<{ source: Source; file: SourceFile } | null>(null)
-  const [playback, setPlayback] = useState<{ source: Source; tracks: SourceFile[]; index: number } | null>(null)
+  const [reading, setReading] = useState<MediaItem | null>(null)
+  const [video, setVideo] = useState<MediaItem | null>(null)
+  const [playback, setPlayback] = useState<{ tracks: MediaItem[]; index: number } | null>(null)
   const [filter, setFilter] = useState<MediaKind>('All')
   const [query, setQuery] = useState('')
-  const [activeNav, setActiveNav] = useState('For you')
+  const [page, setPage] = useState<PageName>(() => pageFromHash(window.location.hash))
+  const [catalog, setCatalog] = useState<MediaItem[]>([])
+  const [saved, setSaved] = useState<MediaItem[]>([])
+  const [recent, setRecent] = useState<MediaItem[]>([])
+  const [pageLoading, setPageLoading] = useState(true)
+  const [pageError, setPageError] = useState('')
+  const [pageNote, setPageNote] = useState('')
+  const [actionError, setActionError] = useState('')
+  const [actionBusy, setActionBusy] = useState(false)
+  const [hasMore, setHasMore] = useState(false)
+  const [nextOffset, setNextOffset] = useState(0)
+  const [sourceFilter, setSourceFilter] = useState('')
+  const [sort, setSort] = useState<Sort>(() => pageFromHash(window.location.hash) === 'My library' ? 'saved' : 'title')
+  const search = useRef<HTMLInputElement>(null)
   const [menuOpen, setMenuOpen] = useState(false)
   const [apiStatus, setApiStatus] = useState<'checking' | 'connected' | 'offline'>('checking')
   const [sources, setSources] = useState<Source[]>([])
   const [selectedSource, setSelectedSource] = useState<Source | null>(null)
-  const [sourceFiles, setSourceFiles] = useState<SourceFile[]>([])
+  const [sourceFiles, setSourceFiles] = useState<MediaItem[]>([])
   const [sourceLoading, setSourceLoading] = useState(false)
   const [sourceError, setSourceError] = useState('')
   const [connectOpen, setConnectOpen] = useState(false)
@@ -56,11 +67,12 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
       if (controller.signal.aborted) return
       const loaded = data as Source[]
       setApiStatus('connected'); setSources(loaded)
+      setSourceFilter(current => loaded.some(source => source.id === current && source.can_access_media) ? current : '')
       setSelectedSource(current => current ? loaded.find(source => source.id === current.id) ?? null : null)
       const allowed = (id: string) => loaded.some(source => source.id === id && source.can_access_media)
-      setPlayback(current => current && allowed(current.source.id) ? current : null)
-      setVideo(current => current && allowed(current.source.id) ? current : null)
-      setReading(current => current && allowed(current.source.id) ? current : null)
+      setPlayback(current => current && allowed(current.tracks[current.index].source_id) ? current : null)
+      setVideo(current => current && allowed(current.source_id) ? current : null)
+      setReading(current => current && allowed(current.source_id) ? current : null)
     }).catch(error => { if (!controller.signal.aborted) { setApiStatus('offline'); setSourcesError(error instanceof Error ? error.message : 'Could not load sources.') } })
     return () => controller.abort()
   }, [sourceRefresh])
@@ -74,16 +86,101 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
       .then(async response => {
         const data = await response.json()
         if (!response.ok) throw new Error(data.error ?? 'Could not scan this directory.')
-        if (!controller.signal.aborted) setSourceFiles(data as SourceFile[])
+        if (!controller.signal.aborted) setSourceFiles(data as MediaItem[])
       })
       .catch(error => { if (!controller.signal.aborted) setSourceError(error instanceof Error ? error.message : 'Could not scan this directory.') })
       .finally(() => { if (!controller.signal.aborted) setSourceLoading(false) })
     return () => controller.abort()
   }, [selectedSource])
 
-  const filteredItems = items.filter(item => (filter === 'All' || item.kind === filter) && `${item.title} ${item.subtitle}`.toLowerCase().includes(query.toLowerCase()))
-  const filteredFiles = sourceFiles.filter(file => (filter === 'All' || (filter === 'Video' && file.kind === 'video') || (filter === 'Music' && file.kind === 'music') || (filter === 'Books' && file.kind === 'book')) && `${file.name} ${file.relative_path}`.toLowerCase().includes(query.toLowerCase()))
-  const formatSize = (bytes: number) => bytes < 1024 ** 2 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1024 ** 2).toFixed(1)} MB`
+  const kind = filter === 'Video' ? 'video' : filter === 'Music' ? 'music' : filter === 'Books' ? 'book' : ''
+  const filteredFiles = filterMedia(sourceFiles, query, kind, '', 'title')
+  const setKind = (kind: string) => setFilter(kind === 'video' ? 'Video' : kind === 'music' ? 'Music' : kind === 'book' ? 'Books' : 'All')
+  const navigate = (next: PageName) => {
+    setPage(next); setSelectedSource(null); setQuery(''); setFilter('All'); setSourceFilter(''); setSort(next === 'My library' ? 'saved' : 'title'); setMenuOpen(false); setActionError('')
+    window.location.hash = pageHashes[next]
+  }
+  useEffect(() => {
+    const changed = () => { const next = pageFromHash(window.location.hash); setPage(next); setSelectedSource(null); setQuery(''); setFilter('All'); setSourceFilter(''); setSort(next === 'My library' ? 'saved' : 'title') }
+    const keyboard = (event: KeyboardEvent) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); search.current?.focus() } }
+    window.addEventListener('hashchange', changed); window.addEventListener('keydown', keyboard)
+    return () => { window.removeEventListener('hashchange', changed); window.removeEventListener('keydown', keyboard) }
+  }, [])
+
+  useEffect(() => {
+    if (selectedSource) return
+    const controller = new AbortController()
+    setPageLoading(true); setPageError(''); setPageNote(''); setHasMore(false)
+    if (page === 'My library') setSaved([])
+    else if (page === 'Discover') setCatalog([])
+    else { setRecent([]); setSaved([]); setCatalog([]) }
+    const load = async () => {
+      const notes: string[] = []
+      if (page === 'For you') {
+        const activity = await readApi<PersonalPage>('/api/activity', controller.signal)
+        if (controller.signal.aborted) return
+        setRecent(activity.items)
+        if (activity.unavailable_items) notes.push('Some recently opened files are currently unavailable.')
+      }
+      if (page !== 'Discover') {
+        const library = await readApi<PersonalPage>('/api/library', controller.signal)
+        if (controller.signal.aborted) return
+        setSaved(library.items); setHasMore(library.has_more); setNextOffset(library.next_offset)
+        if (library.unavailable_items) notes.push('Some saved files are currently unavailable. Their saved records are retained.')
+      }
+      if (page !== 'My library') {
+        const catalog = await readApi<CatalogResponse>('/api/catalog', controller.signal)
+        if (controller.signal.aborted) return
+        setCatalog(catalog.items)
+        if (catalog.truncated) notes.push('This catalog preview is limited to 5,000 files from 32 sources. Browse a source directly for additional files.')
+        if (catalog.unavailable_sources) notes.push(`${catalog.unavailable_sources} accessible sources could not be scanned.`)
+      }
+      if (!controller.signal.aborted) setPageNote(notes.join(' '))
+    }
+    load().catch(error => { if (!controller.signal.aborted) setPageError(error instanceof Error ? error.message : 'Could not load media.') }).finally(() => { if (!controller.signal.aborted) setPageLoading(false) })
+    return () => controller.abort()
+  }, [page, sourceRefresh, selectedSource?.id])
+
+  const patchPersonal = (item: MediaItem, personal: PersonalState) => {
+    const updated = { ...item, ...personal }
+    const patch = (items: MediaItem[]) => items.map(old => old.file_key === item.file_key ? { ...old, ...personal } : old)
+    setCatalog(patch); setSourceFiles(patch)
+    setSaved(items => personal.saved_at === null ? items.filter(old => old.file_key !== item.file_key) : [updated, ...items.filter(old => old.file_key !== item.file_key)])
+    if (personal.last_opened_at !== null) setRecent(items => [updated, ...items.filter(old => old.file_key !== item.file_key)])
+  }
+  const openMedia = async (item: MediaItem, queue: MediaItem[]) => {
+    setActionBusy(true); setActionError('')
+    try {
+      const response = await apiFetch('/api/activity/open', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source_id: item.source_id, relative_path: item.relative_path }) })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error ?? 'Could not open this media.')
+      patchPersonal(item, data as PersonalState)
+      setReading(null); setVideo(null); setPlayback(null)
+      if (item.kind === 'book') setReading(item)
+      else if (item.kind === 'video') setVideo(item)
+      else { const tracks = queue.some(track => track.file_key === item.file_key) ? queue : [item]; setPlayback({ tracks, index: tracks.findIndex(track => track.file_key === item.file_key) }) }
+    } catch (error) { setActionError(error instanceof Error ? error.message : 'Could not open media.'); setPlayback(null) }
+    finally { setActionBusy(false) }
+  }
+  const toggleSaved = async (item: MediaItem) => {
+    setActionBusy(true); setActionError('')
+    try {
+      const response = item.saved_at !== null
+        ? await apiFetch(`/api/library/${item.file_key}`, { method: 'DELETE' })
+        : await apiFetch('/api/library', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source_id: item.source_id, relative_path: item.relative_path }) })
+      if (!response.ok) { const data = await response.json(); throw new Error(data.error ?? 'Could not update your library.') }
+      patchPersonal(item, item.saved_at !== null ? { file_key: item.file_key, saved_at: null, last_opened_at: item.last_opened_at } : await response.json() as PersonalState)
+    } catch (error) { setActionError(error instanceof Error ? error.message : 'Could not update your library.') }
+    finally { setActionBusy(false) }
+  }
+  const loadMore = async () => {
+    setActionBusy(true); setPageError('')
+    try {
+      const next = await readApi<PersonalPage>(`/api/library?offset=${nextOffset}`)
+      setSaved(items => [...items, ...next.items.filter(item => !items.some(old => old.file_key === item.file_key))]); setHasMore(next.has_more); setNextOffset(next.next_offset)
+    } catch (error) { setPageError(error instanceof Error ? error.message : 'Could not load saved items.') }
+    finally { setActionBusy(false) }
+  }
   const connectDirectory = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setConnecting(true)
@@ -109,24 +206,24 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
     if (!window.confirm(`Disconnect “${source.name}”? Grimoire will not delete files from your computer.`)) return
     const response = await apiFetch(`/api/sources/${encodeURIComponent(source.id)}`, { method: 'DELETE' })
     if (!response.ok) return
-    if (reading?.source.id === source.id) setReading(null)
-    if (video?.source.id === source.id) setVideo(null)
-    if (playback?.source.id === source.id) setPlayback(null)
+    if (reading?.source_id === source.id) setReading(null)
+    if (video?.source_id === source.id) setVideo(null)
+    if (playback?.tracks[playback.index].source_id === source.id) setPlayback(null)
     setSources(current => current.filter(item => item.id !== source.id))
     if (selectedSource?.id === source.id) setSelectedSource(null)
   }
   const nav = [
-    { label: 'For you', icon: Sparkles }, { label: 'Discover', icon: Compass }, { label: 'My library', icon: Library },
+    { label: 'For you' as PageName, icon: Sparkles }, { label: 'Discover' as PageName, icon: Compass }, { label: 'My library' as PageName, icon: Library },
   ]
 
   return <div className="app-shell">
     <aside className={`sidebar ${menuOpen ? 'open' : ''}`}>
-      <a className="brand" href="#home"><img className="brand-logo" src="/logo.svg" alt="" aria-hidden="true" width="38" height="38" /><span>grimoire<span className="brand-dot">.</span></span></a>
+      <a className="brand" href="#for-you" onClick={event => { event.preventDefault(); navigate('For you') }}><img className="brand-logo" src="/logo.svg" alt="" aria-hidden="true" width="38" height="38" /><span>grimoire<span className="brand-dot">.</span></span></a>
       <div className="profile"><div className="avatar">{user.username[0].toUpperCase()}</div><div className="profile-copy"><strong>{user.username}</strong><span>{user.is_admin ? 'Administrator' : 'Personal account'}</span></div><ChevronDown size={15} /></div>
       <div className="side-label">YOUR SPACE</div>
-      <nav className="main-nav">{nav.map(({ label, icon: Icon }) => <button key={label} className={`nav-item ${activeNav === label ? 'selected' : ''}`} onClick={() => { setActiveNav(label); setSelectedSource(null); setMenuOpen(false) }}><Icon size={18} strokeWidth={1.8} />{label}</button>)}</nav>
+      <nav className="main-nav">{nav.map(({ label, icon: Icon }) => <button key={label} className={`nav-item ${!selectedSource && page === label ? 'selected' : ''}`} onClick={() => { navigate(label) }}><Icon size={18} strokeWidth={1.8} />{label}</button>)}</nav>
       <div className="side-label sources-label">YOUR SOURCES <button title="Refresh sources" onClick={() => setSourceRefresh(value => value + 1)}><RefreshCw size={14}/></button>{user.is_admin && <button title="Connect a directory" onClick={() => setConnectOpen(true)}><Plus size={15} /></button>}</div>
-      {sources.map(source => <button key={source.id} className={`source-row ${selectedSource?.id === source.id ? 'source-selected' : ''}`} onClick={() => { setSelectedSource(source); setActiveNav(source.name); setFilter('All'); setMenuOpen(false) }}><span className="source-icon owner"><FolderOpen size={16} /></span><span className="source-copy"><strong>{source.name}</strong><small>{source.is_owner ? 'Owned source' : 'Shared with you'}</small></span><span className={`source-dot ${source.available ? 'online' : ''}`} /></button>)}
+      {sources.map(source => <button key={source.id} className={`source-row ${selectedSource?.id === source.id ? 'source-selected' : ''}`} onClick={() => { setSelectedSource(source); setFilter('All'); setQuery(''); setMenuOpen(false); setActionError('') }}><span className="source-icon owner"><FolderOpen size={16} /></span><span className="source-copy"><strong>{source.name}</strong><small>{source.is_owner ? 'Owned source' : 'Shared with you'}</small></span><span className={`source-dot ${source.available ? 'online' : ''}`} /></button>)}
       {sourcesError && <p className="source-error no-sources" role="alert">{sourcesError}</p>}
       {sources.length === 0 && <p className="no-sources">No sources available yet.</p>}
       {user.is_admin && <button className="add-source" onClick={() => setConnectOpen(true)}><Plus size={15} /> Connect a directory</button>}
@@ -134,9 +231,10 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
     </aside>
 
     <main className="main-content" id="home">
-      <header className="topbar"><button className="mobile-menu" aria-label="Toggle menu" onClick={() => setMenuOpen(!menuOpen)}><Menu size={21} /></button><div className="breadcrumbs"><span>My space</span><span className="crumb-slash">/</span><strong>{activeNav}</strong></div><label className="search-box"><Search size={17} /><input aria-label="Search your media" value={query} onChange={e => setQuery(e.target.value)} placeholder="Search anything..." /><kbd>⌘ K</kbd></label><span className="top-avatar" title={user.username}>{user.username[0].toUpperCase()}</span></header>
+      <header className="topbar"><button className="mobile-menu" aria-label="Toggle menu" onClick={() => setMenuOpen(!menuOpen)}><Menu size={21} /></button><div className="breadcrumbs"><span>My space</span><span className="crumb-slash">/</span><strong>{selectedSource?.name ?? page}</strong></div><label className="search-box"><Search size={17} /><input ref={search} aria-label="Search your media" value={query} onChange={e => setQuery(e.target.value)} placeholder="Search anything..." /><kbd>Ctrl K</kbd></label><span className="top-avatar" title={user.username}>{user.username[0].toUpperCase()}</span></header>
       <div className="page-wrap">
-        <section className="welcome-row"><div><div className="eyebrow"><span className="eyebrow-line" />YOUR PRIVATE MEDIA SPACE</div><h1>{selectedSource ? selectedSource.name : <>Your worlds,<br className="mobile-break" /> all in one place</>}<span className="title-period">.</span></h1><p className="welcome-copy">{selectedSource ? (selectedSource.can_access_media ? 'Files found in this connected directory.' : 'This source is visible to your account.') : 'A little something to watch, hear, or get lost in.'}</p></div>{user.is_admin && <button className="invite-button" onClick={() => setConnectOpen(true)}><Plus size={16} /> Connect directory</button>}</section>
+        {actionError && <p className="catalog-notice error" role="alert">{actionError}</p>}
+        {selectedSource && <section className="welcome-row"><div><div className="eyebrow"><span className="eyebrow-line" />YOUR PRIVATE MEDIA SPACE</div><h1>{selectedSource ? selectedSource.name : <>Your worlds,<br className="mobile-break" /> all in one place</>}<span className="title-period">.</span></h1><p className="welcome-copy">{selectedSource ? (selectedSource.can_access_media ? 'Files found in this connected directory.' : 'This source is visible to your account.') : 'A little something to watch, hear, or get lost in.'}</p></div>{user.is_admin && <button className="invite-button" onClick={() => setConnectOpen(true)}><Plus size={16} /> Connect directory</button>}</section>}
 
         {selectedSource ? <section className="directory-view">
           <div className="section-heading"><div><div className="section-kicker">LOCAL CONTENT SOURCE</div><h2>{selectedSource.can_access_media ? 'Available media' : 'Source access'}</h2></div><div className="source-heading-actions"><span>{selectedSource.can_access_media ? `${sourceFiles.length} ${sourceFiles.length === 1 ? 'file' : 'files'}` : 'Visibility only'}</span>{selectedSource.is_owner && <><button className="disconnect-button" onClick={() => setPermissionsSource(selectedSource)}><ShieldCheck size={14}/> Permissions</button><button className="disconnect-button" onClick={() => removeSource(selectedSource)} title="Disconnect this source"><Trash2 size={14}/> Disconnect</button></>}</div></div>
@@ -146,37 +244,17 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
           {sourceLoading && <div className="source-message">Scanning this directory…</div>}
           {sourceError && <div className="source-message source-error">{sourceError}</div>}
           {!sourceLoading && !sourceError && filteredFiles.length === 0 && <div className="source-empty"><FolderOpen size={23}/><strong>No supported media found</strong><span>We look for common video, audio, EPUB, and CBZ files in this directory and its subfolders.</span></div>}
-          {!sourceLoading && !sourceError && filteredFiles.length > 0 && <div className="file-list">{filteredFiles.map(file => <article className="file-row" key={file.relative_path}><span className={`file-kind ${file.kind}`}>{file.kind === 'video' ? <Film size={16}/> : file.kind === 'music' ? <FileAudio size={16}/> : <FileText size={16}/>}</span><div className="file-copy"><strong>{file.name}</strong><span>{file.relative_path}</span></div><span className="file-type">{file.extension.toUpperCase()}</span><span className="file-size">{formatSize(file.size_bytes)}</span>{file.kind === 'music' && <button className="track-play" aria-label={`Play ${file.name}`} onClick={() => { setVideo(null); const tracks = filteredFiles.filter(track => track.kind === 'music'); setPlayback({ source: selectedSource, tracks, index: tracks.indexOf(file) }) }}>▶ Play</button>}{file.kind === 'video' && <button className="track-play" aria-label={`Watch ${file.name}`} onClick={() => { setPlayback(null); setVideo({ source: selectedSource, file }) }}>▶ Watch</button>}{file.kind === 'book' && <button className="track-play" aria-label={`Read ${file.name}`} onClick={() => { setPlayback(null); setVideo(null); setReading({ source: selectedSource, file }) }}>Read</button>}</article>)}</div>}
+          {!sourceLoading && !sourceError && filteredFiles.length > 0 && <MediaCollection compact items={filteredFiles} busy={actionBusy} onOpen={(item, queue) => { void openMedia(item, queue) }} onSave={item => { void toggleSaved(item) }}/>}
           <p className="source-footnote">Select Play for music, Watch for video, or Read for EPUB and CBZ books.</p></>}
-        </section> : <>
-
-        <p className="sample-notice">Sample catalog preview. Select a connected source to browse your media.</p>
-        <section className="featured" aria-label="Featured media">
-          <img className="featured-art" src={art('photo-1470252649378-9c29740c9fa8', 1800)} alt="Sunrise over a quiet mountain landscape" />
-          <div className="featured-shade" />
-          <div className="featured-content"><span className="featured-label"><Sparkles size={13} /> A MOONLIGHT ARCHIVE PICK</span><h2>Find your<br />quiet place.</h2><p>Some stories don't need to be loud<br className="desktop-only" /> to stay with you.</p><button onClick={() => setFilter('Video')} className="featured-cta">Explore the collection <span>↗</span></button></div>
-          <div className="featured-credit">CURATED BY MOONLIGHT ARCHIVE <span>·</span> 18 TITLES</div>
-        </section>
-
-        <section className="continue-section"><div className="section-heading"><div><div className="section-kicker">PICK UP WHERE YOU LEFT OFF</div><h2>Still on your mind</h2></div><button className="text-link" onClick={() => setFilter('All')}>View history <span>↗</span></button></div>
-          <div className="continue-card"><div className="continue-poster"><img src={art(items[0].image)} alt="Atmospheric anime artwork"/><span className="play-icon">▶</span></div><div className="continue-info"><div className="continue-type"><Film size={13}/> VIDEO <span>·</span> MOONLIGHT ARCHIVE</div><h3>The Apothecary Diaries</h3><p>Season 2 <span>·</span> Episode 08, “The Dancing Ghost”</p><div className="progress-track"><span style={{width:'68%'}}/></div><div className="continue-foot"><span>18 min left</span><button onClick={() => setActiveNav('Continue watching')}>Continue watching <span>→</span></button></div></div><button className="more-button" aria-label="More options">···</button></div>
-        </section>
-
-        <section className="library-section"><div className="section-heading library-heading"><div><div className="section-kicker">A FEW THINGS YOU LOVE</div><h2>From your library</h2></div><button className="text-link" onClick={() => setActiveNav('My library')}>Open library <span>↗</span></button></div>
-          <div className="filter-row">{(['All', 'Video', 'Music', 'Books'] as MediaKind[]).map(kind => <button key={kind} onClick={() => setFilter(kind)} className={`filter-chip ${filter === kind ? 'active' : ''}`}>{kind === 'Video' && <Film size={14}/ >}{kind === 'Music' && <Headphones size={14}/ >}{kind === 'Books' && <BookOpen size={14}/ >}{kind}</button>)}</div>
-          <div className="media-grid">{filteredItems.map((item, index) => <article className="media-card" key={item.title} style={{animationDelay:`${index * 45}ms`}}><div className="media-art"><img src={art(item.image)} alt="" loading="lazy"/><span className="media-badge">{item.badge}</span><button className="card-play" aria-label={`Play ${item.title}`}>{item.kind === 'Music' ? <AudioLines size={18}/> : item.kind === 'Books' ? <BookOpen size={18}/> : <span>▶</span>}</button>{item.progress && <div className="card-progress"><span style={{width:`${item.progress}%`}}/></div>}</div><div className="media-meta"><span className="kind-label">{item.kind === 'Video' ? '◉' : item.kind === 'Music' ? '♫' : '▤'} &nbsp;{item.kind.toUpperCase()}</span><span className="media-ready"><Check size={11}/> READY</span></div><h3>{item.title}</h3><p>{item.subtitle}</p></article>)}</div>
-          {filteredItems.length === 0 && <div className="empty-state">Nothing here yet. Try a different search or media type.</div>}
-          <button className="browse-button" onClick={() => { setFilter('All'); setQuery(''); setActiveNav('Discover') }}><Compass size={15}/> Browse your whole collection</button>
-        </section>
-        </>}
+        </section> : <CatalogViews page={page} username={user.username} catalog={catalog} saved={saved} recent={recent} loading={pageLoading} error={pageError} note={pageNote} query={query} kind={kind} source={sourceFilter} sort={sort} sources={sources} busy={actionBusy} hasMore={hasMore} onKind={setKind} onSource={setSourceFilter} onSort={setSort} onRefresh={() => setSourceRefresh(value => value + 1)} onLoadMore={() => { void loadMore() }} onOpen={(item, queue) => { void openMedia(item, queue) }} onSave={item => { void toggleSaved(item) }} onDiscover={() => navigate('Discover')}/>}
         <footer className="footer"><span>MADE FOR THE MOMENTS BETWEEN</span><span>GRIMOIRE <b>·</b> EARLY ACCESS</span></footer>
       </div>
     </main>
     {permissionsSource && <SourcePermissions source={permissionsSource} ownerUsername={user.username} onClose={() => setPermissionsSource(null)} onSaved={() => setSourceRefresh(value => value + 1)}/>}
     {settingsOpen && <AccountSettings onClose={() => setSettingsOpen(false)} />}
-    {reading && <BookReader sourceId={reading.source.id} sourceName={reading.source.name} file={reading.file} onClose={() => setReading(null)} />}
-    {video && <VideoPlayer sourceId={video.source.id} sourceName={video.source.name} file={video.file} onClose={() => setVideo(null)} />}
-    {playback && <MusicPlayer sourceName={playback.source.name} sourceId={playback.source.id} tracks={playback.tracks} index={playback.index} onIndex={index => setPlayback(current => current ? { ...current, index } : null)} onClose={() => setPlayback(null)} />}
+    {reading && <BookReader sourceId={reading.source_id} sourceName={reading.source_name} file={reading} onClose={() => setReading(null)} />}
+    {video && <VideoPlayer sourceId={video.source_id} sourceName={video.source_name} file={video} onClose={() => setVideo(null)} />}
+    {playback && <MusicPlayer tracks={playback.tracks} index={playback.index} busy={actionBusy} onIndex={index => { void openMedia(playback.tracks[index], playback.tracks) }} onClose={() => setPlayback(null)}/>}
     {connectOpen && user.is_admin && <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setConnectOpen(false) }}><form className="connect-modal" onSubmit={connectDirectory}><button className="modal-close" type="button" aria-label="Close" onClick={() => setConnectOpen(false)}><X size={17}/></button><span className="modal-icon"><FolderOpen size={19}/></span><div className="section-kicker">ADD A CONTENT SOURCE</div><h2>Connect a directory</h2><p>Choose an existing folder on the computer running Grimoire. We’ll scan its subfolders for supported media.</p><label htmlFor="directory-path">Directory path</label><input id="directory-path" autoFocus value={directoryPath} onChange={event => setDirectoryPath(event.target.value)} placeholder="/home/you/Media" required/><small className="path-hint">Use a full local path, such as <code>/home/you/Videos</code>.</small>{connectError && <div className="connect-error">{connectError}</div>}<button className="connect-submit" type="submit" disabled={connecting}>{connecting ? 'Connecting…' : 'Connect directory'}</button><span className="modal-note">Disconnecting a source never deletes its files.</span></form></div>}
   </div>
 }

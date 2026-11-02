@@ -145,7 +145,8 @@ and keep PostgreSQL private. Remote PostgreSQL connections require
 `sslmode=verify-full` and a trusted database CA; local loopback/Unix-socket connections
 are an explicit exception. Back up PostgreSQL, protect migration/database privileges,
 and establish retention for auth events. Local JSON is now only an import format;
-PostgreSQL stores users, sessions, source registrations, and ownership.
+PostgreSQL stores users, sessions, source registrations, ownership/grants, and
+per-user saved items/open history. Personal media state never grants source access.
 
 This is an authentication foundation, not a claim that public-launch security is
 complete. Followups include MFA/passkeys, breached-password screening, self-service

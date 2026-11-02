@@ -20,6 +20,7 @@ fn state(pool: PgPool) -> AppState {
                 .unwrap_or_else(|_| panic!("hash")),
         }),
         hashing: Arc::new(tokio::sync::Semaphore::new(4)),
+        catalog_scans: Arc::new(tokio::sync::Semaphore::new(2)),
     }
 }
 async fn request(
@@ -1030,5 +1031,656 @@ async fn only_source_owner_manages_grants_and_disconnect_revokes_them(pool: PgPo
     .unwrap();
     assert_eq!(revoked, 1);
     assert!(root.join("track.mp3").exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn catalog_library_and_activity_respect_grants_and_user_isolation(pool: PgPool) {
+    seed_admin(&pool).await;
+    let state = state(pool.clone());
+    let (admin, admin_csrf, admin_user) =
+        login(&state, "admin", "administrator test passphrase").await;
+    let (alice, csrf, alice_user) = register_user(&state, "alice").await;
+    let (bob, bob_csrf, _) = register_user(&state, "bob").await;
+    let root = shared_media_fixture();
+    let id = Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO sources(id,owner_id,name,path) VALUES ($1,$2,'Catalog source',$3)")
+        .bind(&id)
+        .bind(Uuid::parse_str(admin_user["id"].as_str().unwrap()).unwrap())
+        .bind(root.to_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let reference = json!({"source_id":id,"relative_path":"track.mp3"});
+    for path in ["/api/catalog", "/api/library", "/api/activity"] {
+        assert_eq!(
+            request(&state, Method::GET, path, None, None, None, None)
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert!(
+            body(request(&state, Method::GET, path, Some(&alice), None, None, None).await).await
+                ["items"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            "/api/library",
+            Some(&alice),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(reference.clone())
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    let permission = format!("/api/sources/{id}/permissions/alice");
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            &permission,
+            Some(&admin),
+            Some(&admin_csrf),
+            Some(ORIGIN),
+            Some(json!({"can_discover":true,"acquisition_policy":"auto_accept"}))
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(body(
+        request(
+            &state,
+            Method::GET,
+            "/api/catalog",
+            Some(&alice),
+            None,
+            None,
+            None
+        )
+        .await
+    )
+    .await["items"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            "/api/activity/open",
+            Some(&alice),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(reference.clone())
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            &permission,
+            Some(&admin),
+            Some(&admin_csrf),
+            Some(ORIGIN),
+            Some(json!({"can_discover":true,"can_access_media":true}))
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    let bob_permission = format!("/api/sources/{id}/permissions/bob");
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            &bob_permission,
+            Some(&admin),
+            Some(&admin_csrf),
+            Some(ORIGIN),
+            Some(json!({"can_discover":true,"can_access_media":true}))
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    for (method, endpoint) in [
+        (Method::PUT, "/api/library"),
+        (Method::POST, "/api/activity/open"),
+    ] {
+        assert_eq!(
+            request(
+                &state,
+                method,
+                endpoint,
+                Some(&alice),
+                Some(&csrf),
+                Some(ORIGIN),
+                Some(json!({"source_id":id,"relative_path":"x".repeat(5000)}))
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let catalog = body(
+        request(
+            &state,
+            Method::GET,
+            "/api/catalog",
+            Some(&alice),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(catalog["items"].as_array().unwrap().len(), 4);
+    assert!(!catalog.to_string().contains(root.to_str().unwrap()));
+    assert!(catalog["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|item| item["saved_at"].is_null() && item["last_opened_at"].is_null()));
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            "/api/library",
+            Some(&alice),
+            None,
+            Some(ORIGIN),
+            Some(reference.clone())
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    let saved = body(
+        request(
+            &state,
+            Method::PUT,
+            "/api/library",
+            Some(&alice),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(reference.clone()),
+        )
+        .await,
+    )
+    .await;
+    assert!(saved["saved_at"].is_number());
+    assert!(saved["last_opened_at"].is_null());
+    let again = body(
+        request(
+            &state,
+            Method::PUT,
+            "/api/library",
+            Some(&alice),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(reference.clone()),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(saved["saved_at"], again["saved_at"]);
+    let library = body(
+        request(
+            &state,
+            Method::GET,
+            "/api/library",
+            Some(&alice),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(library["items"][0]["name"], "track.mp3");
+    assert!(body(
+        request(
+            &state,
+            Method::GET,
+            "/api/library",
+            Some(&bob),
+            None,
+            None,
+            None
+        )
+        .await
+    )
+    .await["items"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let key = saved["file_key"].as_str().unwrap();
+    assert_eq!(
+        request(
+            &state,
+            Method::DELETE,
+            &format!("/api/library/{key}"),
+            Some(&bob),
+            Some(&bob_csrf),
+            Some(ORIGIN),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    let bob_catalog = body(
+        request(
+            &state,
+            Method::GET,
+            "/api/catalog",
+            Some(&bob),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(bob_catalog["items"].as_array().unwrap().len(), 4);
+    assert!(bob_catalog["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|item| item["saved_at"].is_null() && item["last_opened_at"].is_null()));
+    let still_saved = body(
+        request(
+            &state,
+            Method::GET,
+            "/api/library",
+            Some(&alice),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(still_saved["items"].as_array().unwrap().len(), 1);
+    let opened = body(
+        request(
+            &state,
+            Method::POST,
+            "/api/activity/open",
+            Some(&alice),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(reference.clone()),
+        )
+        .await,
+    )
+    .await;
+    assert!(opened["last_opened_at"].is_number());
+    assert_eq!(opened["saved_at"], saved["saved_at"]);
+    let activity = body(
+        request(
+            &state,
+            Method::GET,
+            "/api/activity",
+            Some(&alice),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(activity["items"][0]["name"], "track.mp3");
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            "/api/activity/open",
+            Some(&alice),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(json!({"source_id":id,"relative_path":"../track.mp3"}))
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            "/api/activity/open",
+            Some(&alice),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(json!({"source_id":id,"relative_path":"missing.mp3"}))
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::DELETE,
+            &permission,
+            Some(&admin),
+            Some(&admin_csrf),
+            Some(ORIGIN),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    for path in ["/api/catalog", "/api/library", "/api/activity"] {
+        assert!(
+            body(request(&state, Method::GET, path, Some(&alice), None, None, None).await).await
+                ["items"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM user_media WHERE user_id=$1")
+        .bind(Uuid::parse_str(alice_user["id"].as_str().unwrap()).unwrap())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1); // Personal records persist, but cannot reveal revoked media.
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            &permission,
+            Some(&admin),
+            Some(&admin_csrf),
+            Some(ORIGIN),
+            Some(json!({"can_discover":true,"can_access_media":true}))
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        body(
+            request(
+                &state,
+                Method::GET,
+                "/api/library",
+                Some(&alice),
+                None,
+                None,
+                None
+            )
+            .await
+        )
+        .await["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::DELETE,
+            &format!("/api/library/{key}"),
+            Some(&alice),
+            Some(&csrf),
+            Some(ORIGIN),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(body(
+        request(
+            &state,
+            Method::GET,
+            "/api/library",
+            Some(&alice),
+            None,
+            None,
+            None
+        )
+        .await
+    )
+    .await["items"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        body(
+            request(
+                &state,
+                Method::GET,
+                "/api/activity",
+                Some(&alice),
+                None,
+                None,
+                None
+            )
+            .await
+        )
+        .await["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn library_handles_missing_files_and_offline_sources_without_changing_files(pool: PgPool) {
+    seed_admin(&pool).await;
+    let state = state(pool.clone());
+    let (admin, csrf, user) = login(&state, "admin", "administrator test passphrase").await;
+    let root = shared_media_fixture();
+    let id = Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO sources(id,owner_id,name,path) VALUES ($1,$2,'Offline test',$3)")
+        .bind(&id)
+        .bind(Uuid::parse_str(user["id"].as_str().unwrap()).unwrap())
+        .bind(root.to_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let reference = json!({"source_id":id,"relative_path":"story.epub"});
+    let saved = body(
+        request(
+            &state,
+            Method::PUT,
+            "/api/library",
+            Some(&admin),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(reference),
+        )
+        .await,
+    )
+    .await;
+    let offline = root.with_extension("offline");
+    fs::rename(&root, &offline).unwrap();
+    let catalog = body(
+        request(
+            &state,
+            Method::GET,
+            "/api/catalog",
+            Some(&admin),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(catalog["unavailable_sources"], 1);
+    assert!(catalog["items"].as_array().unwrap().is_empty());
+    let library = body(
+        request(
+            &state,
+            Method::GET,
+            "/api/library",
+            Some(&admin),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(library["unavailable_items"], 1);
+    assert_eq!(library["items"].as_array().unwrap().len(), 1);
+    assert_eq!(library["items"][0]["available"], false);
+    fs::rename(&offline, &root).unwrap();
+    assert_eq!(
+        body(
+            request(
+                &state,
+                Method::GET,
+                "/api/library",
+                Some(&admin),
+                None,
+                None,
+                None
+            )
+            .await
+        )
+        .await["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    fs::remove_file(root.join("story.epub")).unwrap();
+    let missing = body(
+        request(
+            &state,
+            Method::GET,
+            "/api/library",
+            Some(&admin),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(missing["items"][0]["available"], false);
+    assert_eq!(
+        request(
+            &state,
+            Method::DELETE,
+            &format!("/api/library/{}", saved["file_key"].as_str().unwrap()),
+            Some(&admin),
+            Some(&csrf),
+            Some(ORIGIN),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(root.join("track.mp3").exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn personal_library_paginates_saved_items_including_unavailable_files(pool: PgPool) {
+    seed_admin(&pool).await;
+    let state = state(pool.clone());
+    let (admin, _, user) = login(&state, "admin", "administrator test passphrase").await;
+    let user = Uuid::parse_str(user["id"].as_str().unwrap()).unwrap();
+    let root = shared_media_fixture();
+    let source = Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO sources(id,owner_id,name,path) VALUES ($1,$2,'Paged library',$3)")
+        .bind(&source)
+        .bind(user)
+        .bind(root.to_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let paths: Vec<String> = (0..101)
+        .map(|index| format!("unavailable-{index}.mp3"))
+        .collect();
+    let keys: Vec<String> = paths
+        .iter()
+        .map(|path| crate::catalog::file_key(&source, path))
+        .collect();
+    sqlx::query("INSERT INTO user_media(user_id,file_key,source_id,relative_path,saved_at) SELECT $1,x.key,$2,x.path,now() FROM unnest($3::text[],$4::text[]) AS x(key,path)").bind(user).bind(&source).bind(keys).bind(paths).execute(&pool).await.unwrap();
+    let first = body(
+        request(
+            &state,
+            Method::GET,
+            "/api/library",
+            Some(&admin),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    let second = body(
+        request(
+            &state,
+            Method::GET,
+            "/api/library?offset=100",
+            Some(&admin),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(first["items"].as_array().unwrap().len(), 100);
+    assert_eq!(first["has_more"], true);
+    assert_eq!(first["next_offset"], 100);
+    assert_eq!(second["items"].as_array().unwrap().len(), 1);
+    assert_eq!(second["has_more"], false);
+    assert!(first["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|item| item["available"] == false));
+    let second_key = second["items"][0]["file_key"].as_str().unwrap();
+    assert!(!first["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["file_key"] == second_key));
+    assert_eq!(
+        request(
+            &state,
+            Method::GET,
+            "/api/library?offset=-1",
+            Some(&admin),
+            None,
+            None,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
     fs::remove_dir_all(root).unwrap();
 }

@@ -9,6 +9,7 @@ mod admin;
 mod auth;
 #[cfg(test)]
 mod auth_integration;
+mod catalog;
 mod permissions;
 
 use serde::{Deserialize, Serialize};
@@ -29,6 +30,7 @@ struct AppState {
     db: sqlx::PgPool,
     config: Arc<auth::Config>,
     hashing: Arc<tokio::sync::Semaphore>,
+    catalog_scans: Arc<tokio::sync::Semaphore>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -63,6 +65,7 @@ struct MediaFile {
     kind: &'static str,
     extension: String,
     size_bytes: u64,
+    modified_at: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -239,19 +242,10 @@ async fn list_media(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<auth::Identity>,
     RoutePath(source_id): RoutePath<String>,
-) -> Result<Json<Vec<MediaFile>>, AppError> {
-    let root = media_root(&state, &identity.user, &source_id).await?;
-    if !root.is_dir() {
-        return Err(AppError(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "This directory is currently unavailable.".into(),
-        ));
-    }
-    let files = tokio::task::spawn_blocking(move || scan_directory(&root))
-        .await
-        .map_err(|_| auth::unavailable())?
-        .map_err(|message| AppError(StatusCode::INTERNAL_SERVER_ERROR, message))?;
-    Ok(Json(files))
+) -> Result<Json<Vec<catalog::Item>>, AppError> {
+    Ok(Json(
+        catalog::source_items(&state, &identity.user, &source_id).await?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -384,6 +378,15 @@ fn classify_extension(extension: &str) -> Option<&'static str> {
     }
 }
 
+fn modified_epoch(metadata: &fs::Metadata) -> Option<f64> {
+    metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|value| value.as_secs_f64())
+}
+
 fn scan_directory(root: &Path) -> Result<Vec<MediaFile>, String> {
     let mut files = Vec::new();
     let mut pending = vec![(root.to_path_buf(), 0usize)];
@@ -453,6 +456,7 @@ fn scan_directory(root: &Path) -> Result<Vec<MediaFile>, String> {
                 kind,
                 extension,
                 size_bytes: metadata.len(),
+                modified_at: modified_epoch(&metadata),
             });
         }
     }
@@ -477,6 +481,19 @@ async fn not_found() -> (StatusCode, Json<ApiError>) {
 fn app(state: AppState) -> Router {
     use axum::{extract::DefaultBodyLimit, middleware};
     let protected = Router::new()
+        .route("/api/catalog", get(catalog::discover))
+        .route(
+            "/api/library",
+            get(catalog::library)
+                .put(catalog::save)
+                .layer(DefaultBodyLimit::max(16 * 1024)),
+        )
+        .route("/api/library/{file_key}", delete(catalog::unsave))
+        .route("/api/activity", get(catalog::recent))
+        .route(
+            "/api/activity/open",
+            axum::routing::post(catalog::opened).layer(DefaultBodyLimit::max(16 * 1024)),
+        )
         .route("/api/auth/me", get(auth::me))
         .route("/api/auth/logout", axum::routing::post(auth::logout))
         .route(
@@ -566,6 +583,7 @@ async fn main() {
         db,
         config: Arc::new(config),
         hashing: Arc::new(tokio::sync::Semaphore::new(4)),
+        catalog_scans: Arc::new(tokio::sync::Semaphore::new(2)),
     };
     let port = std::env::var("GRIMOIRE_PORT")
         .unwrap_or_else(|_| "3000".into())
