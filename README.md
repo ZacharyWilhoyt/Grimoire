@@ -402,7 +402,7 @@ point with video, music, and book views. The local single-user backend can
 register directories and list supported media file names, relative paths,
 types, and sizes. Directory registrations persist in `backend/data/`
 (or the directory set by `GRIMOIRE_DATA_DIR`). The sample catalog on the
-home page is still presentation data. Music playback from connected sources is available. Accounts and
+home page is still presentation data. Music and video playback from connected sources are available. Accounts and
 source/media authorization are not implemented.
 
 Install Node.js (with npm) and Rust (with Cargo), then run the API in one
@@ -431,13 +431,13 @@ computer running the Rust API (for example, `/home/you/Media`). Grimoire
 recursively lists common video (`mkv`, `mp4`, `webm`, and others), audio
 (`mp3`, `flac`, `m4a`, and others), EPUB, and CBZ files. It skips symbolic
 links, limits each scan to 10,000 media files and 100,000 directory
-entries, and serves audio only when a music file is selected for playback. Disconnecting a source
+entries, and serves audio or video when selected for playback. Disconnecting a source
 only removes its registration; it never deletes files. The source registry
 is stored with owner-only permissions on Unix systems.
 
 This first version trusts the single local operator who can access the
 loopback API. It does not have user accounts or source-level authorization
-yet; do not expose the API to a network. Video playback, book reading, and multi-user sharing remain future work.
+yet; do not expose the API to a network. Book reading and multi-user sharing remain future work.
 
 ### Music playback
 
@@ -455,6 +455,20 @@ remains a local single-operator API, not a public sharing endpoint. Browser
 codec support determines which listed audio formats play; there is no
 transcoding yet. Local filesystem writers are trusted: files must not be
 replaced concurrently with symlinks while requests are being resolved.
+
+### Video playback
+
+Select a connected source and press **Watch** beside a video file. The video
+player provides browser controls for play/pause, seeking, volume, and fullscreen.
+Close the player with its close button or Escape. Starting video stops music,
+and starting music closes video, so only one media item plays at a time.
+
+Video uses `GET /api/sources/{id}/video?path=...` with the same source checks,
+path restrictions, byte-range delivery, and private cache policy as audio.
+This endpoint accepts only recognized video extensions. Files stream directly;
+container and codec support depend on the browser, and there is no transcoding,
+external subtitle loading, or track selection UI yet. A listed file may therefore
+need conversion before a browser can play it. Restart the Rust API after updating.
 
 ### Initial stack choice
 

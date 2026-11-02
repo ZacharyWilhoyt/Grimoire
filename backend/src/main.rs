@@ -215,7 +215,7 @@ async fn list_media(
 }
 
 #[derive(Deserialize)]
-struct AudioRequest {
+struct MediaRequest {
     path: String,
 }
 
@@ -224,8 +224,27 @@ struct AudioRequest {
 async fn stream_audio(
     State(state): State<AppState>,
     RoutePath(source_id): RoutePath<String>,
-    Query(query): Query<AudioRequest>,
+    Query(query): Query<MediaRequest>,
     request: Request,
+) -> Result<Response, AppError> {
+    stream_media(state, source_id, query, request, "music").await
+}
+
+async fn stream_video(
+    State(state): State<AppState>,
+    RoutePath(source_id): RoutePath<String>,
+    Query(query): Query<MediaRequest>,
+    request: Request,
+) -> Result<Response, AppError> {
+    stream_media(state, source_id, query, request, "video").await
+}
+
+async fn stream_media(
+    state: AppState,
+    source_id: String,
+    query: MediaRequest,
+    request: Request,
+    kind: &str,
 ) -> Result<Response, AppError> {
     let sources = state.sources.read().await;
     let root = sources
@@ -234,11 +253,11 @@ async fn stream_audio(
         .ok_or_else(|| AppError(StatusCode::NOT_FOUND, "Source not found.".into()))?
         .path
         .clone();
-    let path = resolve_audio_path(&root, &query.path)?;
+    let path = resolve_media_path(&root, &query.path, kind)?;
     let response = ServeFile::new(path)
         .try_call(request)
         .await
-        .map_err(|_| AppError(StatusCode::NOT_FOUND, "Audio file is unavailable.".into()))?;
+        .map_err(|_| AppError(StatusCode::NOT_FOUND, "Media file is unavailable.".into()))?;
     let mut response = response.map(axum::body::Body::new);
     response
         .headers_mut()
@@ -249,8 +268,8 @@ async fn stream_audio(
     Ok(response)
 }
 
-fn resolve_audio_path(root: &Path, relative: &str) -> Result<PathBuf, AppError> {
-    let denied = || AppError(StatusCode::NOT_FOUND, "Audio file not found.".into());
+fn resolve_media_path(root: &Path, relative: &str, kind: &str) -> Result<PathBuf, AppError> {
+    let denied = || AppError(StatusCode::NOT_FOUND, "Media file not found.".into());
     let relative = Path::new(relative);
     if relative.as_os_str().is_empty()
         || relative
@@ -280,7 +299,7 @@ fn resolve_audio_path(root: &Path, relative: &str) -> Result<PathBuf, AppError> 
         .and_then(|value| value.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    if classify_extension(&extension) != Some("music") {
+    if classify_extension(&extension) != Some(kind) {
         return Err(denied());
     }
     Ok(canonical)
@@ -434,6 +453,7 @@ async fn main() {
         .route("/api/sources/{source_id}", delete(remove_source))
         .route("/api/sources/{source_id}/media", get(list_media))
         .route("/api/sources/{source_id}/audio", get(stream_audio))
+        .route("/api/sources/{source_id}/video", get(stream_video))
         .fallback(not_found)
         .with_state(state)
         .layer(TraceLayer::new_for_http());
@@ -462,6 +482,7 @@ mod tests {
         ));
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("track.mp3"), b"0123456789").unwrap();
+        fs::write(root.join("clip.mp4"), b"0123456789").unwrap();
         fs::write(root.join("private.txt"), b"private").unwrap();
         fs::canonicalize(root).unwrap()
     }
@@ -469,7 +490,7 @@ mod tests {
     #[test]
     fn audio_paths_deny_traversal_non_audio_and_symlinks() {
         let root = fixture();
-        assert!(resolve_audio_path(&root, "track.mp3").is_ok());
+        assert!(resolve_media_path(&root, "track.mp3", "music").is_ok());
         for path in [
             "../track.mp3",
             "/etc/passwd",
@@ -477,12 +498,37 @@ mod tests {
             "missing.mp3",
             "",
         ] {
-            assert!(resolve_audio_path(&root, path).is_err(), "accepted {path}");
+            assert!(
+                resolve_media_path(&root, path, "music").is_err(),
+                "accepted {path}"
+            );
         }
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(root.join("track.mp3"), root.join("link.mp3")).unwrap();
-            assert!(resolve_audio_path(&root, "link.mp3").is_err());
+            assert!(resolve_media_path(&root, "link.mp3", "music").is_err());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn video_paths_require_video_and_deny_escapes() {
+        let root = fixture();
+        assert!(resolve_media_path(&root, "clip.mp4", "video").is_ok());
+        for path in [
+            "track.mp3",
+            "private.txt",
+            "../clip.mp4",
+            "/etc/passwd",
+            "missing.mp4",
+        ] {
+            assert!(resolve_media_path(&root, path, "video").is_err());
+        }
+        assert!(resolve_media_path(&root, "clip.mp4", "music").is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("clip.mp4"), root.join("linked.mp4")).unwrap();
+            assert!(resolve_media_path(&root, "linked.mp4", "video").is_err());
         }
         fs::remove_dir_all(root).unwrap();
     }
@@ -506,7 +552,7 @@ mod tests {
         let response = stream_audio(
             State(state.clone()),
             RoutePath("local".into()),
-            Query(AudioRequest {
+            Query(MediaRequest {
                 path: "track.mp3".into(),
             }),
             request,
@@ -527,8 +573,57 @@ mod tests {
         let result = stream_audio(
             State(state),
             RoutePath("local".into()),
-            Query(AudioRequest {
+            Query(MediaRequest {
                 path: "track.mp3".into(),
+            }),
+            Request::new(axum::body::Body::empty()),
+        )
+        .await;
+        assert!(matches!(result, Err(AppError(StatusCode::NOT_FOUND, _))));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn video_supports_ranges_and_requires_registered_source() {
+        let root = fixture();
+        let state = AppState {
+            sources: Arc::new(RwLock::new(vec![Source {
+                id: "local".into(),
+                name: "Local".into(),
+                path: root.clone(),
+            }])),
+            data_dir: Arc::new(root.clone()),
+            next_source_id: Arc::new(AtomicU64::new(2)),
+        };
+        let request = Request::builder()
+            .header("range", "bytes=2-4")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = stream_video(
+            State(state.clone()),
+            RoutePath("local".into()),
+            Query(MediaRequest {
+                path: "clip.mp4".into(),
+            }),
+            request,
+        )
+        .await
+        .unwrap_or_else(|_| panic!("stream failed"));
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.headers()["content-range"], "bytes 2-4/10");
+        assert_eq!(response.headers()["cache-control"], "private, no-store");
+        assert_eq!(
+            axum::body::to_bytes(response.into_body(), 10)
+                .await
+                .unwrap()
+                .as_ref(),
+            b"234"
+        );
+        state.sources.write().await.clear();
+        let result = stream_video(
+            State(state),
+            RoutePath("local".into()),
+            Query(MediaRequest {
+                path: "clip.mp4".into(),
             }),
             Request::new(axum::body::Body::empty()),
         )
