@@ -7,7 +7,8 @@ const api = vi.hoisted(() => vi.fn())
 vi.mock('./api', () => ({ apiFetch: api }))
 it('does not equate a failed roster request with an empty grant list and recovers on retry', async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
-  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: vi.fn() })
+  const show = vi.fn()
+  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: show })
   Object.defineProperty(HTMLDialogElement.prototype, 'close', { configurable: true, value: vi.fn() })
   api.mockReset().mockRejectedValueOnce(new Error('Connection failed')).mockResolvedValueOnce({ ok: true, json: async () => [{ user_id: 'id', username: 'alice', can_discover: true, can_access_media: true, acquisition_policy: 'auto_deny' }] })
   const host = document.createElement('div'), root = createRoot(host)
@@ -19,6 +20,7 @@ it('does not equate a failed roster request with an empty grant list and recover
     const retry = [...host.querySelectorAll('button')].find(button => button.textContent === 'Retry loading permissions')!
     await act(async () => retry.click())
     expect(host.textContent).toContain('alice')
+    expect(show).toHaveBeenCalledOnce()
     expect(host.textContent).not.toContain('Connection failed')
     expect(host.querySelector('form')).not.toBeNull()
   } finally { await act(async () => root.unmount()); vi.unstubAllGlobals() }

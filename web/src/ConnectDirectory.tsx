@@ -1,16 +1,10 @@
-import { useEffect, useRef, type FormEvent } from 'react'
+import { useModalDialog } from './useModalDialog'
+import { useRef, type FormEvent } from 'react'
 import { FolderOpen, X } from 'lucide-react'
 type Props = { path: string; error: string; busy: boolean; onPath: (path: string) => void; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void }
 export default function ConnectDirectory({ path, error, busy, onPath, onClose, onSubmit }: Props) {
-  const dialog = useRef<HTMLDialogElement>(null)
   const pathInput = useRef<HTMLInputElement>(null)
-  useEffect(() => {
-    const element = dialog.current
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    element?.showModal()
-    pathInput.current?.focus()
-    return () => { element?.close(); if (opener?.isConnected) opener.focus() }
-  }, [])
+  const dialog = useModalDialog(pathInput)
   return <dialog ref={dialog} className="video-backdrop" aria-labelledby="connect-directory-title" onCancel={event => { event.preventDefault(); onClose() }} onClick={event => { if (event.target === event.currentTarget) onClose() }}>
     <form className="connect-modal" onSubmit={onSubmit}>
       <button className="modal-close" type="button" aria-label="Close connect directory" onClick={onClose}><X size={17}/></button>

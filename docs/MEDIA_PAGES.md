@@ -115,3 +115,7 @@ music queue and selected video subtitle track remain selected during retry.
 Ctrl/Cmd+K focuses workspace search when no dialog or unrelated editable control
 owns the keyboard. The directory-registration modal isolates background focus,
 opens on its path input, and restores the opening control after closing.
+
+Native reader/player/settings dialogs restore their opening control when it still
+exists. Reloading dialog data does not reopen the modal or reset keyboard focus;
+file/archive cleanup remains separate from the dialog's mounted lifetime.

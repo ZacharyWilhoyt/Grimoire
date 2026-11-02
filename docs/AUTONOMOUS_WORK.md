@@ -175,3 +175,12 @@ checksums and all 3 sequences; backup permissions and refusal to overwrite also 
 credential-free safety tests to CI. Scheduling, encryption/off-site destinations,
 retention, production service profiles and real-media recovery remain owner work.
 See BACKUPS.md, including security-state reconciliation after restoring old data.
+
+## Shared native-dialog lifecycle
+
+Reader, video, account, source permissions, metadata, group and directory dialogs
+now share one lifecycle hook. Data reloads no longer close/reopen a modal; cleanup
+uses the captured element even after React clears its ref and restores a connected
+opener without scrolling. Book archive cleanup separately handles its async close.
+Regression tests cover focus/edit retention across updates, disconnected openers,
+and permission retry without reopening. All 58 frontend tests and build pass.

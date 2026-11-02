@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useModalDialog } from './useModalDialog'
+import { useEffect, useState, type FormEvent } from 'react'
 import { X } from 'lucide-react'
 import { apiFetch } from './api'
 
@@ -9,7 +10,7 @@ const denied = (): Grant => ({ can_discover: false, can_access_media: false, acq
 export const policyLabel = (policy: AcquisitionPolicy) => ({ auto_deny: 'Auto-deny', manual_approval: 'Manual approval', auto_accept: 'Auto-accept' })[policy]
 
 export default function SourcePermissions({ source, ownerUsername, onClose, onSaved }: { source: { id: string; name: string }; ownerUsername: string; onClose: () => void; onSaved: () => void }) {
-  const dialog = useRef<HTMLDialogElement>(null)
+  const dialog = useModalDialog()
   const [permissions, setPermissions] = useState<Permission[]>([])
   const [loaded, setLoaded] = useState(false)
   const [attempt, setAttempt] = useState(0)
@@ -23,8 +24,6 @@ export default function SourcePermissions({ source, ownerUsername, onClose, onSa
   const effective = owner ? { ...grant, can_discover: true, can_access_media: true } : grant
   const endpoint = `/api/sources/${encodeURIComponent(source.id)}/permissions`
   useEffect(() => {
-    const element = dialog.current
-    element?.showModal()
     let active = true
     setLoading(true); setLoaded(false); setPermissions([]); setError('')
     apiFetch(endpoint).then(async response => {
@@ -32,7 +31,7 @@ export default function SourcePermissions({ source, ownerUsername, onClose, onSa
       if (!response.ok) throw new Error(data.error ?? 'Could not load permissions.')
       if (active) { setPermissions(data as Permission[]); setLoaded(true) }
     }).catch(error => { if (active) setError(error instanceof Error ? error.message : 'Could not load permissions.') }).finally(() => { if (active) setLoading(false) })
-    return () => { active = false; element?.close() }
+    return () => { active = false }
   }, [endpoint, attempt])
   const reload = async () => {
     try {

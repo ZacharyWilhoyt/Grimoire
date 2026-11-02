@@ -1,10 +1,11 @@
+import { useModalDialog } from './useModalDialog'
 import { useEffect, useRef, useState } from 'react'
 import { X, Upload } from 'lucide-react'
 import { apiFetch } from './api'
 import type { GroupView, MediaItem } from './media'
 type Settings = { group: GroupView; genres: string[] | null; artwork_url: string | null; effective_genres: string[]; effective_artwork_url: string | null }
 export default function GroupEditor({ item, onClose, onUpdated }: { item: MediaItem; onClose: () => void; onUpdated: () => void }) {
-  const dialog = useRef<HTMLDialogElement>(null), picker = useRef<HTMLInputElement>(null)
+  const dialog = useModalDialog(), picker = useRef<HTMLInputElement>(null)
   const [settings, setSettings] = useState<Settings | null>(null)
   const [genres, setGenres] = useState('')
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [message, setMessage] = useState('')
@@ -20,9 +21,9 @@ export default function GroupEditor({ item, onClose, onUpdated }: { item: MediaI
     return data as Settings
   }
   useEffect(() => {
-    const element = dialog.current; element?.showModal(); let active = true
+    let active = true
     call(`${endpoint}?${new URLSearchParams({ path: item.relative_path })}`).then(data => { if (active) accept(data) }).catch(error => { if (active) setError(error instanceof Error ? error.message : 'Could not load the group.') })
-    return () => { active = false; element?.close() }
+    return () => { active = false }
   }, [endpoint, item.relative_path])
   const action = async (work: () => Promise<Settings>, success: string) => {
     setBusy(true); setError(''); setMessage('')

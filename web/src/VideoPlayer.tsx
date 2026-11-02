@@ -1,6 +1,7 @@
+import { useModalDialog } from './useModalDialog'
 import { useMediaProgress } from './useMediaProgress'
 import { displayTitle, type MetadataView } from './media'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import VideoSubtitles from './VideoSubtitles'
 import { X } from 'lucide-react'
 
@@ -17,16 +18,10 @@ export default function VideoPlayer({ sourceId, sourceName, file, onClose }: Pro
   const attachVideo = useCallback((element: HTMLVideoElement | null) => { media.current = element; setVideoElement(element) }, [media])
   const stage = useRef<HTMLDivElement>(null)
   const [failed, setFailed] = useState(false)
-  const dialog = useRef<HTMLDialogElement>(null)
   const closeButton = useRef<HTMLButtonElement>(null)
   const url = `/api/sources/${encodeURIComponent(sourceId)}/video?${new URLSearchParams({ path: file.relative_path })}`
 
-  useEffect(() => {
-    const element = dialog.current
-    element?.showModal()
-    closeButton.current?.focus()
-    return () => element?.close()
-  }, [])
+  const dialog = useModalDialog(closeButton)
 
   return <dialog ref={dialog} className="video-backdrop" aria-labelledby="video-title" onCancel={event => { event.preventDefault(); onClose() }} onClick={event => { if (event.target === event.currentTarget) onClose() }}>
     <section className="video-dialog" aria-labelledby="video-title">

@@ -1,16 +1,16 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useModalDialog } from './useModalDialog'
+import { useState, type FormEvent } from 'react'
 import { X } from 'lucide-react'
 import { apiFetch, setCsrfToken } from './api'
 
 export default function AccountSettings({ onClose }: { onClose: () => void }) {
-  const dialog = useRef<HTMLDialogElement>(null)
+  const dialog = useModalDialog()
   const [current, setCurrent] = useState('')
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
-  useEffect(() => { const element = dialog.current; element?.showModal(); return () => element?.close() }, [])
   const submit = async (event: FormEvent) => {
     event.preventDefault(); setError(''); setMessage('')
     if (password !== confirm) { setError('Passwords do not match.'); return }

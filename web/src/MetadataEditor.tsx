@@ -1,6 +1,7 @@
+import { useModalDialog } from './useModalDialog'
 import type { ArrConnection } from './ArrConnections'
 import MetadataCredits from './MetadataCredits'
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { X, Search, RefreshCw } from 'lucide-react'
 import { apiFetch } from './api'
 import { displayTitle, type MediaItem, type MetadataFields, type MetadataView } from './media'
@@ -19,7 +20,7 @@ async function call<T>(url: string, init?: RequestInit): Promise<T> {
 }
 const json = (value: unknown) => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) })
 export default function MetadataEditor({ item, onClose, onUpdated }: { item: MediaItem; onClose: () => void; onUpdated: () => void }) {
-  const dialog = useRef<HTMLDialogElement>(null)
+  const dialog = useModalDialog()
   const [view, setView] = useState<MetadataView | null>(null)
   const [fields, setFields] = useState<MetadataFields>({})
   const [genres, setGenres] = useState('')
@@ -40,11 +41,10 @@ export default function MetadataEditor({ item, onClose, onUpdated }: { item: Med
   const pathQuery = new URLSearchParams({ path: item.relative_path })
   const accept = (view: MetadataView) => { setView(view); setFields(view.fields); setGenres((view.fields.genres ?? []).join('\n')); setArtwork(view.artwork_preference) }
   useEffect(() => {
-    const element = dialog.current; element?.showModal()
     let active = true
     call<MetadataView>(`${endpoint}?${new URLSearchParams({ path: item.relative_path })}`).then(view => { if (active) accept(view) }).catch(error => { if (active) setError(error instanceof Error ? error.message : 'Could not load metadata.') })
     call<Status[]>('/api/metadata/providers').then(statuses => { if (active) setStatuses(statuses) }).catch(() => {})
-    return () => { active = false; element?.close() }
+    return () => { active = false }
   }, [endpoint, item.relative_path])
   useEffect(() => {
     if (!view?.can_edit || item.kind === 'book') return

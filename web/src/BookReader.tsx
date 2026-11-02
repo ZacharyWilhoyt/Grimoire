@@ -1,3 +1,4 @@
+import { useModalDialog } from './useModalDialog'
 import { epubChapters, type Chapter } from './epubChapters'
 import { ProgressSession } from './progress'
 import { displayTitle, type MetadataView } from './media'
@@ -9,7 +10,7 @@ import { archivePath, isImage, openArchive, parseXml, type BookArchive } from '.
 type Props = { sourceId: string; sourceName: string; file: { metadata?: MetadataView | null; name: string; relative_path: string; extension: string }; onClose: () => void }
 
 export default function BookReader({ sourceId, sourceName, file, onClose }: Props) {
-  const dialog = useRef<HTMLDialogElement>(null)
+  const dialog = useModalDialog()
   const progress = useRef<ProgressSession | null>(null)
   const [progressReady, setProgressReady] = useState(false)
   const [progressError, setProgressError] = useState('')
@@ -27,7 +28,6 @@ export default function BookReader({ sourceId, sourceName, file, onClose }: Prop
   const comic = file.extension.toLowerCase() === 'cbz'
 
   useEffect(() => {
-    dialog.current?.showModal()
     setProgressReady(false); setProgressError(''); setArchive(null); setChapters([]); setLoading(true); setRenderedIndex(-1)
     const controller = new AbortController()
     let opened: BookArchive | undefined
@@ -56,7 +56,7 @@ export default function BookReader({ sourceId, sourceName, file, onClose }: Prop
       }
     }
     load().catch(error => { if (!controller.signal.aborted) { setError(error instanceof Error ? error.message : 'Could not open this book.'); setLoading(false) } })
-    return () => { controller.abort(); void opened?.close(); dialog.current?.close() }
+    return () => { controller.abort(); void opened?.close().catch(() => {}) }
   }, [sourceId, file.relative_path, comic])
 
   useEffect(() => {
