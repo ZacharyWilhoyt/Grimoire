@@ -1,0 +1,41 @@
+import { useEffect, useRef, useState } from 'react'
+import { RefreshCw } from 'lucide-react'
+import { apiFetch } from './api'
+type Job = { id: string; status: string; total: number; processed: number; skipped: number; warnings: number; message: string | null; stale: boolean }
+export default function SourceMetadataTools({ sourceId, onUpdated }: { sourceId: string; onUpdated: () => void }) {
+  const [job, setJob] = useState<Job | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [force, setForce] = useState(false)
+  const [error, setError] = useState('')
+  const [refresh, setRefresh] = useState(0)
+  const callback = useRef(onUpdated); callback.current = onUpdated
+  const notified = useRef('')
+  useEffect(() => {
+    let active = true
+    let timer: number | undefined
+    const load = async () => {
+      try {
+        const response = await apiFetch(`/api/sources/${encodeURIComponent(sourceId)}/metadata/job`)
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.error ?? 'Could not load the metadata scan status.')
+        if (!active) return
+        setJob(data as Job | null)
+        if (data?.status === 'running' && !data.stale) timer = window.setTimeout(() => { void load() }, 2500)
+        if (data && data.status !== 'running' && notified.current !== data.id) { notified.current = data.id; callback.current() }
+      } catch (error) { if (active) setError(error instanceof Error ? error.message : 'Could not load scan status.') }
+    }
+    void load()
+    return () => { active = false; window.clearTimeout(timer) }
+  }, [sourceId, refresh])
+  const start = async () => {
+    setBusy(true); setError('')
+    try {
+      const response = await apiFetch(`/api/sources/${encodeURIComponent(sourceId)}/metadata/scan`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ force }) })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error ?? 'Could not start metadata gathering.')
+      setRefresh(value => value + 1)
+    } catch (error) { setError(error instanceof Error ? error.message : 'Could not start metadata gathering.') }
+    finally { setBusy(false) }
+  }
+  return <div className="source-metadata-tools"><div><button className="track-play" disabled={busy || (!!job && job.status === 'running' && !job.stale)} onClick={() => { void start() }}><RefreshCw size={13}/> Gather local metadata</button><label><input type="checkbox" checked={force} disabled={busy || job?.status === 'running' && !job.stale} onChange={event => setForce(event.target.checked)}/> Re-read unchanged files</label></div>{job && <p role="status">{job.stale ? 'Previous scan stopped responding. You can start it again.' : `${job.status}: ${job.processed}/${job.total} files · ${job.skipped} unchanged · ${job.warnings} warnings`}{job.message ? ` · ${job.message}` : ''}</p>}{error && <p className="video-error" role="alert">{error}</p>}<small>Reads embedded metadata, cover art, and filename hints. Online matching is reviewed separately per item.</small></div>
+}

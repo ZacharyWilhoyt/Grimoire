@@ -187,7 +187,12 @@ fn csrf_matches(headers: &HeaderMap, expected: &str) -> bool {
         .unwrap_or("");
     supplied.as_bytes().ct_eq(expected.as_bytes()).into()
 }
-async fn rate_limit(db: &PgPool, key: String, limit: i32, seconds: i32) -> Result<(), AppError> {
+pub(crate) async fn rate_limit(
+    db: &PgPool,
+    key: String,
+    limit: i32,
+    seconds: i32,
+) -> Result<(), AppError> {
     sqlx::query("DELETE FROM auth_rate_limits WHERE expires_at < now()")
         .execute(db)
         .await

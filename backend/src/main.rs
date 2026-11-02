@@ -10,6 +10,7 @@ mod auth;
 #[cfg(test)]
 mod auth_integration;
 mod catalog;
+mod metadata;
 mod permissions;
 
 use serde::{Deserialize, Serialize};
@@ -31,6 +32,7 @@ struct AppState {
     config: Arc<auth::Config>,
     hashing: Arc<tokio::sync::Semaphore>,
     catalog_scans: Arc<tokio::sync::Semaphore>,
+    metadata: Arc<metadata::Runtime>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -481,6 +483,36 @@ async fn not_found() -> (StatusCode, Json<ApiError>) {
 fn app(state: AppState) -> Router {
     use axum::{extract::DefaultBodyLimit, middleware};
     let protected = Router::new()
+        .route("/api/metadata/providers", get(metadata::provider_status))
+        .route("/api/metadata/artwork/{file_key}", get(metadata::artwork))
+        .route(
+            "/api/sources/{source_id}/metadata",
+            get(metadata::details)
+                .put(metadata::edit)
+                .delete(metadata::reset)
+                .layer(DefaultBodyLimit::max(32 * 1024)),
+        )
+        .route(
+            "/api/sources/{source_id}/metadata/extract",
+            axum::routing::post(metadata::extract).layer(DefaultBodyLimit::max(16 * 1024)),
+        )
+        .route(
+            "/api/sources/{source_id}/metadata/search",
+            axum::routing::post(metadata::search).layer(DefaultBodyLimit::max(16 * 1024)),
+        )
+        .route(
+            "/api/sources/{source_id}/metadata/preview",
+            axum::routing::post(metadata::preview).layer(DefaultBodyLimit::max(16 * 1024)),
+        )
+        .route(
+            "/api/sources/{source_id}/metadata/apply",
+            axum::routing::post(metadata::apply).layer(DefaultBodyLimit::max(16 * 1024)),
+        )
+        .route(
+            "/api/sources/{source_id}/metadata/scan",
+            axum::routing::post(metadata::scan),
+        )
+        .route("/api/sources/{source_id}/metadata/job", get(metadata::job))
         .route("/api/catalog", get(catalog::discover))
         .route(
             "/api/library",
@@ -584,6 +616,7 @@ async fn main() {
         config: Arc::new(config),
         hashing: Arc::new(tokio::sync::Semaphore::new(4)),
         catalog_scans: Arc::new(tokio::sync::Semaphore::new(2)),
+        metadata: Arc::new(metadata::Runtime::new()),
     };
     let port = std::env::var("GRIMOIRE_PORT")
         .unwrap_or_else(|_| "3000".into())

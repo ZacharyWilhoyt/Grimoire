@@ -1,0 +1,3 @@
+export default function MetadataCredits() {
+  return <details className="metadata-credits"><summary>Metadata credits</summary><div><a href="https://www.themoviedb.org/" target="_blank" rel="noreferrer"><img src="/tmdb-logo.svg" width="100" height="13" alt="TMDB"/></a><p>This product uses the TMDB API but is not endorsed or certified by TMDB.</p><p>Music metadata: <a href="https://musicbrainz.org/" target="_blank" rel="noreferrer">MusicBrainz</a>. Cover artwork: <a href="https://coverartarchive.org/" target="_blank" rel="noreferrer">Cover Art Archive</a>. Book metadata and covers: <a href="https://openlibrary.org/" target="_blank" rel="noreferrer">Open Library</a>. Images remain the property of their respective rights holders.</p></div></details>
+}

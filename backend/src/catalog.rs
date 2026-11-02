@@ -32,6 +32,7 @@ pub struct Item {
     pub saved_at: Option<f64>,
     pub last_opened_at: Option<f64>,
     pub available: bool,
+    pub metadata: Option<crate::metadata::View>,
 }
 #[derive(Serialize, FromRow)]
 pub struct PersonalState {
@@ -86,6 +87,7 @@ fn item(source: &MediaSource, file: MediaFile) -> Item {
         saved_at: None,
         last_opened_at: None,
         available: true,
+        metadata: None,
     }
 }
 async fn enrich(state: &AppState, user: Uuid, items: &mut [Item]) -> Result<(), AppError> {
@@ -96,12 +98,13 @@ async fn enrich(state: &AppState, user: Uuid, items: &mut [Item]) -> Result<(), 
         .into_iter()
         .map(|row| (row.file_key.clone(), row))
         .collect();
-    for item in items {
+    for item in items.iter_mut() {
         if let Some(row) = by_key.get(&item.file_key) {
             item.saved_at = row.saved_at;
             item.last_opened_at = row.last_opened_at;
         }
     }
+    crate::metadata::enrich(state, user, items).await?;
     Ok(())
 }
 // Recheck after filesystem work so revocation during a long scan cannot expose metadata.
@@ -280,6 +283,7 @@ async fn personal_page(
                 saved_at: row.saved_at,
                 last_opened_at: row.last_opened_at,
                 available,
+                metadata: None,
             });
         }
         PersonalPage {
@@ -292,6 +296,7 @@ async fn personal_page(
     .await
     .map_err(|_| auth::unavailable())?;
     filter_current_access(&state, user, &mut result.items).await?;
+    crate::metadata::enrich(&state, user, &mut result.items).await?;
     Ok(Json(result))
 }
 pub async fn library(

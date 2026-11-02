@@ -509,6 +509,14 @@ and return to recently opened/saved media in **For you**. All three pages respec
 current source permissions. [Media pages](docs/MEDIA_PAGES.md) documents search,
 filters, sorting, personal-state storage, and current scan limits.
 
+### Metadata and organization
+
+Source owners can gather local tags/covers, edit display titles and genres, and
+review online matches from TMDB, MusicBrainz/Cover Art Archive, and Open Library.
+Catalog cards show authorized artwork, with genre filters and album/series grouping.
+Filenames and bookmarks remain unchanged. See [Metadata](docs/METADATA.md) for setup,
+permissions, FFmpeg requirements, provider credentials, and extraction limits.
+
 ### Site branding
 
 The sidebar logo and browser icons use `Data/Assets/Grimoire_Icon.svg`.

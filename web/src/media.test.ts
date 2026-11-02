@@ -22,3 +22,21 @@ it('resolves the three bookmarkable navigation pages', () => {
   expect(pageFromHash('#for-you')).toBe('For you')
   expect(pageFromHash('#unknown')).toBe('For you')
 })
+
+it('uses display metadata for search and genre filters while preserving original file identity', async () => {
+  const { displayTitle } = await import('./media')
+  const item = { ...file('original', 'book'), metadata: { fields: { title: 'A Better Title', creator: 'An Author', collection: 'A Series', genres: ['fantasy'] }, has_custom: true, origin: 'custom', artwork_url: null, can_edit: true, artwork_preference: 'auto', provider: null, provider_id: null } }
+  expect(displayTitle(item)).toBe('A Better Title')
+  expect(filterMedia([item], 'an author', '', '', 'title', 'fantasy')).toEqual([item])
+  expect(filterMedia([item], '', '', '', 'title', 'horror')).toEqual([])
+  expect(item.name).toBe('original.media')
+  expect(item.file_key).toBe('original')
+})
+it('groups albums across accessible sources in disc and track order without merging identities', async () => {
+  const { groupMedia } = await import('./media')
+  const item = (id: string, source: string, track: number, creator = 'Artist') => ({ ...file(id, 'music', source), metadata: { fields: { title: id, creator, collection: 'Album', track }, has_custom: false, origin: 'local', artwork_url: null, can_edit: false, artwork_preference: 'auto', provider: null, provider_id: null } })
+  const groups = groupMedia([item('ten','one',10),item('two','two',2),item('other','one',1,'Other Artist')],'collection')
+  expect(groups).toHaveLength(2)
+  expect(groups[0].items.map(item => item.file_key)).toEqual(['two','ten'])
+  expect(groups[1].items.map(item => item.file_key)).toEqual(['other'])
+})

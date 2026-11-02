@@ -21,6 +21,7 @@ fn state(pool: PgPool) -> AppState {
         }),
         hashing: Arc::new(tokio::sync::Semaphore::new(4)),
         catalog_scans: Arc::new(tokio::sync::Semaphore::new(2)),
+        metadata: Arc::new(metadata::Runtime::new()),
     }
 }
 async fn request(
@@ -1682,5 +1683,439 @@ async fn personal_library_paginates_saved_items_including_unavailable_files(pool
         .status(),
         StatusCode::BAD_REQUEST
     );
+    fs::remove_dir_all(root).unwrap();
+}
+
+fn metadata_book_fixture() -> std::path::PathBuf {
+    use std::io::Write;
+    let root = std::env::temp_dir().join(format!("grimoire-metadata-{}", Uuid::new_v4()));
+    fs::create_dir(&root).unwrap();
+    let cover = image::RgbImage::from_pixel(12, 18, image::Rgb([110, 70, 150]));
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+        .encode_image(&cover)
+        .unwrap();
+    let mut zip = zip::ZipWriter::new(fs::File::create(root.join("original.epub")).unwrap());
+    for (name, bytes) in [
+        ("META-INF/container.xml", br#"<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OPS/package.opf"/></rootfiles></container>"#.as_slice()),
+        ("OPS/package.opf", br#"<package xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Embedded Book</dc:title><dc:creator>Example Author</dc:creator><dc:subject>Science Fiction</dc:subject><meta name="calibre:series" content="Example Series"/><meta name="calibre:series_index" content="2"/></metadata><manifest><item id="cover" href="cover.jpg" properties="cover-image"/></manifest></package>"#.as_slice()),
+        ("OPS/cover.jpg", jpeg.as_slice()),
+    ] {
+        zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+        zip.write_all(bytes).unwrap();
+    }
+    zip.finish().unwrap();
+    root
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn metadata_is_owner_managed_and_artwork_respects_revocation(pool: PgPool) {
+    let state = state(pool.clone());
+    let (owner, csrf, owner_user) = register_user(&state, "owner").await;
+    let (viewer, viewer_csrf, viewer_user) = register_user(&state, "viewer").await;
+    let owner_id = Uuid::parse_str(owner_user["id"].as_str().unwrap()).unwrap();
+    let viewer_id = Uuid::parse_str(viewer_user["id"].as_str().unwrap()).unwrap();
+    let root = metadata_book_fixture();
+    let source = Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO sources(id,owner_id,name,path) VALUES ($1,$2,'Metadata source',$3)")
+        .bind(&source)
+        .bind(owner_id)
+        .bind(root.to_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let endpoint = format!("/api/sources/{source}/metadata");
+    let details = format!("{endpoint}?path=original.epub");
+    let key = catalog::file_key(&source, "original.epub");
+    let art = format!("/api/metadata/artwork/{key}");
+    let saved = body(
+        request(
+            &state,
+            Method::PUT,
+            "/api/library",
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(json!({"source_id":source,"relative_path":"original.epub"})),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(saved["file_key"], key);
+    sqlx::query(
+        "INSERT INTO source_permissions(source_id,user_id,can_discover) VALUES ($1,$2,true)",
+    )
+    .bind(&source)
+    .bind(viewer_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        request(
+            &state,
+            Method::GET,
+            &details,
+            Some(&viewer),
+            None,
+            None,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    let extracted = request(
+        &state,
+        Method::POST,
+        &format!("{endpoint}/extract"),
+        Some(&owner),
+        Some(&csrf),
+        Some(ORIGIN),
+        Some(json!({"path":"original.epub"})),
+    )
+    .await;
+    assert_eq!(extracted.status(), StatusCode::OK);
+    let extracted = body(extracted).await;
+    assert_eq!(extracted["metadata"]["fields"]["title"], "Embedded Book");
+    assert_eq!(
+        extracted["metadata"]["fields"]["collection"],
+        "Example Series"
+    );
+    assert_eq!(
+        extracted["metadata"]["fields"]["genres"],
+        json!(["science fiction"])
+    );
+    assert!(extracted["metadata"]["artwork_url"].is_string());
+    assert_eq!(
+        request(&state, Method::GET, &art, None, None, None, None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        request(&state, Method::GET, &art, Some(&viewer), None, None, None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    sqlx::query(
+        "UPDATE source_permissions SET can_access_media=true WHERE source_id=$1 AND user_id=$2",
+    )
+    .bind(&source)
+    .bind(viewer_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let public_view = body(
+        request(
+            &state,
+            Method::GET,
+            &details,
+            Some(&viewer),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(public_view["can_edit"], false);
+    assert_eq!(public_view["fields"]["title"], "Embedded Book");
+    let image = request(&state, Method::GET, &art, Some(&viewer), None, None, None).await;
+    assert_eq!(image.status(), StatusCode::OK);
+    assert_eq!(image.headers()["content-type"], "image/jpeg");
+    assert_eq!(image.headers()["cache-control"], "private, no-store");
+    for (method, url, data) in [
+        (
+            Method::PUT,
+            endpoint.clone(),
+            Some(json!({"path":"original.epub","fields":{"title":"Forbidden"}})),
+        ),
+        (Method::DELETE, details.clone(), None),
+        (
+            Method::POST,
+            format!("{endpoint}/extract"),
+            Some(json!({"path":"original.epub"})),
+        ),
+        (
+            Method::POST,
+            format!("{endpoint}/search"),
+            Some(json!({"path":"original.epub","provider":"openlibrary","query":"Example"})),
+        ),
+        (
+            Method::POST,
+            format!("{endpoint}/preview"),
+            Some(json!({"path":"original.epub","provider":"openlibrary","id":"OL1W"})),
+        ),
+        (
+            Method::POST,
+            format!("{endpoint}/apply"),
+            Some(json!({"path":"original.epub","review_token":Uuid::new_v4()})),
+        ),
+        (Method::POST, format!("{endpoint}/scan"), Some(json!({}))),
+        (Method::GET, format!("{endpoint}/job"), None),
+    ] {
+        assert_eq!(
+            request(
+                &state,
+                method,
+                &url,
+                Some(&viewer),
+                Some(&viewer_csrf),
+                Some(ORIGIN),
+                data
+            )
+            .await
+            .status(),
+            StatusCode::NOT_FOUND,
+            "{url}"
+        );
+    }
+    let edited = request(&state,Method::PUT,&endpoint,Some(&owner),Some(&csrf),Some(ORIGIN),Some(json!({"path":"original.epub","fields":{"title":"My corrected title","genres":[" Fantasy ","fantasy"]}}))).await;
+    assert_eq!(edited.status(), StatusCode::OK);
+    assert_eq!(body(edited).await["fields"]["genres"], json!(["fantasy"]));
+    let rescan = body(
+        request(
+            &state,
+            Method::POST,
+            &format!("{endpoint}/extract"),
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(json!({"path":"original.epub"})),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(rescan["metadata"]["fields"]["title"], "My corrected title");
+    let library = body(
+        request(
+            &state,
+            Method::GET,
+            "/api/library",
+            Some(&owner),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(library["items"][0]["file_key"], key);
+    assert_eq!(library["items"][0]["name"], "original.epub");
+    assert_eq!(
+        library["items"][0]["metadata"]["fields"]["title"],
+        "My corrected title"
+    );
+    assert!(root.join("original.epub").is_file());
+    assert!(!root.join("My corrected title.epub").exists());
+    let invalid = request(
+        &state,
+        Method::PUT,
+        &endpoint,
+        Some(&owner),
+        Some(&csrf),
+        Some(ORIGIN),
+        Some(json!({"path":"../original.epub","fields":{}})),
+    )
+    .await;
+    assert!(!invalid.status().is_success());
+    sqlx::query("DELETE FROM source_permissions WHERE source_id=$1 AND user_id=$2")
+        .bind(&source)
+        .bind(viewer_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for url in [&details, &art] {
+        assert_eq!(
+            request(&state, Method::GET, url, Some(&viewer), None, None, None)
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+    let reset = body(
+        request(
+            &state,
+            Method::DELETE,
+            &details,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(reset["fields"]["title"], "Embedded Book");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn metadata_reviews_are_bound_expiring_single_use_and_jobs_skip_unchanged(pool: PgPool) {
+    let state = state(pool.clone());
+    let (owner, csrf, user) = register_user(&state, "owner").await;
+    let owner_id = Uuid::parse_str(user["id"].as_str().unwrap()).unwrap();
+    let root = metadata_book_fixture();
+    fs::copy(root.join("original.epub"), root.join("other.epub")).unwrap();
+    let source = Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO sources(id,owner_id,name,path) VALUES ($1,$2,'Reviews',$3)")
+        .bind(&source)
+        .bind(owner_id)
+        .bind(root.to_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let endpoint = format!("/api/sources/{source}/metadata");
+    let review = Uuid::new_v4();
+    sqlx::query("INSERT INTO metadata_reviews(id,owner_id,source_id,file_key,provider,provider_id,data) VALUES ($1,$2,$3,$4,'openlibrary','OL1W',$5)").bind(review).bind(owner_id).bind(&source).bind(catalog::file_key(&source,"original.epub")).bind(r#"{"title":"Reviewed Book","genres":["fantasy"]}"#).execute(&pool).await.unwrap();
+    let apply_url = format!("{endpoint}/apply");
+    let apply = |path: &str| json!({"path":path,"review_token":review});
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            &apply_url,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(apply("other.epub"))
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    sqlx::query("UPDATE metadata_reviews SET expires_at=now()-interval '1 second' WHERE id=$1")
+        .bind(review)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            &apply_url,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(apply("original.epub"))
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    sqlx::query("UPDATE metadata_reviews SET expires_at=now()+interval '30 minutes' WHERE id=$1")
+        .bind(review)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let custom = request(
+        &state,
+        Method::PUT,
+        &endpoint,
+        Some(&owner),
+        Some(&csrf),
+        Some(ORIGIN),
+        Some(json!({"path":"original.epub","fields":{"title":"Owner correction"}})),
+    )
+    .await;
+    assert_eq!(custom.status(), StatusCode::OK);
+    let applied = request(
+        &state,
+        Method::POST,
+        &apply_url,
+        Some(&owner),
+        Some(&csrf),
+        Some(ORIGIN),
+        Some(apply("original.epub")),
+    )
+    .await;
+    assert_eq!(applied.status(), StatusCode::OK);
+    assert_eq!(
+        body(applied).await["metadata"]["fields"]["title"],
+        "Owner correction"
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            &apply_url,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(apply("original.epub"))
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let reset = request(
+        &state,
+        Method::DELETE,
+        &format!("{endpoint}?path=original.epub"),
+        Some(&owner),
+        Some(&csrf),
+        Some(ORIGIN),
+        None,
+    )
+    .await;
+    assert_eq!(body(reset).await["fields"]["title"], "Reviewed Book");
+    for expected_skipped in [0, 2] {
+        assert_eq!(
+            request(
+                &state,
+                Method::POST,
+                &format!("{endpoint}/scan"),
+                Some(&owner),
+                Some(&csrf),
+                Some(ORIGIN),
+                Some(json!({}))
+            )
+            .await
+            .status(),
+            StatusCode::ACCEPTED
+        );
+        let mut done = false;
+        for _ in 0..100 {
+            let job = body(
+                request(
+                    &state,
+                    Method::GET,
+                    &format!("{endpoint}/job"),
+                    Some(&owner),
+                    None,
+                    None,
+                    None,
+                )
+                .await,
+            )
+            .await;
+            if job["status"] == "completed" {
+                assert_eq!(job["processed"], 2);
+                assert_eq!(job["skipped"], expected_skipped);
+                done = true;
+                break;
+            }
+            assert_ne!(job["status"], "failed");
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(done, "background metadata job did not finish");
+    }
+    let details = body(
+        request(
+            &state,
+            Method::GET,
+            &format!("{endpoint}?path=original.epub"),
+            Some(&owner),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(details["fields"]["title"], "Reviewed Book");
     fs::remove_dir_all(root).unwrap();
 }
