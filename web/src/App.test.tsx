@@ -27,3 +27,28 @@ it('renders available home sections when Continue fails and identifies the faile
     expect(host.textContent).not.toContain('Loading your media')
   } finally { await act(async () => root.unmount()); vi.unstubAllGlobals(); window.location.hash = '' }
 })
+it('keeps global search shortcuts out of open dialogs and unrelated form controls', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+  window.location.hash = '#for-you'
+  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: function(this: HTMLDialogElement) { this.setAttribute('open', '') } })
+  Object.defineProperty(HTMLDialogElement.prototype, 'close', { configurable: true, value: function(this: HTMLDialogElement) { this.removeAttribute('open') } })
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(url === '/api/auth/me' ? { user: { id: 'user', username: 'reader', is_admin: false }, csrf_token: 'test-csrf' } : url === '/api/sources' ? [] : { items: [], has_more: false, next_offset: 0, unavailable_items: 0, unavailable_sources: 0, truncated: false }))))
+  const host = document.createElement('div'), root = createRoot(host)
+  document.body.append(host)
+  const shortcut = () => new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true, cancelable: true })
+  try {
+    await act(async () => root.render(<App/>))
+    const search = host.querySelector<HTMLInputElement>('input[placeholder="Search your media"]') ?? host.querySelector<HTMLInputElement>('input[aria-label="Search your media"]')!
+    const normal = shortcut(); window.dispatchEvent(normal)
+    expect(normal.defaultPrevented).toBe(true); expect(document.activeElement).toBe(search)
+    const externalInput = document.createElement('input'); host.append(externalInput); externalInput.focus()
+    const editing = shortcut(); externalInput.dispatchEvent(editing)
+    expect(editing.defaultPrevented).toBe(false); expect(document.activeElement).toBe(externalInput)
+    externalInput.remove()
+    await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'Account settings')!.click())
+    const password = host.querySelector<HTMLInputElement>('dialog input[type="password"]')!
+    password.focus()
+    const modal = shortcut(); password.dispatchEvent(modal)
+    expect(modal.defaultPrevented).toBe(false); expect(document.activeElement).toBe(password)
+  } finally { await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals(); window.location.hash = '' }
+})

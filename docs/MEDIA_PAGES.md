@@ -111,3 +111,7 @@ Playback errors offer Retry audio / Retry video. Retry reconnects to the protect
 stream, reloads saved progress and preserves volume, mute and playback speed.
 It does not convert unsupported codecs or bypass a revoked permission. The current
 music queue and selected video subtitle track remain selected during retry.
+
+Ctrl/Cmd+K focuses workspace search when no dialog or unrelated editable control
+owns the keyboard. The directory-registration modal isolates background focus,
+opens on its path input, and restores the opening control after closing.

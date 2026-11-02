@@ -1,3 +1,4 @@
+import ConnectDirectory from './ConnectDirectory'
 import { loadCatalogPage, type PersonalPage } from './catalogLoader'
 import GroupEditor from './GroupEditor'
 import ArrConnections from './ArrConnections'
@@ -16,7 +17,7 @@ import BookReader from './BookReader'
 import VideoPlayer from './VideoPlayer'
 import MusicPlayer from './MusicPlayer'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { BookOpen, ChevronDown, Compass, Film, FolderOpen, Headphones, Library, Menu, Plus, Search, Settings2, ShieldCheck, RefreshCw, Sparkles, Trash2, X } from 'lucide-react'
+import { BookOpen, ChevronDown, Compass, Film, FolderOpen, Headphones, Library, Menu, Plus, Search, Settings2, ShieldCheck, RefreshCw, Sparkles, Trash2 } from 'lucide-react'
 
 type MediaKind = 'All' | 'Video' | 'Music' | 'Books'
 type Source = { id: string; name: string; available: boolean; is_owner: boolean; can_access_media: boolean; acquisition_policy: AcquisitionPolicy }
@@ -112,7 +113,13 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
   }
   useEffect(() => {
     const changed = () => { const next = pageFromHash(window.location.hash); setPage(next); setSelectedSource(null); setQuery(''); setFilter('All'); setGenre(''); setSourceFilter(''); setSort(next === 'My library' ? 'saved' : 'title') }
-    const keyboard = (event: KeyboardEvent) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); search.current?.focus() } }
+    const keyboard = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.altKey || !(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'k') return
+      if (document.querySelector('dialog[open], .modal-backdrop')) return
+      const target = event.target
+      if (target instanceof Element && target !== search.current && target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"]')) return
+      if (search.current) { event.preventDefault(); search.current.focus() }
+    }
     window.addEventListener('hashchange', changed); window.addEventListener('keydown', keyboard)
     return () => { window.removeEventListener('hashchange', changed); window.removeEventListener('keydown', keyboard) }
   }, [])
@@ -271,7 +278,8 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
     {reading && <BookReader sourceId={reading.source_id} sourceName={reading.source_name} file={reading} onClose={() => setReading(null)} />}
     {video && <VideoPlayer sourceId={video.source_id} sourceName={video.source_name} file={video} onClose={() => setVideo(null)} />}
     {playback && <MusicPlayer tracks={playback.tracks} index={playback.index} busy={actionBusy} onIndex={index => { void openMedia(playback.tracks[index], playback.tracks) }} onClose={() => setPlayback(null)}/>}
-    {connectOpen && user.is_admin && <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setConnectOpen(false) }}><form className="connect-modal" onSubmit={connectDirectory}><button className="modal-close" type="button" aria-label="Close" onClick={() => setConnectOpen(false)}><X size={17}/></button><span className="modal-icon"><FolderOpen size={19}/></span><div className="section-kicker">ADD A CONTENT SOURCE</div><h2>Connect a directory</h2><p>Choose an existing folder on the computer running Grimoire. We’ll scan its subfolders for supported media.</p><label htmlFor="directory-path">Directory path</label><input id="directory-path" autoFocus value={directoryPath} onChange={event => setDirectoryPath(event.target.value)} placeholder="/home/you/Media" required/><small className="path-hint">Use a full local path, such as <code>/home/you/Videos</code>.</small>{connectError && <div className="connect-error">{connectError}</div>}<button className="connect-submit" type="submit" disabled={connecting}>{connecting ? 'Connecting…' : 'Connect directory'}</button><span className="modal-note">Disconnecting a source never deletes its files.</span></form></div>}
+    {connectOpen && user.is_admin && <ConnectDirectory path={directoryPath} error={connectError} busy={connecting} onPath={setDirectoryPath} onClose={() => setConnectOpen(false)} onSubmit={connectDirectory}/>}
+
   </div>
 }
 

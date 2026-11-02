@@ -155,3 +155,12 @@ Unknown/last-known status no longer enables scan mutations, and pending status
 reads/timers are canceled on navigation. Status errors are separate from mutation
 errors. Initial failure and timed-poll failure recovery tests pass along with all
 54 frontend tests and the production build.
+
+## Dialog and keyboard focus
+
+Connect-directory now uses a native modal dialog with explicit input focus,
+Escape/backdrop dismissal and opener-focus restoration. Global Ctrl/Cmd+K leaves
+open dialogs and unrelated editable controls alone, while remaining available in
+the workspace/search field. Unit/DOM tests and production-browser verification
+cover the lifecycle and keyboard behavior. No directory was registered during
+browser testing. All 56 frontend tests and the build pass.
