@@ -498,8 +498,8 @@ Reader checks can be run with `npm test` in `web/` and `cargo test` in `backend/
 ### Site branding
 
 The sidebar logo and browser icons use `Data/Assets/Grimoire_Icon.svg`.
-The original artwork is preserved; a lavender background provides contrast
-against dark browser tabs and the application theme. Web assets live in
+The original artwork is preserved. Browser favicons have transparent
+backgrounds; the sidebar and Apple touch icon use a lavender background. Web assets live in
 `web/public/` and are included by Vite. To regenerate the SVG copy, PNG icon,
 Apple touch icon, and multi-size ICO after changing the source, run:
 

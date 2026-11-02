@@ -33,12 +33,16 @@ def generate():
         image = image.resize((round(float(layer.attrib['width'])), round(float(layer.attrib['height']))), Image.Resampling.LANCZOS)
         canvas.alpha_composite(image, (round(float(layer.attrib['x'])), round(float(layer.attrib['y']))))
     size = max(canvas.size)
-    icon = Image.new('RGBA', (size, size), BACKGROUND)
+    icon = Image.new('RGBA', (size, size), (0, 0, 0, 0))
     icon.alpha_composite(canvas, ((size - canvas.width) // 2, (size - canvas.height) // 2))
     OUTPUT.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(SOURCE, OUTPUT / 'logo.svg')
     for filename, dimension in [('favicon-32.png', 32), ('apple-touch-icon.png', 180)]:
-        icon.resize((dimension, dimension), Image.Resampling.LANCZOS).save(OUTPUT / filename, optimize=True)
+        output = icon
+        if filename == 'apple-touch-icon.png':
+            output = Image.new('RGBA', icon.size, BACKGROUND)
+            output.alpha_composite(icon)
+        output.resize((dimension, dimension), Image.Resampling.LANCZOS).save(OUTPUT / filename, optimize=True)
     icon.save(OUTPUT / 'favicon.ico', sizes=[(16, 16), (32, 32), (48, 48)])
 
 
