@@ -13,6 +13,8 @@ mod catalog;
 mod metadata;
 mod permissions;
 mod progress;
+mod subtitles;
+mod subtitles_mkv;
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -366,7 +368,9 @@ fn resolve_media_path(root: &Path, relative: &str, kind: &str) -> Result<PathBuf
         .and_then(|value| value.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    if classify_extension(&extension) != Some(kind) {
+    if !(kind == "subtitle" && matches!(extension.as_str(), "srt" | "vtt" | "ass" | "ssa"))
+        && classify_extension(&extension) != Some(kind)
+    {
         return Err(denied());
     }
     Ok(canonical)
@@ -484,6 +488,12 @@ async fn not_found() -> (StatusCode, Json<ApiError>) {
 fn app(state: AppState) -> Router {
     use axum::{extract::DefaultBodyLimit, middleware};
     let protected = Router::new()
+        .route("/api/sources/{source_id}/subtitles", get(subtitles::list))
+        .route("/api/sources/{source_id}/subtitle", get(subtitles::read))
+        .route(
+            "/api/sources/{source_id}/subtitle-font",
+            get(subtitles::read_font),
+        )
         .route(
             "/api/progress",
             get(progress::get)

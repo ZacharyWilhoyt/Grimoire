@@ -47,4 +47,5 @@ jobs:
       - run: cargo +stable fmt --manifest-path backend/Cargo.toml --check
       - run: cargo +stable clippy --locked --manifest-path backend/Cargo.toml --all-targets -- -D warnings
       - run: cargo +stable test --locked --manifest-path backend/Cargo.toml
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
       - run: cargo +stable test --locked --manifest-path backend/Cargo.toml -- --ignored

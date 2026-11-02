@@ -56,3 +56,13 @@ Shuffle and repeat controls are implemented with unchanged off/off defaults.
 Queue selector and DOM component tests cover stable shuffle ordering, repeat
 boundaries, visible control states, native repeat-one and single-track repeat-all.
 Production build and all frontend tests pass.
+
+## Subtitles
+
+Added sidecar SRT/WebVTT/ASS/SSA and embedded MKV text-track selection, with libass
+WASM for unflattened ASS and embedded TTF/OTF attachments. Added a fullscreen
+wrapper after browser testing caught native video fullscreen omitting the canvas.
+Synthetic MKV verification confirmed positioned text, vector drawing, italics,
+karaoke and corrected fullscreen alignment. Authorization/revocation, original
+script preservation and byte-exact font extraction have regression coverage.
+See SUBTITLES.md for processing limits and remaining bitmap/transcoding work.

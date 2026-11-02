@@ -3256,3 +3256,132 @@ async fn logout_other_sessions_requires_password_and_preserves_current_and_other
         );
     }
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn subtitles_require_media_permission_and_reject_unrelated_paths(pool: PgPool) {
+    let state = state(pool.clone());
+    let (owner, _, owner_user) = register_user(&state, "caption_owner").await;
+    let (viewer, _, viewer_user) = register_user(&state, "caption_viewer").await;
+    let root = shared_media_fixture();
+    std::fs::write(
+        root.join("clip.en.srt"),
+        "1\n00:00:01,000 --> 00:00:03,000\nHello <script>\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("clip.ass"),
+        include_str!("../tests/fixtures/styled.ass"),
+    )
+    .unwrap();
+    std::fs::write(root.join("unrelated.srt"), "private").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(root.join("unrelated.srt"), root.join("clip.link.srt")).unwrap();
+    let source = Uuid::new_v4().to_string();
+    let owner_id = Uuid::parse_str(owner_user["id"].as_str().unwrap()).unwrap();
+    let viewer_id = Uuid::parse_str(viewer_user["id"].as_str().unwrap()).unwrap();
+    sqlx::query("INSERT INTO sources(id,owner_id,name,path) VALUES ($1,$2,'Captions',$3)")
+        .bind(&source)
+        .bind(owner_id)
+        .bind(root.to_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let list = format!("/api/sources/{source}/subtitles?path=clip.mp4");
+    assert_eq!(
+        request(&state, Method::GET, &list, None, None, None, None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    sqlx::query(
+        "INSERT INTO source_permissions(source_id,user_id,can_discover) VALUES ($1,$2,true)",
+    )
+    .bind(&source)
+    .bind(viewer_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        request(&state, Method::GET, &list, Some(&viewer), None, None, None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let listing =
+        body(request(&state, Method::GET, &list, Some(&owner), None, None, None).await).await;
+    assert_eq!(listing["tracks"].as_array().unwrap().len(), 2);
+    let read = format!("/api/sources/{source}/subtitle?video=clip.mp4&path=clip.en.srt");
+    let response = request(&state, Method::GET, &read, Some(&owner), None, None, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["cache-control"], "private, no-store");
+    let bytes = to_bytes(response.into_body(), 10000).await.unwrap();
+    assert!(std::str::from_utf8(&bytes)
+        .unwrap()
+        .contains("&lt;script&gt;"));
+    for path in [
+        "unrelated.srt",
+        "../clip.en.srt",
+        "clip.link.srt",
+        "embedded:999",
+    ] {
+        let url = format!("/api/sources/{source}/subtitle?video=clip.mp4&path={path}");
+        assert_eq!(
+            request(&state, Method::GET, &url, Some(&owner), None, None, None)
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+    let ass_url = format!("/api/sources/{source}/subtitle?video=clip.mp4&path=clip.ass");
+    let response = request(
+        &state,
+        Method::GET,
+        &ass_url,
+        Some(&owner),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        to_bytes(response.into_body(), 10000)
+            .await
+            .unwrap()
+            .as_ref(),
+        include_bytes!("../tests/fixtures/styled.ass")
+    );
+    sqlx::query(
+        "UPDATE source_permissions SET can_access_media=true WHERE source_id=$1 AND user_id=$2",
+    )
+    .bind(&source)
+    .bind(viewer_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        request(&state, Method::GET, &read, Some(&viewer), None, None, None)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    sqlx::query("DELETE FROM source_permissions WHERE source_id=$1")
+        .bind(&source)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for url in [
+        &list,
+        &read,
+        &ass_url,
+        &format!("/api/sources/{source}/subtitle-font?video=clip.mp4&index=2"),
+    ] {
+        assert_eq!(
+            request(&state, Method::GET, url, Some(&viewer), None, None, None)
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
