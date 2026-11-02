@@ -92,3 +92,12 @@ before changing grants. Successful mutations remain reported as applied when a
 subsequent roster refresh fails, and further editing is blocked pending reload.
 Regression tests cover initial failure/retry and revocation followed by refresh
 failure. Server-side authorization remains unchanged.
+
+## Independent home-section loading
+
+For you now attempts Continue, history, saved items and source discovery
+independently. One failed endpoint no longer prevents healthy sections from
+loading; errors identify the affected section. Requests remain sequential to
+respect server scan limits, and navigation aborts stop subsequent requests and
+discard late responses. Loader and full App rendering tests cover partial failure,
+page-specific endpoints and cancellation. All 46 frontend tests and build pass.

@@ -95,3 +95,8 @@ EPUB chapter selectors use titles from the EPUB3 navigation TOC or EPUB2 NCX whe
 available, with numbered labels as fallback. The package spine remains the
 reading order. Fragment links into the same spine file do not create separate
 reader chapters; the first matching TOC title labels that spine entry.
+
+For you loads its independent sections even when one endpoint fails. The error
+notice identifies the unavailable section; healthy sections remain usable.
+Refresh retries the page. Requests remain sequential to respect scan limits,
+and navigating away cancels the remaining load.

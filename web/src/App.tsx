@@ -1,3 +1,4 @@
+import { loadCatalogPage, type PersonalPage } from './catalogLoader'
 import GroupEditor from './GroupEditor'
 import ArrConnections from './ArrConnections'
 import MetadataCredits from './MetadataCredits'
@@ -19,8 +20,6 @@ import { BookOpen, ChevronDown, Compass, Film, FolderOpen, Headphones, Library, 
 
 type MediaKind = 'All' | 'Video' | 'Music' | 'Books'
 type Source = { id: string; name: string; available: boolean; is_owner: boolean; can_access_media: boolean; acquisition_policy: AcquisitionPolicy }
-type CatalogResponse = { items: MediaItem[]; truncated: boolean; unavailable_sources: number }
-type PersonalPage = { items: MediaItem[]; has_more: boolean; next_offset: number; unavailable_items: number }
 async function readApi<T>(url: string, signal?: AbortSignal): Promise<T> {
   const response = await apiFetch(url, { signal })
   const data = await response.json()
@@ -127,29 +126,28 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
     else { setContinuing([]); setRecent([]); setSaved([]); setCatalog([]) }
     const load = async () => {
       const notes: string[] = []
-      if (page === 'For you') {
-        const progress = await readApi<PersonalPage>('/api/continue', controller.signal)
-        if (controller.signal.aborted) return
-        setContinuing(progress.items)
-        if (progress.unavailable_items) notes.push('Some items with saved progress are unavailable.')
-        const activity = await readApi<PersonalPage>('/api/activity', controller.signal)
-        if (controller.signal.aborted) return
-        setRecent(activity.items)
-        if (activity.unavailable_items) notes.push('Some recently opened files are currently unavailable.')
+      const result = await loadCatalogPage(page, controller.signal, readApi)
+      if (controller.signal.aborted) return
+      if (result.continuing) {
+        setContinuing(result.continuing.items)
+        if (result.continuing.unavailable_items) notes.push('Some items with saved progress are unavailable.')
       }
-      if (page !== 'Discover') {
-        const library = await readApi<PersonalPage>('/api/library', controller.signal)
-        if (controller.signal.aborted) return
+      if (result.recent) {
+        setRecent(result.recent.items)
+        if (result.recent.unavailable_items) notes.push('Some recently opened files are currently unavailable.')
+      }
+      if (result.library) {
+        const library = result.library
         setSaved(library.items); setHasMore(library.has_more); setNextOffset(library.next_offset)
         if (library.unavailable_items) notes.push('Some saved files are currently unavailable. Their saved records are retained.')
       }
-      if (page !== 'My library') {
-        const catalog = await readApi<CatalogResponse>('/api/catalog', controller.signal)
-        if (controller.signal.aborted) return
+      if (result.catalog) {
+        const catalog = result.catalog
         setCatalog(catalog.items)
         if (catalog.truncated) notes.push('This catalog preview is limited to 5,000 files from 32 sources. Browse a source directly for additional files.')
         if (catalog.unavailable_sources) notes.push(`${catalog.unavailable_sources} accessible sources could not be scanned.`)
       }
+      setPageError(result.errors.join(' '))
       if (!controller.signal.aborted) setPageNote(notes.join(' '))
     }
     load().catch(error => { if (!controller.signal.aborted) setPageError(error instanceof Error ? error.message : 'Could not load media.') }).finally(() => { if (!controller.signal.aborted) setPageLoading(false) })
