@@ -325,10 +325,17 @@ async fn new_session(
     state: &AppState,
     jar: CookieJar,
     user: User,
+    expected_hash: &str,
+    login_event: Option<&str>,
 ) -> Result<(CookieJar, Json<AuthResponse>), AppError> {
     let raw = token();
     let csrf = token();
     let mut tx = state.db.begin().await.map_err(|_| unavailable())?;
+    // Serialize issuance with password/operator changes and other logins. A
+    // successful earlier Argon2 check cannot survive a later credential change.
+    let user = sqlx::query_as::<_, User>("SELECT id,username,is_admin FROM users WHERE id=$1 AND password_hash=$2 AND NOT disabled FOR UPDATE")
+        .bind(user.id).bind(expected_hash).fetch_optional(&mut *tx).await.map_err(|_| unavailable())?
+        .ok_or_else(|| AppError(StatusCode::UNAUTHORIZED, "Invalid username or password.".into()))?;
     if let Some(old) = jar.get(state.config.cookie_name()) {
         sqlx::query("DELETE FROM sessions WHERE token_hash=$1")
             .bind(digest(old.value()))
@@ -346,6 +353,14 @@ async fn new_session(
         .map_err(|_| unavailable())?;
     // Bound simultaneous sessions per account, keeping the most recent ten.
     sqlx::query("DELETE FROM sessions WHERE token_hash IN (SELECT token_hash FROM sessions WHERE user_id=$1 ORDER BY created_at DESC OFFSET 10)").bind(user.id).execute(&mut *tx).await.map_err(|_| unavailable())?;
+    if let Some(event) = login_event {
+        sqlx::query("INSERT INTO auth_events(user_id,event) VALUES ($1,$2)")
+            .bind(user.id)
+            .bind(event)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| unavailable())?;
+    }
     tx.commit().await.map_err(|_| unavailable())?;
     Ok((
         jar.add(session_cookie(&state.config, raw)),
@@ -365,10 +380,10 @@ pub async fn register(
     validate_password(&credentials.password)?;
     let hash = hash_bounded(state.hashing.clone(), credentials.password).await?;
     let user = sqlx::query_as::<_, User>("INSERT INTO users (id,username,password_hash) VALUES ($1,$2,$3) ON CONFLICT (username) DO NOTHING RETURNING id, username, is_admin")
-        .bind(Uuid::new_v4()).bind(name).bind(hash).fetch_optional(&state.db).await.map_err(|_| unavailable())?
+        .bind(Uuid::new_v4()).bind(name).bind(&hash).fetch_optional(&state.db).await.map_err(|_| unavailable())?
         .ok_or_else(|| AppError(StatusCode::CONFLICT, "That username is unavailable.".into()))?;
     audit(&state.db, Some(user.id), "registered").await?;
-    let (jar, body) = new_session(&state, jar, user).await?;
+    let (jar, body) = new_session(&state, jar, user, &hash, None).await?;
     Ok((StatusCode::CREATED, jar, body))
 }
 pub async fn login(
@@ -425,8 +440,7 @@ pub async fn login(
         return Err(invalid());
     }
     let record = record.ok_or_else(invalid)?;
-    audit(&state.db, Some(record.id), "login_succeeded").await?;
-    new_session(
+    let result = new_session(
         &state,
         jar,
         User {
@@ -434,8 +448,18 @@ pub async fn login(
             username: record.username,
             is_admin: record.is_admin,
         },
+        &record.password_hash,
+        Some("login_succeeded"),
     )
-    .await
+    .await;
+    if result
+        .as_ref()
+        .err()
+        .is_some_and(|error| error.0 == StatusCode::UNAUTHORIZED)
+    {
+        audit(&state.db, None, "login_failed").await?;
+    }
+    result
 }
 pub async fn me(axum::Extension(identity): axum::Extension<Identity>) -> Json<AuthResponse> {
     Json(AuthResponse {
@@ -575,7 +599,7 @@ pub async fn change_password(
     let updated = sqlx::query(
         "UPDATE users SET password_hash=$1 WHERE id=$2 AND password_hash=$3 AND NOT disabled",
     )
-    .bind(new_hash)
+    .bind(&new_hash)
     .bind(identity.user.id)
     .bind(old)
     .execute(&mut *tx)
@@ -595,7 +619,7 @@ pub async fn change_password(
         .await
         .map_err(|_| unavailable())?;
     tx.commit().await.map_err(|_| unavailable())?;
-    new_session(&state, jar, identity.user).await
+    new_session(&state, jar, identity.user, &new_hash, None).await
 }
 
 #[derive(Deserialize)]

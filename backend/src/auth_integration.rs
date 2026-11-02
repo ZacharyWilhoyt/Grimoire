@@ -3656,3 +3656,117 @@ async fn metadata_scan_stop_is_owner_scoped_csrf_protected_and_preserves_termina
         assert_eq!(status, terminal);
     }
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn login_cannot_issue_a_session_after_concurrent_password_reset_or_disable(pool: PgPool) {
+    let app_state = state(pool.clone());
+    let replacement = auth::hash_password("a replacement race test passphrase")
+        .unwrap_or_else(|_| panic!("hash"));
+    for change in ["password", "disabled"] {
+        let name = format!("race_{change}");
+        let (_, _, user) = register_user(&app_state, &name).await;
+        let id = Uuid::parse_str(user["id"].as_str().unwrap()).unwrap();
+        let mut operator = pool.begin().await.unwrap();
+        sqlx::query("SELECT id FROM users WHERE id=$1 FOR UPDATE")
+            .bind(id)
+            .execute(&mut *operator)
+            .await
+            .unwrap();
+        let login_state = app_state.clone();
+        let pending = tokio::spawn(async move {
+            request(
+                &login_state,
+                Method::POST,
+                "/api/auth/login",
+                None,
+                None,
+                Some(ORIGIN),
+                Some(json!({"username":name,"password":"a long shared source passphrase"})),
+            )
+            .await
+        });
+        // Observe the actual server transaction waiting after Argon2 verification;
+        // this test does not depend on guessing password-hashing timing.
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let waiting:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%password_hash=$2%FOR UPDATE%')").fetch_one(&pool).await.unwrap();
+                if waiting { break; }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }).await.expect("Login did not reach guarded session issuance");
+        sqlx::query("UPDATE users SET password_hash=CASE WHEN $2 THEN $3 ELSE password_hash END,disabled=$4 WHERE id=$1").bind(id).bind(change=="password").bind(&replacement).bind(change=="disabled").execute(&mut *operator).await.unwrap();
+        sqlx::query("DELETE FROM sessions WHERE user_id=$1")
+            .bind(id)
+            .execute(&mut *operator)
+            .await
+            .unwrap();
+        operator.commit().await.unwrap();
+        let response = pending.await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(response.headers().get("set-cookie").is_none());
+        assert_eq!(
+            body(response).await["error"],
+            "Invalid username or password."
+        );
+        let sessions: i64 = sqlx::query_scalar("SELECT count(*) FROM sessions WHERE user_id=$1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(sessions, 0);
+        let successes: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM auth_events WHERE user_id=$1 AND event='login_succeeded'",
+        )
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(successes, 0);
+    }
+    let failures: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM auth_events WHERE event='login_failed'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(failures, 2);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn concurrent_logins_preserve_the_ten_session_limit(pool: PgPool) {
+    let app_state = state(pool.clone());
+    let (_, _, user) = register_user(&app_state, "parallel_login").await;
+    let id = Uuid::parse_str(user["id"].as_str().unwrap()).unwrap();
+    for index in 0..9 {
+        sqlx::query("INSERT INTO sessions(token_hash,user_id,csrf_token) VALUES ($1,$2,'unused')")
+            .bind(format!("seed-{index}"))
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let mut logins = tokio::task::JoinSet::new();
+    for _ in 0..4 {
+        let state = app_state.clone();
+        logins.spawn(async move { request(&state,Method::POST,"/api/auth/login",None,None,Some(ORIGIN),Some(json!({"username":"parallel_login","password":"a long shared source passphrase"}))).await });
+    }
+    while let Some(result) = logins.join_next().await {
+        let response = result.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    let sessions: i64 = sqlx::query_scalar("SELECT count(*) FROM sessions WHERE user_id=$1")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(sessions, 10);
+    let successes: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM auth_events WHERE user_id=$1 AND event='login_succeeded'",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(successes, 4);
+}

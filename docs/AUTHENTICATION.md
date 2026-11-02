@@ -105,6 +105,12 @@ email recovery, or email verification is included.
   require explicit loopback HTTP development mode and use a separate cookie name.
   Sessions survive API restarts through PostgreSQL. Disabled users are checked on
   every protected request; role changes take effect on the next request.
+  Session issuance rechecks the verified password hash and active-account state
+  under a user-row lock, serializing with password resets/changes, operator account
+  updates and concurrent logins. A password verification against a replaced hash
+  cannot issue a later session; a currently disabled account cannot get one. The same lock enforces the ten-session cap under
+  concurrent logins. Successful login auditing commits with session issuance;
+  rejected rechecks use the generic login error and failed-login audit event.
 - CSRF: all state-changing API requests require the exact configured Origin.
   Authenticated mutations additionally require the session's synchronizer token in
   `X-CSRF-Token`. The token is held in frontend memory and restored from `/auth/me`;

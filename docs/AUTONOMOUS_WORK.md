@@ -184,3 +184,17 @@ uses the captured element even after React clears its ref and restores a connect
 opener without scrolling. Book archive cleanup separately handles its async close.
 Regression tests cover focus/edit retention across updates, disconnected openers,
 and permission retry without reopening. All 58 frontend tests and build pass.
+
+## Login issuance race hardening
+
+Found and closed a verification-to-issuance race: a login that verified the old
+password could otherwise create a session after a password change revoked prior
+sessions. Issuance now locks/rechecks the current user/hash/disabled state,
+serializes concurrent session pruning, and commits successful-login auditing with
+the session. Deterministic PostgreSQL tests observe the real login waiting on that
+lock before applying password-reset/disable transactions, then assert generic 401,
+no session/cookie and failed-login auditing. Parallel logins retain at most ten
+sessions. Account flows and owner/source policies remain unchanged.
+Strict Clippy, 22 Rust unit tests and all 21 database/extraction tests pass after
+the issuance change, including existing rotation/password-change/default-deny
+regressions. No schema migration or public authentication API change is required.
