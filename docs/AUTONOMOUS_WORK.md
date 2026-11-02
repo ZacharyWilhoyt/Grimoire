@@ -40,3 +40,12 @@ Build/unit tests pass. Browser verification confirmed CBZ page and EPUB chapter
 restoration after closing/reopening, audio restoration beyond a seeded 20-second
 position, and video restoration beyond 18 seconds. Database reads verified saves. Completion rules remain deferred
 rather than inventing an arbitrary percentage threshold.
+
+## Additional completed increments
+
+- Continue catalog and saved-position labels, including source revocation tests
+  and browser verification for video/music/EPUB/CBZ saved positions.
+- Password-confirmed sign-out of other account sessions, preserving the caller and
+  other accounts; tested against disposable PostgreSQL.
+- GitHub Actions runs for the CI/progress storage and player-resume increments were
+  independently observed completing successfully through GitHub's public API.

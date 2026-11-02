@@ -569,6 +569,10 @@ fn app(state: AppState) -> Router {
         .route("/api/auth/me", get(auth::me))
         .route("/api/auth/logout", axum::routing::post(auth::logout))
         .route(
+            "/api/auth/logout-others",
+            axum::routing::post(auth::logout_others),
+        )
+        .route(
             "/api/auth/password",
             axum::routing::post(auth::change_password),
         )

@@ -597,3 +597,86 @@ pub async fn change_password(
     tx.commit().await.map_err(|_| unavailable())?;
     new_session(&state, jar, identity.user).await
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionRevocation {
+    current_password: String,
+}
+pub async fn logout_others(
+    State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<Identity>,
+    Json(input): Json<SessionRevocation>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    if input.current_password.len() > 1024 {
+        return Err(AppError(
+            StatusCode::BAD_REQUEST,
+            "Current password is incorrect.".into(),
+        ));
+    }
+    rate_limit(
+        &state.db,
+        format!("sessions:manage:{}", identity.user.id),
+        10,
+        900,
+    )
+    .await?;
+    let old: String =
+        sqlx::query_scalar("SELECT password_hash FROM users WHERE id=$1 AND NOT disabled")
+            .bind(identity.user.id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|_| unavailable())?
+            .ok_or_else(unauthorized)?;
+    let permit = state.hashing.clone().try_acquire_owned().map_err(|_| {
+        AppError(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many account requests. Try again shortly.".into(),
+        )
+    })?;
+    let hash = old.clone();
+    let valid = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        PasswordHash::new(&hash).ok().is_some_and(|hash| {
+            Argon2::default()
+                .verify_password(input.current_password.as_bytes(), &hash)
+                .is_ok()
+        })
+    })
+    .await
+    .map_err(|_| unavailable())?;
+    if !valid {
+        return Err(AppError(
+            StatusCode::BAD_REQUEST,
+            "Current password is incorrect.".into(),
+        ));
+    }
+    let mut tx = state.db.begin().await.map_err(|_| unavailable())?;
+    let current: Option<String> = sqlx::query_scalar(
+        "SELECT password_hash FROM users WHERE id=$1 AND NOT disabled FOR UPDATE",
+    )
+    .bind(identity.user.id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|_| unavailable())?;
+    if current.as_deref() != Some(old.as_str()) {
+        return Err(unauthorized());
+    }
+    let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sessions WHERE token_hash=$1 AND user_id=$2 AND expires_at>now() AND last_seen>now()-interval '30 minutes')").bind(&identity.session_hash).bind(identity.user.id).fetch_one(&mut *tx).await.map_err(|_|unavailable())?;
+    if !active {
+        return Err(unauthorized());
+    }
+    let result = sqlx::query("DELETE FROM sessions WHERE user_id=$1 AND token_hash<>$2")
+        .bind(identity.user.id)
+        .bind(identity.session_hash)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| unavailable())?;
+    sqlx::query("INSERT INTO auth_events(user_id,event) VALUES ($1,'other_sessions_revoked')")
+        .bind(identity.user.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| unavailable())?;
+    tx.commit().await.map_err(|_| unavailable())?;
+    Ok(Json(serde_json::json!({"revoked":result.rows_affected()})))
+}

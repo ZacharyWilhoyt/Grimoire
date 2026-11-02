@@ -175,3 +175,19 @@ and server, not production credentials. They exercise public registration, role
 injection, forged/missing cookies, CSRF/origin checks, source ownership, default-deny
 media access, session rotation/logout/expiry/disable, password changes, and throttling.
 `npm test` and `npm run build` in `web/` cover the frontend and reader regressions.
+
+## Sign out other sessions
+
+Account settings now provides **Sign out other sessions** independently of changing
+password. Enter the current password and use that button; new-password fields may
+remain empty. The current session/cookie/CSRF token remains valid, while all other
+sessions for that account are deleted. Other users are unaffected. Already delivered
+media or in-flight responses remain subject to the existing revocation limits.
+
+`POST /api/auth/logout-others` accepts only `{current_password}` and requires the
+normal authenticated Origin/CSRF checks. Password verification uses bounded Argon2
+workers, with ten attempts per account per fifteen minutes. The operation rechecks
+that the account password has not changed and that the calling session remains
+active, and records `other_sessions_revoked` without credentials. It does not change
+the account password or prevent a subsequent valid login. Disposable-database tests
+cover wrong passwords, CSRF rejection, revocation, and current/other-user isolation.

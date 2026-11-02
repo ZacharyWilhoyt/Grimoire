@@ -24,6 +24,18 @@ export default function AccountSettings({ onClose }: { onClose: () => void }) {
     } catch (error) { setError(error instanceof Error ? error.message : 'Could not change your password.') }
     finally { setBusy(false) }
   }
+  const logoutOthers = async () => {
+    setError(''); setMessage('')
+    if (!current) { setError('Enter your current password to sign out other sessions.'); return }
+    setBusy(true)
+    try {
+      const response = await apiFetch('/api/auth/logout-others', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ current_password: current }) })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error ?? 'Could not sign out other sessions.')
+      setCurrent(''); setMessage(`Signed out ${data.revoked} other ${data.revoked === 1 ? 'session' : 'sessions'}. This session remains signed in.`)
+    } catch (error) { setError(error instanceof Error ? error.message : 'Could not sign out other sessions.') }
+    finally { setBusy(false) }
+  }
   return <dialog ref={dialog} className="video-backdrop" aria-labelledby="account-settings-title" onCancel={event => { event.preventDefault(); onClose() }}><form className="auth-card" onSubmit={submit}>
     <div className="settings-title"><h1 id="account-settings-title">Your account</h1><button type="button" aria-label="Close account settings" onClick={onClose}><X size={20}/></button></div>
     <p>Change your password and sign out other sessions.</p>
@@ -32,6 +44,8 @@ export default function AccountSettings({ onClose }: { onClose: () => void }) {
     <small>Use a unique password of 15–128 characters.</small>
     <label htmlFor="confirm-new-password">Confirm new password</label><input id="confirm-new-password" autoComplete="new-password" type="password" required value={confirm} onChange={event => setConfirm(event.target.value)} disabled={busy}/>
     {error && <p className="auth-error" role="alert">{error}</p>}{message && <p className="account-success" role="status">{message}</p>}
+    <button className="track-play" type="button" disabled={busy} onClick={() => { void logoutOthers() }}>Sign out other sessions</button>
+    <small>Uses your current password above. A new password is not required for this action.</small>
     <button className="connect-submit" type="submit" disabled={busy}>{busy ? 'Updating…' : 'Change password'}</button>
   </form></dialog>
 }

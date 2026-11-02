@@ -3160,3 +3160,99 @@ async fn progress_is_private_permission_checked_and_revision_guarded(pool: PgPoo
     assert_eq!(revoked["items"], json!([]));
     fs::remove_dir_all(root).unwrap();
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn logout_other_sessions_requires_password_and_preserves_current_and_other_users(
+    pool: PgPool,
+) {
+    let state = state(pool.clone());
+    let (owner, csrf, _) = register_user(&state, "session_owner").await;
+    let (second, _, _) = login(&state, "session_owner", "a long shared source passphrase").await;
+    let (other, _, _) = register_user(&state, "session_other").await;
+    let url = "/api/auth/logout-others";
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            url,
+            Some(&owner),
+            None,
+            Some(ORIGIN),
+            Some(json!({"current_password":"a long shared source passphrase"}))
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            url,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(json!({"current_password":"incorrect"}))
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::GET,
+            "/api/auth/me",
+            Some(&second),
+            None,
+            None,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let result = request(
+        &state,
+        Method::POST,
+        url,
+        Some(&owner),
+        Some(&csrf),
+        Some(ORIGIN),
+        Some(json!({"current_password":"a long shared source passphrase"})),
+    )
+    .await;
+    assert_eq!(result.status(), StatusCode::OK);
+    assert_eq!(body(result).await["revoked"], 1);
+    assert_eq!(
+        request(
+            &state,
+            Method::GET,
+            "/api/auth/me",
+            Some(&second),
+            None,
+            None,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    for cookie in [&owner, &other] {
+        assert_eq!(
+            request(
+                &state,
+                Method::GET,
+                "/api/auth/me",
+                Some(cookie),
+                None,
+                None,
+                None
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+    }
+}
