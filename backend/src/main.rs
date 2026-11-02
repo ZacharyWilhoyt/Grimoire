@@ -109,6 +109,38 @@ async fn health() -> Json<Health> {
     })
 }
 
+// Probes must not build an unbounded database wait queue during an outage.
+static READINESS_PROBES: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+async fn readiness(State(state): State<AppState>) -> Response {
+    let ready = match READINESS_PROBES.try_acquire() {
+        Ok(_permit) => matches!(
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                sqlx::query("SELECT 1").execute(&state.db)
+            )
+            .await,
+            Ok(Ok(_))
+        ),
+        Err(_) => false,
+    };
+    let mut response = (
+        if ready {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
+        Json(Health {
+            status: if ready { "ready" } else { "not_ready" },
+            service: "grimoire-api",
+        }),
+    )
+        .into_response();
+    response
+        .headers_mut()
+        .insert("cache-control", "no-store".parse().unwrap());
+    response
+}
+
 async fn list_sources(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<auth::Identity>,
@@ -609,6 +641,7 @@ fn app(state: AppState) -> Router {
     Router::new()
         .merge(protected)
         .route("/api/health", get(health))
+        .route("/api/ready", get(readiness))
         .route("/api/auth/register", axum::routing::post(auth::register))
         .route("/api/auth/login", axum::routing::post(auth::login))
         .fallback(not_found)

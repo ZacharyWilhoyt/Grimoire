@@ -35,3 +35,24 @@ response completed byte-for-byte after SIGTERM, and a client that stopped readin
 was disconnected at the 30-second deadline. Both processes exited with status 0.
 Rust unit tests and strict Clippy pass. CI continues to run the existing database
 and media extraction checks; these process-signal smoke tests are manual checks.
+
+## Liveness and readiness
+
+- `GET /api/health` is a lightweight process-liveness check, returning HTTP 200
+  while the API can handle requests. It deliberately does not query PostgreSQL.
+- `GET /api/ready` checks PostgreSQL with `SELECT 1` and returns HTTP 200 with
+  `{"status":"ready","service":"grimoire-api"}`, or HTTP 503 with
+  `{"status":"not_ready","service":"grimoire-api"}`. It has a two-second
+  database deadline, at most two concurrent probes per process, and no-store
+  caching. Database error details, connection information and credentials are
+  never returned.
+
+Both checks are session-free so a local supervisor can probe the API without an
+account. Prefer keeping operational probes internal in a public reverse-proxy
+configuration. Readiness does not inspect individual content sources, Arr apps,
+metadata providers or codec tools: an offline community source should not make
+the entire control plane unready. API startup completes migrations before opening
+the listener. During shutdown the listener stops accepting new connections.
+
+Database integration tests verify readiness success, pool saturation/deadline,
+recovery, closed-pool failure and independent process liveness.

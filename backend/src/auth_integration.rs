@@ -3385,3 +3385,111 @@ async fn subtitles_require_media_permission_and_reject_unrelated_paths(pool: PgP
     }
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn readiness_checks_database_and_times_out_without_exposing_details(pool: PgPool) {
+    let probe_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        .connect_with(pool.connect_options().as_ref().clone())
+        .await
+        .unwrap();
+    let app_state = state(probe_pool.clone());
+    let ready = request(
+        &app_state,
+        Method::GET,
+        "/api/ready",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(ready.status(), StatusCode::OK);
+    assert_eq!(ready.headers()["cache-control"], "private, no-store");
+    assert_eq!(
+        body(ready).await,
+        json!({"status":"ready","service":"grimoire-api"})
+    );
+    let probes = READINESS_PROBES.try_acquire_many(2).unwrap();
+    assert_eq!(
+        request(
+            &app_state,
+            Method::GET,
+            "/api/ready",
+            None,
+            None,
+            None,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    drop(probes);
+    let occupied = probe_pool.acquire().await.unwrap();
+    let unavailable = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        request(
+            &app_state,
+            Method::GET,
+            "/api/ready",
+            None,
+            None,
+            None,
+            None,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(unavailable.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        body(unavailable).await,
+        json!({"status":"not_ready","service":"grimoire-api"})
+    );
+    drop(occupied);
+    assert_eq!(
+        request(
+            &app_state,
+            Method::GET,
+            "/api/ready",
+            None,
+            None,
+            None,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    probe_pool.close().await;
+    assert_eq!(
+        request(
+            &app_state,
+            Method::GET,
+            "/api/ready",
+            None,
+            None,
+            None,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        request(
+            &app_state,
+            Method::GET,
+            "/api/health",
+            None,
+            None,
+            None,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+}

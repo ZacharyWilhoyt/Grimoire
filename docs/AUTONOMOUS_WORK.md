@@ -109,3 +109,11 @@ requests up to 30 seconds, then close lingering streams. Existing unit tests and
 Clippy pass; runtime checks use only the disposable preview database and synthetic
 media. See OPERATIONS.md for supervisor timing and the distinction between active
 HTTP requests and non-durable background metadata jobs.
+
+## Database readiness
+
+Added session-free `/api/ready` alongside existing liveness. It checks only the
+required control-plane database, with a two-second deadline and two-probe
+concurrency bound, generic response data and no-store caching. PostgreSQL
+integration coverage checks healthy/saturated/recovered/closed pools and verifies
+liveness stays independent. Individual community sources are not readiness gates.
