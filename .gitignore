@@ -1,5 +1,7 @@
 /web/node_modules/
 /web/dist/
 /backend/target/
+/backend/data/
+/web/tsconfig.tsbuildinfo
 .env
 .DS_Store

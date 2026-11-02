@@ -398,10 +398,12 @@ The initial application foundation lives in two small projects:
 - `backend/` is a Rust HTTP API built with Axum.
 
 The frontend currently provides a responsive media-library starting
-point with video, music, and book views. Its sample catalog is presentation
-data only. The Rust service currently exposes `GET /api/health`; it does
-not yet implement accounts, catalog persistence, media delivery, or
-authorization. The frontend displays whether that API is reachable.
+point with video, music, and book views. The local single-user backend can
+register directories and list supported media file names, relative paths,
+types, and sizes. Directory registrations persist in `backend/data/`
+(or the directory set by `GRIMOIRE_DATA_DIR`). The sample catalog on the
+home page is still presentation data. Accounts, media delivery, playback,
+and authorization are not implemented.
 
 Install Node.js (with npm) and Rust (with Cargo), then run the API in one
 terminal:
@@ -423,6 +425,20 @@ Open the local URL printed by Vite. During development, Vite forwards
 `/api` requests to the API at `http://127.0.0.1:3000`. The API binds to
 loopback by default; deployment binding and frontend/API hosting should
 be configured explicitly for the target environment.
+
+Use **Connect directory** in the app and enter an absolute path on the
+computer running the Rust API (for example, `/home/you/Media`). Grimoire
+recursively lists common video (`mkv`, `mp4`, `webm`, and others), audio
+(`mp3`, `flac`, `m4a`, and others), EPUB, and CBZ files. It skips symbolic
+links, limits each scan to 10,000 media files and 100,000 directory
+entries, and does not read or serve file contents. Disconnecting a source
+only removes its registration; it never deletes files. The source registry
+is stored with owner-only permissions on Unix systems.
+
+This first version trusts the single local operator who can access the
+loopback API. It does not have user accounts or source-level authorization
+yet; do not expose the API to a network. Streaming, reading, and sharing
+remain future work.
 
 ### Initial stack choice
 
