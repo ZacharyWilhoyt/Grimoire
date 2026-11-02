@@ -2562,3 +2562,419 @@ async fn arr_connections_are_optional_owner_only_and_match_existing_files_withou
     server.abort();
     fs::remove_dir_all(root).unwrap();
 }
+
+async fn group_image_request(
+    state: &AppState,
+    path: &str,
+    cookie: Option<&str>,
+    csrf: Option<&str>,
+    bytes: Vec<u8>,
+) -> Response {
+    let mut builder = Request::builder()
+        .method(Method::POST)
+        .uri(path)
+        .header("content-type", "image/jpeg")
+        .header("origin", ORIGIN);
+    if let Some(cookie) = cookie {
+        builder = builder.header("cookie", cookie);
+    }
+    if let Some(csrf) = csrf {
+        builder = builder.header("x-csrf-token", csrf);
+    }
+    app(state.clone())
+        .oneshot(builder.body(Body::from(bytes)).unwrap())
+        .await
+        .unwrap()
+}
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn group_artwork_and_tags_inherit_without_crossing_ownership_or_revocation(pool: PgPool) {
+    let state = state(pool.clone());
+    let (owner, csrf, user) = register_user(&state, "group_owner").await;
+    let (viewer, viewer_csrf, viewer_user) = register_user(&state, "group_viewer").await;
+    let root = std::env::temp_dir().join(format!("grimoire-groups-{}", Uuid::new_v4()));
+    fs::create_dir(&root).unwrap();
+    let second_root = std::env::temp_dir().join(format!("grimoire-groups-{}", Uuid::new_v4()));
+    fs::create_dir(&second_root).unwrap();
+    for file in ["one.mp3", "two.mp3", "Show.S01E01.mkv", "Show.S02E01.mkv"] {
+        fs::write(root.join(file), b"test media").unwrap();
+    }
+    fs::write(second_root.join("one.mp3"), b"test media").unwrap();
+    let source = Uuid::new_v4().to_string();
+    let second = Uuid::new_v4().to_string();
+    let owner_id = Uuid::parse_str(user["id"].as_str().unwrap()).unwrap();
+    let viewer_id = Uuid::parse_str(viewer_user["id"].as_str().unwrap()).unwrap();
+    for (source, owner, path) in [
+        (&source, owner_id, &root),
+        (&second, viewer_id, &second_root),
+    ] {
+        sqlx::query("INSERT INTO sources(id,owner_id,name,path) VALUES ($1,$2,'Group source',$3)")
+            .bind(source)
+            .bind(owner)
+            .bind(path.to_str().unwrap())
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    for (source, file) in [
+        (&source, "one.mp3"),
+        (&source, "two.mp3"),
+        (&second, "one.mp3"),
+    ] {
+        sqlx::query("INSERT INTO media_metadata(file_key,source_id,relative_path,local_data) VALUES ($1,$2,$3,$4)").bind(catalog::file_key(source,file)).bind(source).bind(file).bind(json!({"title":file,"creator":"Artist","collection":"Album","genres":["rock"]}).to_string()).execute(&pool).await.unwrap();
+    }
+    let detail = |file: &str| format!("/api/sources/{source}/metadata?path={file}");
+    let first = body(
+        request(
+            &state,
+            Method::GET,
+            &detail("one.mp3"),
+            Some(&owner),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    let group = first["group"]["id"].as_str().unwrap();
+    let endpoint = format!("/api/sources/{source}/groups/{group}");
+    let edit = format!("{endpoint}/genres");
+    let image = format!("{endpoint}/artwork?path=one.mp3");
+    let other = body(
+        request(
+            &state,
+            Method::GET,
+            &format!("/api/sources/{second}/metadata?path=one.mp3"),
+            Some(&viewer),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_ne!(first["group"]["id"], other["group"]["id"]);
+    assert_eq!(
+        request(
+            &state,
+            Method::GET,
+            &format!("{endpoint}?path=one.mp3"),
+            Some(&viewer),
+            None,
+            None,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    sqlx::query("INSERT INTO source_permissions(source_id,user_id,can_discover,can_access_media) VALUES ($1,$2,true,true)").bind(&source).bind(viewer_id).execute(&pool).await.unwrap();
+    let tags = json!({"path":"one.mp3","genres":[" Ambient ","ambient","Jazz"]});
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            &edit,
+            Some(&owner),
+            None,
+            Some(ORIGIN),
+            Some(tags.clone())
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            &edit,
+            Some(&viewer),
+            Some(&viewer_csrf),
+            Some(ORIGIN),
+            Some(tags.clone())
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            &edit,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(tags)
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        group_image_request(
+            &state,
+            &image,
+            Some(&viewer),
+            Some(&viewer_csrf),
+            b"<svg/>".to_vec()
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        group_image_request(
+            &state,
+            &image,
+            Some(&owner),
+            Some(&csrf),
+            b"<svg/>".to_vec()
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        group_image_request(
+            &state,
+            &image,
+            Some(&owner),
+            Some(&csrf),
+            vec![0; 8 * 1024 * 1024 + 1]
+        )
+        .await
+        .status(),
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+        .encode_image(&image::RgbImage::from_pixel(
+            20,
+            30,
+            image::Rgb([80, 30, 120]),
+        ))
+        .unwrap();
+    assert_eq!(
+        group_image_request(&state, &image, None, None, jpeg.clone())
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let uploaded =
+        group_image_request(&state, &image, Some(&owner), Some(&csrf), jpeg.clone()).await;
+    assert_eq!(uploaded.status(), StatusCode::OK);
+    assert_eq!(body(uploaded).await["group"]["has_custom_artwork"], true);
+    let art = request(&state, Method::GET, &image, Some(&viewer), None, None, None).await;
+    assert_eq!(art.status(), StatusCode::OK);
+    assert_eq!(art.headers()["content-type"], "image/jpeg");
+    assert_eq!(art.headers()["cache-control"], "private, no-store");
+    for file in ["one.mp3", "two.mp3"] {
+        let metadata = body(
+            request(
+                &state,
+                Method::GET,
+                &detail(file),
+                Some(&viewer),
+                None,
+                None,
+                None,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(metadata["fields"]["genres"], json!(["ambient", "jazz"]));
+        assert_eq!(metadata["fields"]["title"], file);
+        assert_eq!(metadata["group"]["can_edit"], false);
+        assert!(metadata["artwork_url"].as_str().unwrap().contains(group));
+        assert_eq!(metadata["individual_genres"], json!(["rock"]));
+    }
+    // A newly indexed member inherits the group without rewriting existing files.
+    fs::write(root.join("three.mp3"), b"new member").unwrap();
+    sqlx::query("INSERT INTO media_metadata(file_key,source_id,relative_path,local_data) VALUES ($1,$2,'three.mp3',$3)").bind(catalog::file_key(&source,"three.mp3")).bind(&source).bind(json!({"title":"New track","creator":"Artist","collection":"Album","genres":["folk"]}).to_string()).execute(&pool).await.unwrap();
+    let third = body(
+        request(
+            &state,
+            Method::GET,
+            &detail("three.mp3"),
+            Some(&owner),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(third["fields"]["genres"], json!(["ambient", "jazz"]));
+    assert!(third["group"]["has_custom_artwork"].as_bool().unwrap());
+    let unchanged = body(
+        request(
+            &state,
+            Method::GET,
+            &format!("/api/sources/{second}/metadata?path=one.mp3"),
+            Some(&viewer),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(unchanged["fields"]["genres"], json!(["rock"]));
+    assert!(unchanged["artwork_url"].is_null());
+    // Filename-only episodes share group artwork even without individual DB rows.
+    let episode = body(
+        request(
+            &state,
+            Method::GET,
+            &detail("Show.S01E01.mkv"),
+            Some(&owner),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    let tv_group = episode["group"]["id"].as_str().unwrap();
+    let tv_art = format!("/api/sources/{source}/groups/{tv_group}/artwork?path=Show.S01E01.mkv");
+    assert_eq!(
+        group_image_request(&state, &tv_art, Some(&owner), Some(&csrf), jpeg)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let episode2 = body(
+        request(
+            &state,
+            Method::GET,
+            &detail("Show.S02E01.mkv"),
+            Some(&viewer),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(episode2["group"]["id"], tv_group);
+    assert_eq!(
+        request(
+            &state,
+            Method::GET,
+            episode2["artwork_url"].as_str().unwrap(),
+            Some(&viewer),
+            None,
+            None,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let listed = body(
+        request(
+            &state,
+            Method::GET,
+            &format!("/api/sources/{source}/media"),
+            Some(&owner),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert!(listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|item| item["metadata"]["group"]["id"].is_string()));
+    sqlx::query("DELETE FROM source_permissions WHERE source_id=$1 AND user_id=$2")
+        .bind(&source)
+        .bind(viewer_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        request(&state, Method::GET, &image, Some(&viewer), None, None, None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::DELETE,
+            &format!("{edit}?path=one.mp3"),
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let reset = body(
+        request(
+            &state,
+            Method::GET,
+            &detail("two.mp3"),
+            Some(&owner),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(reset["fields"]["genres"], json!(["rock"]));
+    assert_eq!(reset["group"]["has_custom_artwork"], true);
+    assert_eq!(
+        request(
+            &state,
+            Method::DELETE,
+            &image,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(&state, Method::GET, &image, Some(&owner), None, None, None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    // Regrouped files cannot be used as credentials for the previous group's art.
+    sqlx::query("UPDATE media_metadata SET local_data=$2 WHERE file_key=$1")
+        .bind(catalog::file_key(&source, "one.mp3"))
+        .bind(json!({"collection":"Other album","creator":"Artist"}).to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            &edit,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(json!({"path":"one.mp3","genres":["wrong group"]}))
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(fs::read(root.join("two.mp3")).unwrap(), b"test media");
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(second_root).unwrap();
+}

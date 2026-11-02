@@ -517,6 +517,14 @@ Catalog cards show authorized artwork, with genre filters and album/series group
 Filenames and bookmarks remain unchanged. See [Metadata](docs/METADATA.md) for setup,
 permissions, FFmpeg requirements, provider credentials, and extraction limits.
 
+### Album/series folders and custom covers
+
+Albums, book series and TV series now open as folders, with season/disc folders
+where relevant. Owners can upload a custom group cover and edit tags that apply
+to every current/future member in their source. Item credits reflect active
+metadata/artwork providers. See [Media groups](docs/MEDIA_GROUPS.md) for usage,
+authorization, upload limits and attribution details.
+
 ### Optional Arr metadata connections
 
 Owners can connect Sonarr, Radarr and Lidarr per source, test connections, map

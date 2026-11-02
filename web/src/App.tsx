@@ -1,3 +1,4 @@
+import GroupEditor from './GroupEditor'
 import ArrConnections from './ArrConnections'
 import MetadataCredits from './MetadataCredits'
 import MetadataEditor from './MetadataEditor'
@@ -28,9 +29,10 @@ async function readApi<T>(url: string, signal?: AbortSignal): Promise<T> {
 }
 
 function Workspace({ user, logout }: { user: User; logout: () => void }) {
+  const [groupItem, setGroupItem] = useState<MediaItem | null>(null)
   const [metadataItem, setMetadataItem] = useState<MediaItem | null>(null)
   const [genre, setGenre] = useState('')
-  const [groupBy, setGroupBy] = useState<GroupBy>('none')
+  const [groupBy, setGroupBy] = useState<GroupBy>('collection')
   const [permissionsSource, setPermissionsSource] = useState<Source | null>(null)
   const [sourceRefresh, setSourceRefresh] = useState(0)
   const [sourcesError, setSourcesError] = useState('')
@@ -252,15 +254,16 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
           {selectedSource.is_owner && <SourceMetadataTools key={selectedSource.id} sourceId={selectedSource.id} onUpdated={() => setSourceRefresh(value => value + 1)}/>}
           {sourceLoading && <div className="source-message">Scanning this directory…</div>}
           {sourceError && <div className="source-message source-error">{sourceError}</div>}
-          {!sourceLoading && !sourceError && filteredFiles.length === 0 && <div className="source-empty"><FolderOpen size={23}/><strong>No supported media found</strong><span>We look for common video, audio, EPUB, and CBZ files in this directory and its subfolders.</span></div>}
-          {!sourceLoading && !sourceError && filteredFiles.length > 0 && <MediaCollection compact groupBy={groupBy} onMetadata={setMetadataItem} items={filteredFiles} busy={actionBusy} onOpen={(item, queue) => { void openMedia(item, queue) }} onSave={item => { void toggleSaved(item) }}/>}
+          {!sourceLoading && !sourceError && filteredFiles.length === 0 && <div className="source-empty"><FolderOpen size={23}/><strong>{query || kind || genre ? 'No matching media' : 'No supported media found'}</strong><span>{query || kind || genre ? 'Try another search or filter.' : 'We look for common video, audio, EPUB, and CBZ files in this directory and its subfolders.'}</span></div>}
+          {!sourceLoading && !sourceError && filteredFiles.length > 0 && <MediaCollection compact onGroupMetadata={setGroupItem} groupBy={groupBy} onMetadata={setMetadataItem} items={filteredFiles} busy={actionBusy} onOpen={(item, queue) => { void openMedia(item, queue) }} onSave={item => { void toggleSaved(item) }}/>}
           <p className="source-footnote">Select Play for music, Watch for video, or Read for EPUB and CBZ books.</p></>}
-        </section> : <CatalogViews genre={genre} groupBy={groupBy} onGenre={setGenre} onGroup={setGroupBy} onMetadata={setMetadataItem} page={page} username={user.username} catalog={catalog} saved={saved} recent={recent} loading={pageLoading} error={pageError} note={pageNote} query={query} kind={kind} source={sourceFilter} sort={sort} sources={sources} busy={actionBusy} hasMore={hasMore} onKind={setKind} onSource={setSourceFilter} onSort={setSort} onRefresh={() => setSourceRefresh(value => value + 1)} onLoadMore={() => { void loadMore() }} onOpen={(item, queue) => { void openMedia(item, queue) }} onSave={item => { void toggleSaved(item) }} onDiscover={() => navigate('Discover')}/>}
+        </section> : <CatalogViews onGroupMetadata={setGroupItem} genre={genre} groupBy={groupBy} onGenre={setGenre} onGroup={setGroupBy} onMetadata={setMetadataItem} page={page} username={user.username} catalog={catalog} saved={saved} recent={recent} loading={pageLoading} error={pageError} note={pageNote} query={query} kind={kind} source={sourceFilter} sort={sort} sources={sources} busy={actionBusy} hasMore={hasMore} onKind={setKind} onSource={setSourceFilter} onSort={setSort} onRefresh={() => setSourceRefresh(value => value + 1)} onLoadMore={() => { void loadMore() }} onOpen={(item, queue) => { void openMedia(item, queue) }} onSave={item => { void toggleSaved(item) }} onDiscover={() => navigate('Discover')}/>}
         <MetadataCredits/><footer className="footer"><span>MADE FOR THE MOMENTS BETWEEN</span><span>GRIMOIRE <b>·</b> EARLY ACCESS</span></footer>
       </div>
     </main>
     {permissionsSource && <SourcePermissions source={permissionsSource} ownerUsername={user.username} onClose={() => setPermissionsSource(null)} onSaved={() => setSourceRefresh(value => value + 1)}/>}
     {settingsOpen && <AccountSettings onClose={() => setSettingsOpen(false)} />}
+    {groupItem && <GroupEditor key={groupItem.metadata?.group?.id} item={groupItem} onClose={() => setGroupItem(null)} onUpdated={() => setSourceRefresh(value => value + 1)}/>}
     {metadataItem && <MetadataEditor key={metadataItem.file_key} item={metadataItem} onClose={() => setMetadataItem(null)} onUpdated={() => setSourceRefresh(value => value + 1)}/>}
     {reading && <BookReader sourceId={reading.source_id} sourceName={reading.source_name} file={reading} onClose={() => setReading(null)} />}
     {video && <VideoPlayer sourceId={video.source_id} sourceName={video.source_name} file={video} onClose={() => setVideo(null)} />}

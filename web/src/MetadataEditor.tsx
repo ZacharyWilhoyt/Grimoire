@@ -54,7 +54,7 @@ export default function MetadataEditor({ item, onClose, onUpdated }: { item: Med
   }, [view?.can_edit, item.source_id, item.kind])
   const action = async (work: () => Promise<void>) => { setBusy(true); setError(''); setMessage(''); try { await work() } catch (error) { setError(error instanceof Error ? error.message : 'Metadata operation failed.') } finally { setBusy(false) } }
   const save = (event: FormEvent) => { event.preventDefault(); void action(async () => {
-    const result = await call<MetadataView>(endpoint, { ...json({ path: item.relative_path, fields: { ...fields, genres: genres.split('\n').map(value => value.trim()).filter(Boolean) }, artwork_preference: artwork }), method: 'PUT' })
+    const result = await call<MetadataView>(endpoint, { ...json({ path: item.relative_path, fields: { ...fields, genres: view?.group?.has_custom_genres ? view.individual_genres ?? null : genres.split('\n').map(value => value.trim()).filter(Boolean) }, artwork_preference: artwork }), method: 'PUT' })
     accept(result); onUpdated(); setMessage('Custom metadata saved. The original file and its filename are unchanged.')
   }) }
   const extract = () => { void action(async () => {
@@ -88,10 +88,11 @@ export default function MetadataEditor({ item, onClose, onUpdated }: { item: Med
       {!view && !error && <p role="status">Loading metadata…</p>}
       {view && <>
         <div className="metadata-provenance"><span>Active metadata: {providerName(view.origin as Review['provider']) ?? view.origin}</span>{view.artwork_url && <img src={view.artwork_url} alt="Current artwork"/>}</div>
+        {view.group && (view.group.has_custom_genres || view.group.has_custom_artwork) && <p className="metadata-help">Album/series overrides are active{view.group.has_custom_genres ? ' for tags' : ''}{view.group.has_custom_artwork ? ' for artwork' : ''}. Change them in the group settings; individual edits retain their own values underneath.</p>}
         <form className="metadata-form" onSubmit={save}>
           {field('title', 'Display title')}{field('creator', item.kind === 'music' ? 'Artist / album artist' : item.kind === 'book' ? 'Author / writer' : 'Creator')}{field('collection', item.kind === 'music' ? 'Album' : 'Series / collection')}
           <div className="metadata-numbers">{number('year', 'Year')}{item.kind === 'video' && <>{number('season', 'Season')}{number('episode', 'Episode')}</>}{item.kind === 'music' && <>{number('disc', 'Disc')}{number('track', 'Track')}</>}{item.kind === 'book' && number('volume', 'Volume / series position')}</div>
-          <label>Genres / subjects<textarea rows={3} maxLength={1400} value={genres} disabled={busy || !view.can_edit} onChange={event => setGenres(event.target.value)}/><small>One tag per line. Tags are normalized for browsing and filtering.</small></label>
+          <label>Genres / subjects<textarea rows={3} maxLength={1400} value={genres} disabled={busy || !view.can_edit || view.group?.has_custom_genres} onChange={event => setGenres(event.target.value)}/><small>One tag per line. Tags are normalized for browsing and filtering.</small></label>
           <label>Description<textarea rows={4} maxLength={4000} value={fields.description ?? ''} disabled={busy || !view.can_edit} onChange={event => setFields({ ...fields, description: event.target.value })}/></label>
           {view.can_edit && <><label>Artwork<select value={artwork} disabled={busy} onChange={event => setArtwork(event.target.value)}><option value="auto">Matched artwork, with local fallback</option><option value="local">Local artwork only</option><option value="matched">Matched artwork only</option><option value="none">No artwork</option></select></label><button className="connect-submit" type="submit" disabled={busy}>Save custom metadata</button></>}
         </form>
@@ -110,7 +111,7 @@ export default function MetadataEditor({ item, onClose, onUpdated }: { item: Med
           </section>
         </>}
       </>}
-      <MetadataCredits/>
+      <MetadataCredits credits={[...new Set([...(view?.credits ?? []), ...(review ? [review.provider.startsWith('tmdb_') ? 'tmdb' : review.provider] : []), ...(searched && results.length ? [provider.startsWith('tmdb_') ? 'tmdb' : provider] : [])])]}/>
       {busy && <p className="metadata-help" role="status">Working… provider lookups and local extraction can take a moment.</p>}{error && <p className="video-error" role="alert">{error}</p>}{message && <p className="permission-success" role="status">{message}</p>}
     </div>
   </section></dialog>

@@ -21,11 +21,19 @@ media, or grant access to anything outside the user's authorized catalog.
 5. Use **Genre** and **Group** controls to filter/group the visible catalog or source.
    Search also includes display title, creator, collection, and tags. Original
    names and paths remain searchable. Grouped music plays in disc/track order;
-   video groups include season, and books use series position. Grouping normalizes
-   names, separates media types, and includes creator in book/music collection
-   identities. This is an initial text-based grouping model, not a canonical work,
+   TV series open into season folders, and books use series position. Grouping
+   normalizes names, separates sources/media types, and includes creator in
+   book/music collection identities. This is an initial text-based grouping model, not a canonical work,
    edition, release, or episode database. Distinct collections with identical
    names can still group together; owners can correct their collection labels.
+
+## Folder browsing and group edits
+
+Album/series groups now open as folders by default, with season/disc subdivisions
+where relevant. Owners can upload a group cover and edit group tags for all current
+and future members within their source. Item credits identify active providers;
+the general application notice is separate. See [Media groups](MEDIA_GROUPS.md) for
+usage, precedence, identity boundaries and upload limits.
 
 ## Optional Arr metadata
 
@@ -69,11 +77,12 @@ The reader's existing independent archive limits remain unchanged.
 
 ## Metadata precedence
 
-Three versions are stored separately in PostgreSQL:
+Metadata layers are stored separately in PostgreSQL:
 
 1. Filename hints + locally extracted fields.
 2. Reviewed provider fields (including optional Arr matches) overlay local fields where supplied.
 3. An optional complete owner-edited version replaces those display fields.
+4. Optional source-scoped album/series covers and tags overlay individual settings.
 
 Local rescans and online matches preserve the complete custom version. **Use
 gathered metadata** removes that version and restores automatic artwork selection.
@@ -130,7 +139,7 @@ spaces **all** provider HTTP requests by 1.1 seconds across API instances, with 
 bounded reservation queue. Owner searches/previews are limited to 30 per five
 minutes. At most two local/online metadata operations run per API instance.
 
-The app includes a **Metadata credits** section, the approved TMDB logo and its
+The app includes per-item **Metadata credits** and general **Application credits**. The general section includes the approved TMDB logo and its
 required notice. The bundled logo is unmodified from
 [TMDB's official logo page](https://www.themoviedb.org/about/logos-attribution).
 Operators remain responsible for applicable provider terms, data/image licenses,

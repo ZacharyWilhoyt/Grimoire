@@ -32,11 +32,43 @@ it('uses display metadata for search and genre filters while preserving original
   expect(item.name).toBe('original.media')
   expect(item.file_key).toBe('original')
 })
-it('groups albums across accessible sources in disc and track order without merging identities', async () => {
+it('orders album members while keeping source ownership and creator identities separate', async () => {
   const { groupMedia } = await import('./media')
   const item = (id: string, source: string, track: number, creator = 'Artist') => ({ ...file(id, 'music', source), metadata: { fields: { title: id, creator, collection: 'Album', track }, has_custom: false, origin: 'local', artwork_url: null, can_edit: false, artwork_preference: 'auto', provider: null, provider_id: null } })
-  const groups = groupMedia([item('ten','one',10),item('two','two',2),item('other','one',1,'Other Artist')],'collection')
-  expect(groups).toHaveLength(2)
+  const groups = groupMedia([item('ten','one',10),item('two','one',2),item('other','one',1,'Other Artist'),item('separate','two',1)],'collection')
+  expect(groups).toHaveLength(3)
   expect(groups[0].items.map(item => item.file_key)).toEqual(['two','ten'])
-  expect(groups[1].items.map(item => item.file_key)).toEqual(['other'])
+  expect(groups[1].items.map(item => item.file_key)).toEqual(['separate'])
+  expect(groups[2].items.map(item => item.file_key)).toEqual(['other'])
+})
+
+it('consolidates series across seasons and exposes numbered season folders', async () => {
+  const { groupMedia, subdivisions } = await import('./media')
+  const episode = (key: string, season: number, episode: number): MediaItem => ({ ...file(key, 'video'), metadata: { fields: { collection: 'A Show', season, episode }, has_custom: false, origin: 'local', artwork_url: null, can_edit: true, artwork_preference: 'auto', provider: null, provider_id: null } })
+  const groups = groupMedia([episode('s2e2',2,2),episode('s1e2',1,2),episode('s1e1',1,1)],'collection')
+  expect(groups).toHaveLength(1)
+  expect(groups[0].folder).toBe(true)
+  expect(subdivisions(groups[0].items)?.map(group => [group.label, group.items.map(item => item.file_key)])).toEqual([['Season 1',['s1e1','s1e2']],['Season 2',['s2e2']]])
+})
+it('leaves unrelated files visible and does not invent collection folders', async () => {
+  const { groupMedia } = await import('./media')
+  const groups = groupMedia([file('standalone','book'),file('other','book')],'collection')
+  expect(groups).toHaveLength(2)
+  expect(groups.every(group => !group.folder)).toBe(true)
+})
+
+it('creates disc folders only for multiple known discs', async () => {
+  const { subdivisions } = await import('./media')
+  const track = (key: string, disc?: number): MediaItem => ({ ...file(key, 'music'), metadata: { fields: { collection: 'Album', disc }, has_custom: false, origin: 'local', artwork_url: null, can_edit: true, artwork_preference: 'auto', provider: null, provider_id: null } })
+  expect(subdivisions([track('unknown'),track('one',1)])).toBeNull()
+  expect(subdivisions([track('two',2),track('one',1)])?.map(group => group.label)).toEqual(['Disc 1','Disc 2'])
+})
+
+it('opens book series as one folder with volumes in series order', async () => {
+  const { groupMedia } = await import('./media')
+  const volume = (key: string, position: number): MediaItem => ({ ...file(key, 'book'), metadata: { fields: { title: key, creator: 'Author', collection: 'Series', volume: position }, has_custom: false, origin: 'local', artwork_url: null, can_edit: true, artwork_preference: 'auto', provider: null, provider_id: null } })
+  const groups = groupMedia([volume('third',3),volume('first',1),volume('second',2)],'collection')
+  expect(groups).toHaveLength(1)
+  expect(groups[0].folder).toBe(true)
+  expect(groups[0].items.map(item => item.file_key)).toEqual(['first','second','third'])
 })

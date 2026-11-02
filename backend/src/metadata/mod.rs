@@ -1,4 +1,5 @@
 pub mod arr;
+pub mod groups;
 mod local;
 pub mod model;
 mod providers;
@@ -74,6 +75,9 @@ struct Record {
 }
 #[derive(Clone, Serialize)]
 pub struct View {
+    pub group: Option<groups::GroupView>,
+    pub individual_genres: Option<Vec<String>>,
+    pub credits: Vec<String>,
     pub fields: Fields,
     pub has_custom: bool,
     pub origin: String,
@@ -109,6 +113,9 @@ fn view(path: &str, key: &str, record: Option<&Record>, can_edit: bool, availabl
         })
         .unwrap_or((fallback, Fields::default(), None));
     View {
+        group: None,
+        individual_genres: model::effective(path, &local, &matched, custom.as_ref()).genres,
+        credits: credits(record, custom.is_none(), false, false),
         fields: model::effective(path, &local, &matched, custom.as_ref()),
         has_custom: custom.is_some(),
         origin: if custom.is_some() {
@@ -142,6 +149,58 @@ fn view(path: &str, key: &str, record: Option<&Record>, can_edit: bool, availabl
         provider_id: record.and_then(|record| record.provider_id.clone()),
     }
 }
+fn credits(
+    record: Option<&Record>,
+    fields_active: bool,
+    group_genres: bool,
+    group_artwork: bool,
+) -> Vec<String> {
+    let Some(record) = record else { return vec![] };
+    let mut fields = decode(&record.matched_data);
+    if group_genres {
+        fields.genres = None;
+    }
+    // Saving a full custom version must not erase attribution for imported fields
+    // that are retained unchanged (for example, editing only the genre).
+    let retained = record
+        .custom_data
+        .as_deref()
+        .map(decode)
+        .and_then(|fields| serde_json::to_value(fields).ok())
+        .and_then(|value| value.as_object().cloned());
+    let fields_used = serde_json::to_value(fields)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .is_some_and(|fields| {
+            fields.iter().any(|(key, value)| {
+                !value.is_null()
+                    && value.as_str().is_none_or(|value| !value.is_empty())
+                    && value.as_array().is_none_or(|value| !value.is_empty())
+                    && (fields_active
+                        || retained.as_ref().and_then(|fields| fields.get(key)) == Some(value))
+            })
+        });
+    let art_used = !group_artwork
+        && record.matched_artwork.is_some()
+        && matches!(record.artwork_preference.as_str(), "auto" | "matched");
+    let Some(provider) = record.provider.as_deref() else {
+        return vec![];
+    };
+    let mut credits = vec![];
+    if fields_used || art_used {
+        credits.push(
+            match provider {
+                "tmdb_movie" | "tmdb_tv" => "tmdb",
+                other => other,
+            }
+            .to_string(),
+        );
+    }
+    if art_used && provider == "musicbrainz" {
+        credits.push("coverartarchive".into());
+    }
+    credits
+}
 pub async fn enrich(
     state: &AppState,
     user: Uuid,
@@ -167,6 +226,7 @@ pub async fn enrich(
         .into_iter()
         .map(|record| (record.file_key.clone(), record))
         .collect();
+    let group_rows = groups::load_for_sources(state, user, items).await?;
     for item in items {
         let mut metadata = view(
             &item.file.relative_path,
@@ -175,6 +235,17 @@ pub async fn enrich(
             owned.contains(&item.source_id),
             item.available,
         );
+        groups::overlay(
+            &item.source_id,
+            item.file.kind,
+            &item.file.relative_path,
+            &mut metadata,
+            records.get(&item.file_key),
+            &group_rows,
+        );
+        if !item.available {
+            metadata.artwork_url = None;
+        }
         metadata.fields.description = None;
         item.metadata = Some(metadata);
     }
@@ -309,13 +380,16 @@ async fn current_view(
             .fetch_one(&state.db)
             .await
             .map_err(|_| auth::unavailable())?;
-    Ok(view(
-        path,
-        key,
-        load(state, key).await?.as_ref(),
-        owner,
-        true,
-    ))
+    let record = load(state, key).await?;
+    let mut metadata = view(path, key, record.as_ref(), owner, true);
+    let kind = std::path::Path::new(path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .and_then(|extension| crate::classify_extension(&extension.to_ascii_lowercase()));
+    if let Some(kind) = kind {
+        groups::enrich_one(state, source, kind, path, &mut metadata, record.as_ref()).await?;
+    }
+    Ok(metadata)
 }
 pub async fn details(
     State(state): State<AppState>,
@@ -894,5 +968,61 @@ mod tests {
                 .as_deref(),
             Some("Provider")
         );
+    }
+}
+
+#[cfg(test)]
+mod credit_tests {
+    use super::*;
+    fn record(provider: &str) -> Record {
+        Record {
+            file_key: "key".into(),
+            source_id: "source".into(),
+            relative_path: "file".into(),
+            local_data: "{}".into(),
+            matched_data: r#"{"title":"Matched title"}"#.into(),
+            custom_data: None,
+            provider: Some(provider.into()),
+            provider_id: Some("id".into()),
+            local_artwork: None,
+            matched_artwork: None,
+            artwork_preference: "auto".into(),
+            extract_stamp: None,
+        }
+    }
+    #[test]
+    fn editing_one_field_retains_credit_for_unchanged_imported_values() {
+        let mut data = record("tmdb_movie");
+        data.custom_data = Some(r#"{"title":"Matched title","genres":["custom genre"]}"#.into());
+        assert_eq!(credits(Some(&data), false, true, true), vec!["tmdb"]);
+        data.custom_data =
+            Some(r#"{"title":"Owner's own title","genres":["custom genre"]}"#.into());
+        assert!(credits(Some(&data), false, true, true).is_empty());
+    }
+    #[test]
+    fn credits_follow_active_fields_and_artwork_instead_of_file_type() {
+        let mut music = record("musicbrainz");
+        assert_eq!(
+            credits(Some(&music), true, false, false),
+            vec!["musicbrainz"]
+        );
+        assert!(!credits(Some(&music), true, false, false).contains(&"tmdb".into()));
+        music.matched_artwork = Some("art".into());
+        assert_eq!(
+            credits(Some(&music), false, false, false),
+            vec!["musicbrainz", "coverartarchive"]
+        );
+        assert!(credits(Some(&music), false, false, true).is_empty());
+        let mut tv = record("tmdb_tv");
+        assert_eq!(credits(Some(&tv), true, false, false), vec!["tmdb"]);
+        assert!(credits(Some(&tv), false, false, false).is_empty());
+        tv.matched_data = r#"{"genres":["drama"]}"#.into();
+        assert!(credits(Some(&tv), true, true, false).is_empty());
+        tv.matched_data = "{}".into();
+        tv.matched_artwork = Some("poster".into());
+        assert_eq!(credits(Some(&tv), false, false, false), vec!["tmdb"]);
+        assert!(credits(Some(&tv), false, false, true).is_empty());
+        tv.artwork_preference = "local".into();
+        assert!(credits(Some(&tv), true, false, false).is_empty());
     }
 }
