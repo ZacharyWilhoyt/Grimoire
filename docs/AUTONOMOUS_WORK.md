@@ -49,3 +49,10 @@ rather than inventing an arbitrary percentage threshold.
   other accounts; tested against disposable PostgreSQL.
 - GitHub Actions runs for the CI/progress storage and player-resume increments were
   independently observed completing successfully through GitHub's public API.
+
+## Music queue controls
+
+Shuffle and repeat controls are implemented with unchanged off/off defaults.
+Queue selector and DOM component tests cover stable shuffle ordering, repeat
+boundaries, visible control states, native repeat-one and single-track repeat-all.
+Production build and all frontend tests pass.

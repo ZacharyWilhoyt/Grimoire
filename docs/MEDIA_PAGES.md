@@ -80,3 +80,13 @@ frontend. Existing users and sources are preserved; no database rebuild or re-im
 is needed. The frontend build, selector tests, existing media tests, and PostgreSQL
 integration tests cover access isolation, revocation, save/unsave, history, missing
 files, offline sources, and library pagination.
+
+## Music queue controls
+
+The player now offers Shuffle and Repeat (off → all → one). Both default to off
+and last for the open player only. Shuffle keeps a stable permutation of the
+selected queue, starting at the current track and visiting each entry once before
+repeat-all wraps. Previous follows that same order. Repeat-one uses native audio
+looping; repeat-all wraps the queue, including a single-track queue. These controls
+never expand the queue beyond the accessible items selected by the current view or
+folder. Saved progress and current delivery permission checks still apply.
