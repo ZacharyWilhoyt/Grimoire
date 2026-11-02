@@ -3063,6 +3063,37 @@ async fn progress_is_private_permission_checked_and_revision_guarded(pool: PgPoo
     );
     let read = body(request(&state, Method::GET, &url, Some(&owner), None, None, None).await).await;
     assert_eq!(read["position"], 15.5);
+    let continuing = body(
+        request(
+            &state,
+            Method::GET,
+            "/api/continue",
+            Some(&owner),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(continuing["items"].as_array().unwrap().len(), 1);
+    assert_eq!(continuing["items"][0]["progress"]["position"], 15.5);
+    assert!(continuing["items"][0]["saved_at"].is_null());
+    let private = body(
+        request(
+            &state,
+            Method::GET,
+            "/api/continue",
+            Some(&other),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(private["items"], json!([]));
+
     let other_id: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE username='progress_other'")
         .fetch_one(&pool)
         .await
@@ -3073,6 +3104,35 @@ async fn progress_is_private_permission_checked_and_revision_guarded(pool: PgPoo
             .await
             .is_null()
     );
+    let own_progress = json!({"source_id":source,"relative_path":"clip.mp4","position":35.0,"total":100.0,"expected_revision":0});
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            "/api/progress",
+            Some(&other),
+            Some(&other_csrf),
+            Some(ORIGIN),
+            Some(own_progress)
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let own_continue = body(
+        request(
+            &state,
+            Method::GET,
+            "/api/continue",
+            Some(&other),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(own_continue["items"][0]["progress"]["position"], 35.0);
     sqlx::query("DELETE FROM source_permissions WHERE source_id=$1")
         .bind(&source)
         .execute(&pool)
@@ -3084,5 +3144,19 @@ async fn progress_is_private_permission_checked_and_revision_guarded(pool: PgPoo
             .status(),
         StatusCode::NOT_FOUND
     );
+    let revoked = body(
+        request(
+            &state,
+            Method::GET,
+            "/api/continue",
+            Some(&other),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(revoked["items"], json!([]));
     fs::remove_dir_all(root).unwrap();
 }

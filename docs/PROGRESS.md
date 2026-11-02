@@ -35,9 +35,23 @@ The client serializes writes and coalesces pending positions, so its own overlap
 requests use the last acknowledged revision. Failed writes are not blindly retried
 with unknown revisions. Progress is not stored in localStorage, and the browser
 never supplies a user ID. Last-opened activity remains distinct from progress:
-completion percentages/automatic completion and a dedicated Continue section are
-not yet implemented, and no arbitrary completion threshold has been invented.
+automatic completion rules are not implemented, and no arbitrary completion
+threshold has been invented.
 
 Verification covers position validation, permission/user isolation, CSRF, revision
 conflicts, client coalescing/failure handling, and saving the correct media element
 when switching tracks. Browser verification is tracked in AUTONOMOUS_WORK.md.
+
+## Catalog and Continue
+
+Catalog/source/library/activity items now include the current user's optional
+progress summary (position, total, update time). Cards display saved times or
+chapter/page numbers. For you includes a Continue section from `/api/continue`,
+independently paginated and sorted by the latest progress save. It does not depend
+on a bookmark or an open-history row and does not expose another user's progress.
+Only positive positions before the known total qualify; this is not a completion
+classification. Books can remain there on their last chapter/page. Unavailable
+entries are retained by the API but omitted from the playable Continue section.
+The UI shows the first six available entries from the loaded page; refresh or
+revisit For you to refresh saved-position labels. Continue uses individual cards
+for direct resume; other sections retain the album/series folder presentation.

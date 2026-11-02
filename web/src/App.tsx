@@ -45,6 +45,7 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
   const [page, setPage] = useState<PageName>(() => pageFromHash(window.location.hash))
   const [catalog, setCatalog] = useState<MediaItem[]>([])
   const [saved, setSaved] = useState<MediaItem[]>([])
+  const [continuing, setContinuing] = useState<MediaItem[]>([])
   const [recent, setRecent] = useState<MediaItem[]>([])
   const [pageLoading, setPageLoading] = useState(true)
   const [pageError, setPageError] = useState('')
@@ -123,10 +124,14 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
     setPageLoading(true); setPageError(''); setPageNote(''); setHasMore(false)
     if (page === 'My library') setSaved([])
     else if (page === 'Discover') setCatalog([])
-    else { setRecent([]); setSaved([]); setCatalog([]) }
+    else { setContinuing([]); setRecent([]); setSaved([]); setCatalog([]) }
     const load = async () => {
       const notes: string[] = []
       if (page === 'For you') {
+        const progress = await readApi<PersonalPage>('/api/continue', controller.signal)
+        if (controller.signal.aborted) return
+        setContinuing(progress.items)
+        if (progress.unavailable_items) notes.push('Some items with saved progress are unavailable.')
         const activity = await readApi<PersonalPage>('/api/activity', controller.signal)
         if (controller.signal.aborted) return
         setRecent(activity.items)
@@ -257,7 +262,7 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
           {!sourceLoading && !sourceError && filteredFiles.length === 0 && <div className="source-empty"><FolderOpen size={23}/><strong>{query || kind || genre ? 'No matching media' : 'No supported media found'}</strong><span>{query || kind || genre ? 'Try another search or filter.' : 'We look for common video, audio, EPUB, and CBZ files in this directory and its subfolders.'}</span></div>}
           {!sourceLoading && !sourceError && filteredFiles.length > 0 && <MediaCollection compact onGroupMetadata={setGroupItem} groupBy={groupBy} onMetadata={setMetadataItem} items={filteredFiles} busy={actionBusy} onOpen={(item, queue) => { void openMedia(item, queue) }} onSave={item => { void toggleSaved(item) }}/>}
           <p className="source-footnote">Select Play for music, Watch for video, or Read for EPUB and CBZ books.</p></>}
-        </section> : <CatalogViews onGroupMetadata={setGroupItem} genre={genre} groupBy={groupBy} onGenre={setGenre} onGroup={setGroupBy} onMetadata={setMetadataItem} page={page} username={user.username} catalog={catalog} saved={saved} recent={recent} loading={pageLoading} error={pageError} note={pageNote} query={query} kind={kind} source={sourceFilter} sort={sort} sources={sources} busy={actionBusy} hasMore={hasMore} onKind={setKind} onSource={setSourceFilter} onSort={setSort} onRefresh={() => setSourceRefresh(value => value + 1)} onLoadMore={() => { void loadMore() }} onOpen={(item, queue) => { void openMedia(item, queue) }} onSave={item => { void toggleSaved(item) }} onDiscover={() => navigate('Discover')}/>}
+        </section> : <CatalogViews continuing={continuing} onGroupMetadata={setGroupItem} genre={genre} groupBy={groupBy} onGenre={setGenre} onGroup={setGroupBy} onMetadata={setMetadataItem} page={page} username={user.username} catalog={catalog} saved={saved} recent={recent} loading={pageLoading} error={pageError} note={pageNote} query={query} kind={kind} source={sourceFilter} sort={sort} sources={sources} busy={actionBusy} hasMore={hasMore} onKind={setKind} onSource={setSourceFilter} onSort={setSort} onRefresh={() => setSourceRefresh(value => value + 1)} onLoadMore={() => { void loadMore() }} onOpen={(item, queue) => { void openMedia(item, queue) }} onSave={item => { void toggleSaved(item) }} onDiscover={() => navigate('Discover')}/>}
         <MetadataCredits/><footer className="footer"><span>MADE FOR THE MOMENTS BETWEEN</span><span>GRIMOIRE <b>·</b> EARLY ACCESS</span></footer>
       </div>
     </main>

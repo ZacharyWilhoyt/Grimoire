@@ -553,6 +553,7 @@ fn app(state: AppState) -> Router {
         )
         .route("/api/sources/{source_id}/metadata/job", get(metadata::job))
         .route("/api/catalog", get(catalog::discover))
+        .route("/api/continue", get(catalog::continue_media))
         .route(
             "/api/library",
             get(catalog::library)

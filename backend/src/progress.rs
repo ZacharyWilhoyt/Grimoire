@@ -167,3 +167,42 @@ mod tests {
         assert!(values(&update, "video").is_err());
     }
 }
+
+#[derive(Clone, Serialize, sqlx::FromRow)]
+pub struct Summary {
+    pub position: f64,
+    pub total: Option<f64>,
+    pub updated_at: f64,
+}
+#[derive(sqlx::FromRow)]
+struct SummaryRow {
+    file_key: String,
+    position: f64,
+    total: Option<f64>,
+    updated_at: f64,
+}
+pub async fn enrich(
+    state: &AppState,
+    user: uuid::Uuid,
+    items: &mut [catalog::Item],
+) -> Result<(), AppError> {
+    let keys: Vec<_> = items.iter().map(|item| item.file_key.as_str()).collect();
+    let rows=sqlx::query_as::<_,SummaryRow>("SELECT p.file_key,p.position,p.total,extract(epoch from p.updated_at)::float8 AS updated_at FROM media_progress p JOIN sources s ON s.id=p.source_id WHERE p.user_id=$1 AND p.file_key=ANY($2) AND (s.owner_id=$1 OR EXISTS(SELECT 1 FROM source_permissions a WHERE a.source_id=s.id AND a.user_id=$1 AND a.can_discover AND a.can_access_media))").bind(user).bind(keys).fetch_all(&state.db).await.map_err(|_|auth::unavailable())?;
+    let mut rows: std::collections::HashMap<_, _> = rows
+        .into_iter()
+        .map(|row| {
+            (
+                row.file_key,
+                Summary {
+                    position: row.position,
+                    total: row.total,
+                    updated_at: row.updated_at,
+                },
+            )
+        })
+        .collect();
+    for item in items {
+        item.progress = rows.remove(&item.file_key);
+    }
+    Ok(())
+}

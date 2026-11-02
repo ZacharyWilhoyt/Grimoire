@@ -72,3 +72,10 @@ it('opens book series as one folder with volumes in series order', async () => {
   expect(groups[0].folder).toBe(true)
   expect(groups[0].items.map(item => item.file_key)).toEqual(['first','second','third'])
 })
+
+it('labels saved time and book locations without treating opens as progress', async () => {
+  const { progressLabel } = await import('./media')
+  expect(progressLabel(file('unplayed','video'))).toBe('')
+  expect(progressLabel({ ...file('film','video'), progress: { position: 3662, total: 8000, updated_at: 1 } })).toBe('Saved at 1:01:02')
+  expect(progressLabel({ ...file('comic','book'), extension: 'cbz', progress: { position: 3, total: 20, updated_at: 1 } })).toBe('Page 4 of 20')
+})

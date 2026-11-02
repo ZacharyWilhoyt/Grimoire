@@ -24,6 +24,7 @@ struct MediaSource {
 }
 #[derive(Serialize)]
 pub struct Item {
+    pub progress: Option<crate::progress::Summary>,
     pub file_key: String,
     pub source_id: String,
     pub source_name: String,
@@ -88,6 +89,7 @@ fn item(source: &MediaSource, file: MediaFile) -> Item {
         last_opened_at: None,
         available: true,
         metadata: None,
+        progress: None,
     }
 }
 async fn enrich(state: &AppState, user: Uuid, items: &mut [Item]) -> Result<(), AppError> {
@@ -105,6 +107,7 @@ async fn enrich(state: &AppState, user: Uuid, items: &mut [Item]) -> Result<(), 
         }
     }
     crate::metadata::enrich(state, user, items).await?;
+    crate::progress::enrich(state, user, items).await?;
     Ok(())
 }
 // Recheck after filesystem work so revocation during a long scan cannot expose metadata.
@@ -222,17 +225,22 @@ async fn personal_page(
     state: AppState,
     user: Uuid,
     offset: i64,
-    recent: bool,
+    mode: u8,
 ) -> Result<Json<PersonalPage>, AppError> {
     if !(0..=1_000_000).contains(&offset) {
         return Err(crate::bad_request("Invalid page offset."));
     }
-    let (column, order) = if recent {
+    let (column, order) = if mode == 1 {
         ("last_opened_at", "m.last_opened_at")
     } else {
         ("saved_at", "m.saved_at")
     };
     let sql = format!("SELECT m.file_key,m.source_id,s.name AS source_name,s.path,m.relative_path,extract(epoch from m.saved_at)::float8 AS saved_at,extract(epoch from m.last_opened_at)::float8 AS last_opened_at FROM user_media m JOIN sources s ON s.id=m.source_id WHERE m.user_id=$1 AND m.{column} IS NOT NULL AND (s.owner_id=$1 OR EXISTS(SELECT 1 FROM source_permissions p WHERE p.source_id=s.id AND p.user_id=$1 AND p.can_discover AND p.can_access_media)) ORDER BY {order} DESC,m.file_key LIMIT 101 OFFSET $2");
+    let sql = if mode == 2 {
+        "SELECT m.file_key,m.source_id,s.name AS source_name,s.path,m.relative_path,extract(epoch from u.saved_at)::float8 AS saved_at,extract(epoch from u.last_opened_at)::float8 AS last_opened_at FROM media_progress m JOIN sources s ON s.id=m.source_id LEFT JOIN user_media u ON u.user_id=m.user_id AND u.file_key=m.file_key WHERE m.user_id=$1 AND m.position>0 AND (m.total IS NULL OR m.position<m.total) AND (s.owner_id=$1 OR EXISTS(SELECT 1 FROM source_permissions p WHERE p.source_id=s.id AND p.user_id=$1 AND p.can_discover AND p.can_access_media)) ORDER BY m.updated_at DESC,m.file_key LIMIT 101 OFFSET $2".to_string()
+    } else {
+        sql
+    };
     let rows = sqlx::query_as::<_, PersonalRow>(&sql)
         .bind(user)
         .bind(offset)
@@ -284,6 +292,7 @@ async fn personal_page(
                 last_opened_at: row.last_opened_at,
                 available,
                 metadata: None,
+                progress: None,
             });
         }
         PersonalPage {
@@ -297,6 +306,7 @@ async fn personal_page(
     .map_err(|_| auth::unavailable())?;
     filter_current_access(&state, user, &mut result.items).await?;
     crate::metadata::enrich(&state, user, &mut result.items).await?;
+    crate::progress::enrich(&state, user, &mut result.items).await?;
     Ok(Json(result))
 }
 pub async fn library(
@@ -304,14 +314,14 @@ pub async fn library(
     Extension(identity): Extension<auth::Identity>,
     Query(page): Query<Page>,
 ) -> Result<Json<PersonalPage>, AppError> {
-    personal_page(state, identity.user.id, page.offset, false).await
+    personal_page(state, identity.user.id, page.offset, 0).await
 }
 pub async fn recent(
     State(state): State<AppState>,
     Extension(identity): Extension<auth::Identity>,
     Query(page): Query<Page>,
 ) -> Result<Json<PersonalPage>, AppError> {
-    personal_page(state, identity.user.id, page.offset, true).await
+    personal_page(state, identity.user.id, page.offset, 1).await
 }
 async fn set_state(
     state: AppState,
@@ -404,4 +414,12 @@ pub async fn unsave(
         .await
         .map_err(|_| auth::unavailable())?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn continue_media(
+    State(state): State<AppState>,
+    Extension(identity): Extension<auth::Identity>,
+    Query(page): Query<Page>,
+) -> Result<Json<PersonalPage>, AppError> {
+    personal_page(state, identity.user.id, page.offset, 2).await
 }

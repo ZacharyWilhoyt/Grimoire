@@ -12,8 +12,8 @@ Completed increments are tested, committed and pushed individually.
 
 ## Next work
 
-- Surface stored progress in the catalog/For you experience, maintaining per-user
-  isolation and current access checks. Playback/reading resume itself is implemented.
+- Continue section and saved-position indicators are now implemented and browser
+  verified for video, music, EPUB and CBZ; source revocation/user isolation tests pass.
 - Other small, reversible usability improvements supported by the existing design.
 
 ## Deferred decisions / owner follow-up

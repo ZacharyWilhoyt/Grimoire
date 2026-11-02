@@ -4,7 +4,7 @@ export type MetadataView = { group?: GroupView | null; individual_genres?: strin
 export const displayTitle = (item: { name: string; metadata?: MetadataView | null }) => item.metadata?.fields.title?.trim() || item.name
 export type GroupBy = 'none' | 'collection' | 'creator'
 export type MediaKind = 'video' | 'music' | 'book'
-export type MediaItem = { metadata?: MetadataView | null; file_key: string; available: boolean; source_id: string; source_name: string; name: string; relative_path: string; kind: MediaKind; extension: string; size_bytes: number; modified_at: number | null; saved_at: number | null; last_opened_at: number | null }
+export type MediaItem = { progress?: { position: number; total: number | null; updated_at: number } | null; metadata?: MetadataView | null; file_key: string; available: boolean; source_id: string; source_name: string; name: string; relative_path: string; kind: MediaKind; extension: string; size_bytes: number; modified_at: number | null; saved_at: number | null; last_opened_at: number | null }
 export type PersonalState = Pick<MediaItem, 'file_key' | 'saved_at' | 'last_opened_at'>
 export type PageName = 'For you' | 'Discover' | 'My library'
 export type Sort = 'title' | 'modified' | 'saved' | 'source'
@@ -60,4 +60,13 @@ export function subdivisions(items: MediaItem[]): MediaGroup[] | null {
   // TV seasons are useful even when just one season is currently visible.
   if (!numbers.some(number => number != null) || kind === 'music' && numbers.filter(number => number != null).length < 2) return null
   return numbers.sort((a,b) => (a ?? -1) - (b ?? -1)).map(number => ({ key: `${field}:${number}`, label: number == null ? 'Unnumbered' : `${kind === 'video' ? 'Season' : 'Disc'} ${number}`, items: orderMembers(items.filter(item => (item.metadata?.fields[field] ?? null) === number)), folder: true }))
+}
+
+export function progressLabel(item: MediaItem) {
+  const progress = item.progress
+  if (!progress || progress.position <= 0) return ''
+  if (item.kind === 'book') return `${item.extension.toLowerCase() === 'cbz' ? 'Page' : 'Chapter'} ${Math.floor(progress.position) + 1}${progress.total ? ` of ${progress.total}` : ''}`
+  const seconds = Math.floor(progress.position), hours = Math.floor(seconds / 3600)
+  const time = hours ? `${hours}:${String(Math.floor(seconds / 60) % 60).padStart(2,'0')}:${String(seconds % 60).padStart(2,'0')}` : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2,'0')}`
+  return `Saved at ${time}`
 }

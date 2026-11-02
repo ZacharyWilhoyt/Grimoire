@@ -4,7 +4,7 @@ The three navigation pages use actual source files and PostgreSQL-backed persona
 state. The sample catalog and mock playback progress have been removed. Links use
 `#for-you`, `#discover`, and `#library`, with browser back/forward and reload support.
 
-- **For you** shows recently opened items, saved items, and a rotating selection by
+- **For you** shows a private Continue section from saved progress, recently opened items, saved items, and a rotating selection by
   media type from accessible sources. Suggestions balance video, music, and books;
   they do not claim to infer tastes or use external metadata/recommendation services.
 - **Discover** browses supported files across sources for which the account currently
