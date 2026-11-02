@@ -390,6 +390,50 @@ As development progresses, this README should be updated to distinguish
 implemented features from planned capabilities and to provide accurate
 setup, configuration, and deployment instructions.
 
+## Local Development
+
+The initial application foundation lives in two small projects:
+
+- `web/` is a React and TypeScript single-page app built with Vite.
+- `backend/` is a Rust HTTP API built with Axum.
+
+The frontend currently provides a responsive media-library starting
+point with video, music, and book views. Its sample catalog is presentation
+data only. The Rust service currently exposes `GET /api/health`; it does
+not yet implement accounts, catalog persistence, media delivery, or
+authorization. The frontend displays whether that API is reachable.
+
+Install Node.js (with npm) and Rust (with Cargo), then run the API in one
+terminal:
+
+```sh
+cd backend
+cargo run
+```
+
+In another terminal, start the frontend:
+
+```sh
+cd web
+npm install
+npm run dev
+```
+
+Open the local URL printed by Vite. During development, Vite forwards
+`/api` requests to the API at `http://127.0.0.1:3000`. The API binds to
+loopback by default; deployment binding and frontend/API hosting should
+be configured explicitly for the target environment.
+
+### Initial stack choice
+
+React was selected for its broad adoption and contributor familiarity;
+the [2025 Stack Overflow Developer Survey](https://survey.stackoverflow.co/2025/technology/)
+lists React as the most-used web framework in its survey. Vite provides a small development server
+and production bundler, while TypeScript adds static checks to the
+frontend. Axum provides a Rust-native HTTP routing layer for the API.
+This is a starting point, not a commitment to a database, deployment
+model, or service topology.
+
 ## Contributing
 
 Contributions, ideas, and discussions are welcome as the project takes
