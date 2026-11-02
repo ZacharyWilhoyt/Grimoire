@@ -615,6 +615,7 @@ fn app(state: AppState) -> Router {
             axum::routing::post(catalog::opened).layer(DefaultBodyLimit::max(16 * 1024)),
         )
         .route("/api/auth/me", get(auth::me))
+        .route("/api/auth/sessions", get(auth::sessions))
         .route("/api/auth/logout", axum::routing::post(auth::logout))
         .route(
             "/api/auth/logout-others",

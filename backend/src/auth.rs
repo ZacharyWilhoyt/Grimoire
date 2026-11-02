@@ -461,6 +461,20 @@ pub async fn login(
     }
     result
 }
+#[derive(Serialize, FromRow)]
+pub struct SessionSummary {
+    created_at: f64,
+    last_seen: f64,
+    is_current: bool,
+}
+pub async fn sessions(
+    State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<Identity>,
+) -> Result<Json<Vec<SessionSummary>>, AppError> {
+    let sessions = sqlx::query_as::<_, SessionSummary>("SELECT extract(epoch FROM created_at)::float8 AS created_at,extract(epoch FROM last_seen)::float8 AS last_seen,(token_hash=$2) AS is_current FROM sessions WHERE user_id=$1 AND expires_at>now() AND last_seen>now()-interval '30 minutes' ORDER BY (token_hash=$2) DESC,created_at DESC LIMIT 10")
+        .bind(identity.user.id).bind(identity.session_hash).fetch_all(&state.db).await.map_err(|_| unavailable())?;
+    Ok(Json(sessions))
+}
 pub async fn me(axum::Extension(identity): axum::Extension<Identity>) -> Json<AuthResponse> {
     Json(AuthResponse {
         user: identity.user,

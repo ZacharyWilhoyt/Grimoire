@@ -197,3 +197,17 @@ that the account password has not changed and that the calling session remains
 active, and records `other_sessions_revoked` without credentials. It does not change
 the account password or prevent a subsequent valid login. Disposable-database tests
 cover wrong passwords, CSRF rejection, revocation, and current/other-user isolation.
+
+## Active-session activity
+
+Account settings displays up to ten active sessions, with the current session
+first, sign-in time and last activity. Refresh takes a new snapshot; the list is
+also refreshed after password changes or signing out other sessions. The existing
+password-confirmed sign-out policy is unchanged. Session expiry remains thirty
+minutes idle / twelve hours absolute.
+
+`GET /api/auth/sessions` requires authentication and selects only the caller's
+sessions, including for administrators. It filters expired/idle sessions and
+returns only `created_at`, `last_seen` (epoch seconds) and `is_current`. No raw
+session tokens, hashes, CSRF values, or other accounts' session data are returned.
+The response is private/no-store. This feature adds no device or IP tracking.

@@ -3770,3 +3770,104 @@ async fn concurrent_logins_preserve_the_ten_session_limit(pool: PgPool) {
     .unwrap();
     assert_eq!(successes, 4);
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn session_activity_is_private_bounded_and_filters_expired_sessions(pool: PgPool) {
+    let app_state = state(pool.clone());
+    let (owner, csrf, user) = register_user(&app_state, "activity_owner").await;
+    let (_, _, _) = login(
+        &app_state,
+        "activity_owner",
+        "a long shared source passphrase",
+    )
+    .await;
+    let (other, _, _) = register_user(&app_state, "activity_other").await;
+    let id = Uuid::parse_str(user["id"].as_str().unwrap()).unwrap();
+    sqlx::query("UPDATE users SET is_admin=true WHERE id=$1")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for (key, expiry, idle) in [("expired", -1, 0), ("idle", 3600, 31)] {
+        sqlx::query("INSERT INTO sessions(token_hash,user_id,csrf_token,expires_at,last_seen) VALUES ($1,$2,'never_expose_this_csrf',now()+$3::int*interval '1 second',now()-$4::int*interval '1 minute')").bind(key).bind(id).bind(expiry).bind(idle).execute(&pool).await.unwrap();
+    }
+    let url = "/api/auth/sessions";
+    assert_eq!(
+        request(&app_state, Method::GET, url, None, None, None, None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let response = request(&app_state, Method::GET, url, Some(&owner), None, None, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["cache-control"], "private, no-store");
+    let data = body(response).await;
+    let summaries = data.as_array().unwrap();
+    assert_eq!(summaries.len(), 2);
+    assert_eq!(summaries[0]["is_current"], true);
+    assert_eq!(
+        summaries
+            .iter()
+            .filter(|summary| summary["is_current"] == true)
+            .count(),
+        1
+    );
+    for summary in summaries {
+        let keys: std::collections::HashSet<_> = summary
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            std::collections::HashSet::from(["created_at", "last_seen", "is_current"])
+        );
+        assert!(summary["created_at"].as_f64().unwrap() > 0.0);
+    }
+    let secrets: Vec<(String, String)> =
+        sqlx::query_as("SELECT token_hash,csrf_token FROM sessions")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    for (token, csrf) in secrets {
+        assert!(!data.to_string().contains(&token));
+        assert!(!data.to_string().contains(&csrf));
+    }
+    for index in 0..20 {
+        sqlx::query(
+            "INSERT INTO sessions(token_hash,user_id,csrf_token) VALUES ($1,$2,'extra_csrf')",
+        )
+        .bind(format!("extra-{index}"))
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let bounded =
+        body(request(&app_state, Method::GET, url, Some(&owner), None, None, None).await).await;
+    assert_eq!(bounded.as_array().unwrap().len(), 10);
+    assert_eq!(bounded[0]["is_current"], true);
+    assert_eq!(
+        request(
+            &app_state,
+            Method::POST,
+            "/api/auth/logout-others",
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(json!({"current_password":"a long shared source passphrase"}))
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let remaining =
+        body(request(&app_state, Method::GET, url, Some(&owner), None, None, None).await).await;
+    assert_eq!(remaining.as_array().unwrap().len(), 1);
+    let independent =
+        body(request(&app_state, Method::GET, url, Some(&other), None, None, None).await).await;
+    assert_eq!(independent.as_array().unwrap().len(), 1);
+    assert_eq!(independent[0]["is_current"], true);
+}

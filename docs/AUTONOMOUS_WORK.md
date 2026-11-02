@@ -198,3 +198,14 @@ sessions. Account flows and owner/source policies remain unchanged.
 Strict Clippy, 22 Rust unit tests and all 21 database/extraction tests pass after
 the issuance change, including existing rotation/password-change/default-deny
 regressions. No schema migration or public authentication API change is required.
+
+## Private session activity view
+
+Added a read-only active-session view to account settings, showing current/other
+session times before the existing password-confirmed revocation action. The
+protected endpoint is caller-scoped, expiry-filtered, bounded to ten and exposes
+only timestamps/current-session status. Account actions refresh the snapshot;
+failures have a read-only retry and aborted reads cannot overwrite later data.
+Verified production layout, refresh and keyboard focus on disposable sessions.
+All 62 frontend tests, 22 database/extraction tests, Clippy and build pass. Remote
+CI independently confirmed the preceding login-race fix and modal/backup commits.
