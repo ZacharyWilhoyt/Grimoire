@@ -1,0 +1,97 @@
+import { useEffect, useRef, useState } from 'react'
+import { sanitizeChapter, chapterDocument } from './epubContent'
+import { ChevronLeft, ChevronRight, X } from 'lucide-react'
+import { archivePath, isImage, openArchive, parseXml, type BookArchive } from './bookArchive'
+
+type Props = { sourceId: string; sourceName: string; file: { name: string; relative_path: string; extension: string }; onClose: () => void }
+type Chapter = { path: string; label: string }
+
+export default function BookReader({ sourceId, sourceName, file, onClose }: Props) {
+  const dialog = useRef<HTMLDialogElement>(null)
+  const [archive, setArchive] = useState<BookArchive | null>(null)
+  const [chapters, setChapters] = useState<Chapter[]>([])
+  const [index, setIndex] = useState(0)
+  const [zoom, setZoom] = useState(100)
+  const [fontSize, setFontSize] = useState(19)
+  const [content, setContent] = useState('')
+  const [image, setImage] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
+  const comic = file.extension.toLowerCase() === 'cbz'
+
+  useEffect(() => {
+    dialog.current?.showModal()
+    const controller = new AbortController()
+    let opened: BookArchive | undefined
+    const load = async () => {
+      opened = await openArchive(`/api/sources/${encodeURIComponent(sourceId)}/book?${new URLSearchParams({ path: file.relative_path })}`, controller.signal)
+      if (controller.signal.aborted) { await opened.close(); return }
+      let pages: Chapter[]
+      if (comic) {
+        pages = [...opened.entries.keys()].filter(isImage).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).map(path => ({ path, label: path }))
+      } else {
+        const container = parseXml(await (await opened.read('META-INF/container.xml')).text())
+        const packagePath = container.querySelector('rootfile')?.getAttribute('full-path')
+        if (!packagePath) throw new Error('The EPUB package was not found.')
+        const packageXml = parseXml(await (await opened.read(packagePath)).text())
+        const manifest = new Map([...packageXml.querySelectorAll('manifest > item')].map(item => [item.getAttribute('id'), item]))
+        pages = [...packageXml.querySelectorAll('spine > itemref')].filter(item => item.getAttribute('linear') !== 'no').map((item, i) => {
+          const entry = manifest.get(item.getAttribute('idref'))
+          if (!entry || entry.getAttribute('media-type') !== 'application/xhtml+xml') throw new Error('This EPUB has an unsupported chapter format.')
+          return { path: archivePath(packagePath, entry.getAttribute('href') ?? ''), label: `Chapter ${i + 1}` }
+        })
+      }
+      if (!pages.length) throw new Error('No readable pages were found in this book.')
+      if (!controller.signal.aborted) { setArchive(opened); setChapters(pages) }
+    }
+    load().catch(error => { if (!controller.signal.aborted) { setError(error instanceof Error ? error.message : 'Could not open this book.'); setLoading(false) } })
+    return () => { controller.abort(); void opened?.close(); dialog.current?.close() }
+  }, [sourceId, file.relative_path, comic])
+
+  useEffect(() => {
+    if (!archive || !chapters[index]) return
+    let cancelled = false
+    const urls: string[] = []
+    const objectUrl = (blob: Blob) => { const url = URL.createObjectURL(blob); urls.push(url); return url }
+    setLoading(true); setError(''); setImage(''); setContent('')
+    const load = async () => {
+      const chapter = chapters[index]
+      const blob = await archive.read(chapter.path)
+      if (cancelled) return
+      if (comic) { setImage(objectUrl(blob)); return }
+      const xml = parseXml(await blob.text())
+      const body = xml.querySelector('body')
+      if (!body) throw new Error('This chapter has no readable content.')
+      const fragment = sanitizeChapter(new XMLSerializer().serializeToString(body))
+      for (const image of fragment.querySelectorAll('img')) {
+        const reference = image.getAttribute('src')
+        image.removeAttribute('src')
+        if (!reference) continue
+        try {
+          const path = archivePath(chapter.path, reference)
+          if (isImage(path) && archive.entries.has(path)) {
+            const imageBlob = await archive.read(path)
+            if (cancelled) return
+            image.src = objectUrl(imageBlob)
+          }
+        } catch { /* Omit external or missing images. */ }
+      }
+      for (const link of fragment.querySelectorAll('a')) link.removeAttribute('href')
+      const wrapper = document.createElement('div'); wrapper.append(fragment)
+      if (!cancelled) setContent(wrapper.innerHTML)
+    }
+    load().catch(error => { if (!cancelled) setError(error instanceof Error ? error.message : 'Could not read this page.') }).finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true; urls.forEach(URL.revokeObjectURL) }
+  }, [archive, chapters, index, comic])
+
+  const srcDocument = chapterDocument(content, fontSize)
+  return <dialog ref={dialog} className="video-backdrop" aria-labelledby="reader-title" onCancel={event => { event.preventDefault(); onClose() }}>
+    <section className="book-dialog">
+      <header className="video-header"><div><h2 id="reader-title">{file.name}</h2><span>{sourceName} · {comic ? 'CBZ' : 'EPUB'}</span></div><button aria-label="Close reader" onClick={onClose}><X size={21}/></button></header>
+      <div className="reader-toolbar"><button disabled={index === 0 || loading} onClick={() => setIndex(index - 1)} aria-label="Previous"><ChevronLeft size={18}/></button><label>{comic ? 'Page' : 'Chapter'} <select aria-label={comic ? 'Page' : 'Chapter'} value={index} disabled={!chapters.length || loading} onChange={event => setIndex(Number(event.target.value))}>{chapters.map((chapter, i) => <option key={chapter.path} value={i}>{comic ? i + 1 : chapter.label}</option>)}</select> / {chapters.length}</label><button disabled={index >= chapters.length - 1 || loading} onClick={() => setIndex(index + 1)} aria-label="Next"><ChevronRight size={18}/></button>{comic && <label>Page width <input aria-label="Page width" type="range" min="50" max="200" step="10" value={zoom} onChange={event => setZoom(Number(event.target.value))}/>{zoom}%</label>}{!comic && <label>Text size <input aria-label="Text size" type="range" min="14" max="30" value={fontSize} onChange={event => setFontSize(Number(event.target.value))}/></label>}</div>
+      {loading && <p className="source-message" role="status">Opening book content…</p>}
+      {error && <p className="video-error" role="alert">{error}</p>}
+      {!loading && !error && (comic ? <div className="comic-page" key={index}><img style={{ width: `${zoom}%`, maxWidth: 'none' }} src={image} alt={`Page ${index + 1}`} onError={() => setError('This page image is damaged or unsupported by your browser.')}/></div> : <iframe key={index} title={`Book chapter ${index + 1}`} className="epub-page" sandbox="" referrerPolicy="no-referrer" srcDoc={srcDocument}/>)}
+    </section>
+  </dialog>
+}

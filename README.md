@@ -402,7 +402,7 @@ point with video, music, and book views. The local single-user backend can
 register directories and list supported media file names, relative paths,
 types, and sizes. Directory registrations persist in `backend/data/`
 (or the directory set by `GRIMOIRE_DATA_DIR`). The sample catalog on the
-home page is still presentation data. Music and video playback from connected sources are available. Accounts and
+home page is still presentation data. Music/video playback and EPUB/CBZ reading from connected sources are available. Accounts and
 source/media authorization are not implemented.
 
 Install Node.js (with npm) and Rust (with Cargo), then run the API in one
@@ -431,13 +431,13 @@ computer running the Rust API (for example, `/home/you/Media`). Grimoire
 recursively lists common video (`mkv`, `mp4`, `webm`, and others), audio
 (`mp3`, `flac`, `m4a`, and others), EPUB, and CBZ files. It skips symbolic
 links, limits each scan to 10,000 media files and 100,000 directory
-entries, and serves audio or video when selected for playback. Disconnecting a source
+entries, and serves selected media and book files through scoped endpoints. Disconnecting a source
 only removes its registration; it never deletes files. The source registry
 is stored with owner-only permissions on Unix systems.
 
 This first version trusts the single local operator who can access the
 loopback API. It does not have user accounts or source-level authorization
-yet; do not expose the API to a network. Book reading and multi-user sharing remain future work.
+yet; do not expose the API to a network. Multi-user sharing remains future work.
 
 ### Music playback
 
@@ -469,6 +469,31 @@ This endpoint accepts only recognized video extensions. Files stream directly;
 container and codec support depend on the browser, and there is no transcoding,
 external subtitle loading, or track selection UI yet. A listed file may therefore
 need conversion before a browser can play it. Restart the Rust API after updating.
+
+### EPUB and CBZ reading
+
+Select **Read** beside a book in a connected source. EPUB chapters appear in
+spine order with chapter selection and adjustable text size. CBZ displays raster
+image pages in natural filename order, with page selection and a width control.
+Use the close button or Escape to return to browsing. Opening a reader stops
+music and video playback. Reading position currently lasts only while the reader
+is open.
+
+Books use `GET /api/sources/{id}/book?path=...` and the same registered-source,
+path, and cache restrictions as the media endpoints. Archives are processed in
+browser memory with [zip.js](https://gildas-lormeau.github.io/zip.js/). The initial
+limits are 128 MiB compressed, 256 MiB expanded, 32 MiB per entry, and 5,000
+archive entries; encrypted archives are rejected. EPUB HTML is sanitized using
+[DOMPurify](https://github.com/cure53/DOMPurify), then shown in an iframe with an
+empty sandbox and a restrictive content security policy. Scripts, external
+resources, forms, and chapter hyperlinks are disabled. EPUB publisher styles
+are replaced by the reader's layout; complex fixed-layout books, SVG-only pages,
+DRM, bookmarks, and saved reading progress are not supported yet. CBZ supports
+JPEG, PNG, WebP, GIF, and AVIF images according to browser support. Corrupt or
+unsupported content produces a reader error.
+
+After updating, run `npm install` in `web/` and restart both development servers.
+Reader checks can be run with `npm test` in `web/` and `cargo test` in `backend/`.
 
 ### Initial stack choice
 

@@ -1,3 +1,4 @@
+import BookReader from './BookReader'
 import VideoPlayer from './VideoPlayer'
 import MusicPlayer from './MusicPlayer'
 import { useEffect, useState, type FormEvent } from 'react'
@@ -20,6 +21,7 @@ const items: MediaItem[] = [
 const art = (id: string, width = 800) => `https://images.unsplash.com/${id}?auto=format&fit=crop&w=${width}&q=85`
 
 function App() {
+  const [reading, setReading] = useState<{ source: Source; file: SourceFile } | null>(null)
   const [video, setVideo] = useState<{ source: Source; file: SourceFile } | null>(null)
   const [playback, setPlayback] = useState<{ source: Source; tracks: SourceFile[]; index: number } | null>(null)
   const [filter, setFilter] = useState<MediaKind>('All')
@@ -89,6 +91,7 @@ function App() {
     if (!window.confirm(`Disconnect “${source.name}”? Grimoire will not delete files from your computer.`)) return
     const response = await fetch(`/api/sources/${encodeURIComponent(source.id)}`, { method: 'DELETE' })
     if (!response.ok) return
+    if (reading?.source.id === source.id) setReading(null)
     if (video?.source.id === source.id) setVideo(null)
     if (playback?.source.id === source.id) setPlayback(null)
     setSources(current => current.filter(item => item.id !== source.id))
@@ -122,8 +125,8 @@ function App() {
           {sourceLoading && <div className="source-message">Scanning this directory…</div>}
           {sourceError && <div className="source-message source-error">{sourceError}</div>}
           {!sourceLoading && !sourceError && filteredFiles.length === 0 && <div className="source-empty"><FolderOpen size={23}/><strong>No supported media found</strong><span>We look for common video, audio, EPUB, and CBZ files in this directory and its subfolders.</span></div>}
-          {!sourceLoading && !sourceError && filteredFiles.length > 0 && <div className="file-list">{filteredFiles.map(file => <article className="file-row" key={file.relative_path}><span className={`file-kind ${file.kind}`}>{file.kind === 'video' ? <Film size={16}/> : file.kind === 'music' ? <FileAudio size={16}/> : <FileText size={16}/>}</span><div className="file-copy"><strong>{file.name}</strong><span>{file.relative_path}</span></div><span className="file-type">{file.extension.toUpperCase()}</span><span className="file-size">{formatSize(file.size_bytes)}</span>{file.kind === 'music' && <button className="track-play" aria-label={`Play ${file.name}`} onClick={() => { setVideo(null); const tracks = filteredFiles.filter(track => track.kind === 'music'); setPlayback({ source: selectedSource, tracks, index: tracks.indexOf(file) }) }}>▶ Play</button>}{file.kind === 'video' && <button className="track-play" aria-label={`Watch ${file.name}`} onClick={() => { setPlayback(null); setVideo({ source: selectedSource, file }) }}>▶ Watch</button>}</article>)}</div>}
-          <p className="source-footnote">Select Play for music or Watch for video. Format support depends on your browser.</p>
+          {!sourceLoading && !sourceError && filteredFiles.length > 0 && <div className="file-list">{filteredFiles.map(file => <article className="file-row" key={file.relative_path}><span className={`file-kind ${file.kind}`}>{file.kind === 'video' ? <Film size={16}/> : file.kind === 'music' ? <FileAudio size={16}/> : <FileText size={16}/>}</span><div className="file-copy"><strong>{file.name}</strong><span>{file.relative_path}</span></div><span className="file-type">{file.extension.toUpperCase()}</span><span className="file-size">{formatSize(file.size_bytes)}</span>{file.kind === 'music' && <button className="track-play" aria-label={`Play ${file.name}`} onClick={() => { setVideo(null); const tracks = filteredFiles.filter(track => track.kind === 'music'); setPlayback({ source: selectedSource, tracks, index: tracks.indexOf(file) }) }}>▶ Play</button>}{file.kind === 'video' && <button className="track-play" aria-label={`Watch ${file.name}`} onClick={() => { setPlayback(null); setVideo({ source: selectedSource, file }) }}>▶ Watch</button>}{file.kind === 'book' && <button className="track-play" aria-label={`Read ${file.name}`} onClick={() => { setPlayback(null); setVideo(null); setReading({ source: selectedSource, file }) }}>Read</button>}</article>)}</div>}
+          <p className="source-footnote">Select Play for music, Watch for video, or Read for EPUB and CBZ books.</p>
         </section> : <>
 
         <section className="featured" aria-label="Featured media">
@@ -147,6 +150,7 @@ function App() {
         <footer className="footer"><span>MADE FOR THE MOMENTS BETWEEN</span><span>GRIMOIRE <b>·</b> EARLY ACCESS</span></footer>
       </div>
     </main>
+    {reading && <BookReader sourceId={reading.source.id} sourceName={reading.source.name} file={reading.file} onClose={() => setReading(null)} />}
     {video && <VideoPlayer sourceId={video.source.id} sourceName={video.source.name} file={video.file} onClose={() => setVideo(null)} />}
     {playback && <MusicPlayer sourceName={playback.source.name} sourceId={playback.source.id} tracks={playback.tracks} index={playback.index} onIndex={index => setPlayback(current => current ? { ...current, index } : null)} onClose={() => setPlayback(null)} />}
     {connectOpen && <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setConnectOpen(false) }}><form className="connect-modal" onSubmit={connectDirectory}><button className="modal-close" type="button" aria-label="Close" onClick={() => setConnectOpen(false)}><X size={17}/></button><span className="modal-icon"><FolderOpen size={19}/></span><div className="section-kicker">ADD A CONTENT SOURCE</div><h2>Connect a directory</h2><p>Choose an existing folder on the computer running Grimoire. We’ll scan its subfolders for supported media.</p><label htmlFor="directory-path">Directory path</label><input id="directory-path" autoFocus value={directoryPath} onChange={event => setDirectoryPath(event.target.value)} placeholder="/home/you/Media" required/><small className="path-hint">Use a full local path, such as <code>/home/you/Videos</code>.</small>{connectError && <div className="connect-error">{connectError}</div>}<button className="connect-submit" type="submit" disabled={connecting}>{connecting ? 'Connecting…' : 'Connect directory'}</button><span className="modal-note">Disconnecting a source never deletes its files.</span></form></div>}

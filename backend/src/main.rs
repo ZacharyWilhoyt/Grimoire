@@ -239,6 +239,15 @@ async fn stream_video(
     stream_media(state, source_id, query, request, "video").await
 }
 
+async fn stream_book(
+    State(state): State<AppState>,
+    RoutePath(source_id): RoutePath<String>,
+    Query(query): Query<MediaRequest>,
+    request: Request,
+) -> Result<Response, AppError> {
+    stream_media(state, source_id, query, request, "book").await
+}
+
 async fn stream_media(
     state: AppState,
     source_id: String,
@@ -254,6 +263,17 @@ async fn stream_media(
         .path
         .clone();
     let path = resolve_media_path(&root, &query.path, kind)?;
+    if kind == "book"
+        && fs::metadata(&path)
+            .map_err(|_| bad_request("Book unavailable."))?
+            .len()
+            > 128 * 1024 * 1024
+    {
+        return Err(AppError(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "Books must be smaller than 128 MiB.".into(),
+        ));
+    }
     let response = ServeFile::new(path)
         .try_call(request)
         .await
@@ -265,6 +285,11 @@ async fn stream_media(
     response
         .headers_mut()
         .insert("x-content-type-options", "nosniff".parse().unwrap());
+    if kind == "book" {
+        response
+            .headers_mut()
+            .insert("content-disposition", "attachment".parse().unwrap());
+    }
     Ok(response)
 }
 
@@ -454,6 +479,7 @@ async fn main() {
         .route("/api/sources/{source_id}/media", get(list_media))
         .route("/api/sources/{source_id}/audio", get(stream_audio))
         .route("/api/sources/{source_id}/video", get(stream_video))
+        .route("/api/sources/{source_id}/book", get(stream_book))
         .fallback(not_found)
         .with_state(state)
         .layer(TraceLayer::new_for_http());
@@ -482,6 +508,8 @@ mod tests {
         ));
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("track.mp3"), b"0123456789").unwrap();
+        fs::write(root.join("story.epub"), b"0123456789").unwrap();
+        fs::write(root.join("comic.cbz"), b"0123456789").unwrap();
         fs::write(root.join("clip.mp4"), b"0123456789").unwrap();
         fs::write(root.join("private.txt"), b"private").unwrap();
         fs::canonicalize(root).unwrap()
@@ -582,6 +610,18 @@ mod tests {
         assert!(matches!(result, Err(AppError(StatusCode::NOT_FOUND, _))));
         fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn book_paths_require_books_and_deny_escapes() {
+        let root = fixture();
+        for path in ["story.epub", "comic.cbz"] {
+            assert!(resolve_media_path(&root, path, "book").is_ok());
+        }
+        for path in ["track.mp3", "clip.mp4", "../story.epub", "/etc/passwd"] {
+            assert!(resolve_media_path(&root, path, "book").is_err());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[tokio::test]
     async fn video_supports_ranges_and_requires_registered_source() {
         let root = fixture();
@@ -624,6 +664,72 @@ mod tests {
             RoutePath("local".into()),
             Query(MediaRequest {
                 path: "clip.mp4".into(),
+            }),
+            Request::new(axum::body::Body::empty()),
+        )
+        .await;
+        assert!(matches!(result, Err(AppError(StatusCode::NOT_FOUND, _))));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn book_supports_ranges_and_requires_registered_source() {
+        let root = fixture();
+        let state = AppState {
+            sources: Arc::new(RwLock::new(vec![Source {
+                id: "local".into(),
+                name: "Local".into(),
+                path: root.clone(),
+            }])),
+            data_dir: Arc::new(root.clone()),
+            next_source_id: Arc::new(AtomicU64::new(2)),
+        };
+        let request = Request::builder()
+            .header("range", "bytes=2-4")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = stream_book(
+            State(state.clone()),
+            RoutePath("local".into()),
+            Query(MediaRequest {
+                path: "story.epub".into(),
+            }),
+            request,
+        )
+        .await
+        .unwrap_or_else(|_| panic!("stream failed"));
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.headers()["content-range"], "bytes 2-4/10");
+        assert_eq!(response.headers()["cache-control"], "private, no-store");
+        assert_eq!(
+            axum::body::to_bytes(response.into_body(), 10)
+                .await
+                .unwrap()
+                .as_ref(),
+            b"234"
+        );
+        fs::File::create(root.join("oversized.epub"))
+            .unwrap()
+            .set_len(129 * 1024 * 1024)
+            .unwrap();
+        let oversized = stream_book(
+            State(state.clone()),
+            RoutePath("local".into()),
+            Query(MediaRequest {
+                path: "oversized.epub".into(),
+            }),
+            Request::new(axum::body::Body::empty()),
+        )
+        .await;
+        assert!(matches!(
+            oversized,
+            Err(AppError(StatusCode::PAYLOAD_TOO_LARGE, _))
+        ));
+        state.sources.write().await.clear();
+        let result = stream_book(
+            State(state),
+            RoutePath("local".into()),
+            Query(MediaRequest {
+                path: "story.epub".into(),
             }),
             Request::new(axum::body::Body::empty()),
         )
