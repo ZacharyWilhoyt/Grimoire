@@ -1,0 +1,50 @@
+name: Checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm test
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: grimoire_test
+          POSTGRES_PASSWORD: ci_disposable_password
+          POSTGRES_DB: grimoire_tests
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U grimoire_test -d grimoire_tests"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgresql://grimoire_test:ci_disposable_password@127.0.0.1:5432/grimoire_tests
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - run: cargo +stable fmt --manifest-path backend/Cargo.toml --check
+      - run: cargo +stable clippy --locked --manifest-path backend/Cargo.toml --all-targets -- -D warnings
+      - run: cargo +stable test --locked --manifest-path backend/Cargo.toml
+      - run: cargo +stable test --locked --manifest-path backend/Cargo.toml -- --ignored
