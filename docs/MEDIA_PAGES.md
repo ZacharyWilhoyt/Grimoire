@@ -31,8 +31,8 @@ identity, not a content hash or metadata-provider identifier.
 `user_media` stores only the authenticated account ID, item/source references,
 save timestamp, and last-opened timestamp. It stores no duplicated titles, embedded
 metadata, or origin URLs. Activity means **opened**, not watched/listened/read or
-completed. Playback position, reading position, completion, favorites/playlists,
-and taste-based recommendation ranking are not implemented by this change.
+completed. Playback and chapter/page positions now persist through the separate [progress API](PROGRESS.md).
+Completion, playlists and taste-based recommendation ranking remain unimplemented.
 
 A saved record is not an access grant. Every catalog/library/activity query and
 mutation checks current source/media permission. Visibility-only or acquisition-only

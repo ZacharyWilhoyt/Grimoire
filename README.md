@@ -483,8 +483,7 @@ Select **Read** beside a book in a connected source. EPUB chapters appear in
 spine order with chapter selection and adjustable text size. CBZ displays raster
 image pages in natural filename order, with page selection and a width control.
 Use the close button or Escape to return to browsing. Opening a reader stops
-music and video playback. Reading position currently lasts only while the reader
-is open.
+music and video playback. Chapter/page positions now persist across sessions; see [progress](docs/PROGRESS.md).
 
 Books use `GET /api/sources/{id}/book?path=...` and the same registered-source,
 path, and cache restrictions as the media endpoints. Archives are processed in
@@ -516,6 +515,13 @@ review online matches from TMDB, MusicBrainz/Cover Art Archive, and Open Library
 Catalog cards show authorized artwork, with genre filters and album/series grouping.
 Filenames and bookmarks remain unchanged. See [Metadata](docs/METADATA.md) for setup,
 permissions, FFmpeg requirements, provider credentials, and extraction limits.
+
+### Resume playback and reading
+
+Audio/video resume saved timestamps; EPUB/CBZ resume chapters/pages. Positions are
+private to the account and require current media access. Concurrent players use
+revision checks to avoid silently overwriting one another. See [Progress](docs/PROGRESS.md)
+for save timing, failure behavior and current reading-position limits.
 
 ### Album/series folders and custom covers
 

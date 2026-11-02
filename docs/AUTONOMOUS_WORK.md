@@ -12,8 +12,8 @@ Completed increments are tested, committed and pushed individually.
 
 ## Next work
 
-- Persistent playback and reading progress across sessions/devices, with the same
-  per-user isolation and current media-access checks as library/activity state.
+- Surface stored progress in the catalog/For you experience, maintaining per-user
+  isolation and current access checks. Playback/reading resume itself is implemented.
 - Other small, reversible usability improvements supported by the existing design.
 
 ## Deferred decisions / owner follow-up
@@ -35,6 +35,8 @@ The backend now exposes session-protected GET/PUT `/api/progress`, keyed to the
 current user and an authorized source/path. Positions use seconds for audio/video
 and zero-based chapter/page indexes for books, with an optional book locator.
 Writes require the revision returned by the preceding read; conflicting players
-receive 409 instead of silently overwriting each other. This API is not wired to
-players/readers yet; that is the next increment. Completion rules remain deferred
+receive 409 instead of silently overwriting each other. The client is now wired to audio/video time and book chapter/page restoration.
+Build/unit tests pass. Browser verification confirmed CBZ page and EPUB chapter
+restoration after closing/reopening, audio restoration beyond a seeded 20-second
+position, and video restoration beyond 18 seconds. Database reads verified saves. Completion rules remain deferred
 rather than inventing an arbitrary percentage threshold.

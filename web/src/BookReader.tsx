@@ -1,3 +1,4 @@
+import { ProgressSession } from './progress'
 import { displayTitle, type MetadataView } from './media'
 import { useEffect, useRef, useState } from 'react'
 import { sanitizeChapter, chapterDocument } from './epubContent'
@@ -9,8 +10,12 @@ type Chapter = { path: string; label: string }
 
 export default function BookReader({ sourceId, sourceName, file, onClose }: Props) {
   const dialog = useRef<HTMLDialogElement>(null)
+  const progress = useRef<ProgressSession | null>(null)
+  const [progressReady, setProgressReady] = useState(false)
+  const [progressError, setProgressError] = useState('')
   const [archive, setArchive] = useState<BookArchive | null>(null)
   const [chapters, setChapters] = useState<Chapter[]>([])
+  const [renderedIndex, setRenderedIndex] = useState(-1)
   const [index, setIndex] = useState(0)
   const [zoom, setZoom] = useState(100)
   const [fontSize, setFontSize] = useState(19)
@@ -22,9 +27,14 @@ export default function BookReader({ sourceId, sourceName, file, onClose }: Prop
 
   useEffect(() => {
     dialog.current?.showModal()
+    setProgressReady(false); setProgressError(''); setArchive(null); setChapters([]); setLoading(true); setRenderedIndex(-1)
     const controller = new AbortController()
     let opened: BookArchive | undefined
     const load = async () => {
+      const session = new ProgressSession(sourceId, file.relative_path, message => { if (!controller.signal.aborted) setProgressError(message) })
+      progress.current = session
+      const saved = await session.load()
+      if (controller.signal.aborted) return
       opened = await openArchive(`/api/sources/${encodeURIComponent(sourceId)}/book?${new URLSearchParams({ path: file.relative_path })}`, controller.signal)
       if (controller.signal.aborted) { await opened.close(); return }
       let pages: Chapter[]
@@ -43,7 +53,11 @@ export default function BookReader({ sourceId, sourceName, file, onClose }: Prop
         })
       }
       if (!pages.length) throw new Error('No readable pages were found in this book.')
-      if (!controller.signal.aborted) { setArchive(opened); setChapters(pages) }
+      if (!controller.signal.aborted) {
+        const located = saved?.locator ? pages.findIndex(page => page.path === saved.locator) : -1
+        setIndex(located >= 0 ? located : Math.min(Math.max(0, Math.floor(saved?.position ?? 0)), pages.length - 1))
+        setArchive(opened); setChapters(pages); setProgressReady(true)
+      }
     }
     load().catch(error => { if (!controller.signal.aborted) { setError(error instanceof Error ? error.message : 'Could not open this book.'); setLoading(false) } })
     return () => { controller.abort(); void opened?.close(); dialog.current?.close() }
@@ -54,12 +68,12 @@ export default function BookReader({ sourceId, sourceName, file, onClose }: Prop
     let cancelled = false
     const urls: string[] = []
     const objectUrl = (blob: Blob) => { const url = URL.createObjectURL(blob); urls.push(url); return url }
-    setLoading(true); setError(''); setImage(''); setContent('')
+    setLoading(true); setRenderedIndex(-1); setError(''); setImage(''); setContent('')
     const load = async () => {
       const chapter = chapters[index]
       const blob = await archive.read(chapter.path)
       if (cancelled) return
-      if (comic) { setImage(objectUrl(blob)); return }
+      if (comic) { setImage(objectUrl(blob)); setRenderedIndex(index); return }
       const xml = parseXml(await blob.text())
       const body = xml.querySelector('body')
       if (!body) throw new Error('This chapter has no readable content.')
@@ -79,11 +93,15 @@ export default function BookReader({ sourceId, sourceName, file, onClose }: Prop
       }
       for (const link of fragment.querySelectorAll('a')) link.removeAttribute('href')
       const wrapper = document.createElement('div'); wrapper.append(fragment)
-      if (!cancelled) setContent(wrapper.innerHTML)
+      if (!cancelled) { setContent(wrapper.innerHTML); setRenderedIndex(index) }
     }
     load().catch(error => { if (!cancelled) setError(error instanceof Error ? error.message : 'Could not read this page.') }).finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true; urls.forEach(URL.revokeObjectURL) }
   }, [archive, chapters, index, comic])
+
+  useEffect(() => {
+    if (progressReady && renderedIndex === index && !loading && !error && chapters[index]) progress.current?.save({ position: index, total: chapters.length, locator: chapters[index].path })
+  }, [index, renderedIndex, chapters, progressReady, loading, error])
 
   const srcDocument = chapterDocument(content, fontSize)
   return <dialog ref={dialog} className="video-backdrop" aria-labelledby="reader-title" onCancel={event => { event.preventDefault(); onClose() }}>
@@ -91,6 +109,7 @@ export default function BookReader({ sourceId, sourceName, file, onClose }: Prop
       <header className="video-header"><div><h2 id="reader-title">{displayTitle(file)}</h2><span>{sourceName} · {comic ? 'CBZ' : 'EPUB'}</span></div><button aria-label="Close reader" onClick={onClose}><X size={21}/></button></header>
       <div className="reader-toolbar"><button disabled={index === 0 || loading} onClick={() => setIndex(index - 1)} aria-label="Previous"><ChevronLeft size={18}/></button><label>{comic ? 'Page' : 'Chapter'} <select aria-label={comic ? 'Page' : 'Chapter'} value={index} disabled={!chapters.length || loading} onChange={event => setIndex(Number(event.target.value))}>{chapters.map((chapter, i) => <option key={chapter.path} value={i}>{comic ? i + 1 : chapter.label}</option>)}</select> / {chapters.length}</label><button disabled={index >= chapters.length - 1 || loading} onClick={() => setIndex(index + 1)} aria-label="Next"><ChevronRight size={18}/></button>{comic && <label>Page width <input aria-label="Page width" type="range" min="50" max="200" step="10" value={zoom} onChange={event => setZoom(Number(event.target.value))}/>{zoom}%</label>}{!comic && <label>Text size <input aria-label="Text size" type="range" min="14" max="30" value={fontSize} onChange={event => setFontSize(Number(event.target.value))}/></label>}</div>
       {loading && <p className="source-message" role="status">Opening book content…</p>}
+      {progressError && <p className="video-error" role="status">{progressError}</p>}
       {error && <p className="video-error" role="alert">{error}</p>}
       {!loading && !error && (comic ? <div className="comic-page" key={index}><img style={{ width: `${zoom}%`, maxWidth: 'none' }} src={image} alt={`Page ${index + 1}`} onError={() => setError('This page image is damaged or unsupported by your browser.')}/></div> : <iframe key={index} title={`Book chapter ${index + 1}`} className="epub-page" sandbox="" referrerPolicy="no-referrer" srcDoc={srcDocument}/>)}
     </section>
