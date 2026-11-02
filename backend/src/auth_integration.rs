@@ -2119,3 +2119,446 @@ async fn metadata_reviews_are_bound_expiring_single_use_and_jobs_skip_unchanged(
     assert_eq!(details["fields"]["title"], "Reviewed Book");
     fs::remove_dir_all(root).unwrap();
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn arr_connections_are_optional_owner_only_and_match_existing_files_without_writes(
+    pool: PgPool,
+) {
+    use std::sync::Mutex;
+    let requests = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen = requests.clone();
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+        .encode_image(&image::RgbImage::from_pixel(
+            10,
+            10,
+            image::Rgb([20, 100, 180]),
+        ))
+        .unwrap();
+    let mock=Router::new().fallback(axum::routing::any(move |request:Request<Body>| {
+        let seen=seen.clone();let jpeg=jpeg.clone();
+        async move {
+            let path=request.uri().path();seen.lock().unwrap().push(format!("{} {path}",request.method()));
+            if request.method()!=Method::GET || request.headers().get("x-api-key").and_then(|value|value.to_str().ok())!=Some("synthetic-arr-key") {return (StatusCode::FORBIDDEN,"Forbidden").into_response();}
+            let (app,path)=path.trim_start_matches('/').split_once('/').unwrap_or(("",""));
+            if app=="redirect" {return (StatusCode::FOUND,[("location","/must-not-be-followed")]).into_response();}
+            if path=="api" {return Json(json!({"current":if app=="lidarr"{"v1"}else if app=="sonarr5"{"v5"}else{"v3"}})).into_response();}
+            let endpoint=path.splitn(3,'/').nth(2).unwrap_or("");
+            let app_name=if app=="sonarr5"{"Sonarr"}else{app};
+            if endpoint=="system/status" {return Json(json!({"appName":app_name,"version":"synthetic latest"})).into_response();}
+            if endpoint.starts_with("mediacover/") {return ([("content-type","image/jpeg")],jpeg).into_response();}
+            let value=match (app_name,endpoint) {
+                ("radarr","movie")=>json!([{"id":1,"title":"An Arr Movie","year":2025,"overview":"Movie overview","genres":["Drama"],"path":"/movies/Movie","movieFile":{"id":2,"path":"/movies/Movie/Movie.mkv"},"images":[{"coverType":"poster","url":"/MediaCover/1/poster.jpg"}],"collection":{"title":"Movie Collection"}}]),
+                ("sonarr"|"Sonarr","series")=>json!([{"id":3,"title":"Arr Show","path":"/tv/Show","year":2024,"genres":["Animation"],"images":[{"coverType":"poster","url":"/MediaCover/3/poster.jpg"}]}]),
+                ("sonarr"|"Sonarr","episodefile")=>json!([{"id":4,"path":"/tv/Show/Season 01/ep01.mkv"}]),
+                ("sonarr"|"Sonarr","episode")=>json!([{"id":5,"episodeFileId":4,"title":"Arr Pilot","seasonNumber":1,"episodeNumber":1,"overview":"Episode overview"}]),
+                ("lidarr","artist")=>json!([{"id":6,"artistName":"Arr Artist","path":"/music/Artist","genres":["Jazz"]}]),
+                ("lidarr","trackfile")=>json!([{"id":7,"albumId":8,"path":"/music/Artist/Album/song.flac"}]),
+                ("lidarr","album/8")=>json!({"id":8,"title":"Arr Album","releaseDate":"2023-01-01","genres":[],"images":[{"coverType":"cover","url":"/MediaCover/Albums/8/cover.jpg"}]}),
+                ("lidarr","track")=>json!([{"id":9,"trackFileId":7,"title":"Arr Song","absoluteTrackNumber":2,"mediumNumber":1}]),
+                _=>return StatusCode::NOT_FOUND.into_response(),
+            };Json(value).into_response()
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, mock).await.unwrap() });
+    let base = format!("http://{address}");
+    let mut state = state(pool.clone());
+    Arc::get_mut(&mut state.metadata).unwrap().arr = metadata::arr::Config::testing(
+        ["sonarr", "sonarr5", "radarr", "lidarr", "redirect"]
+            .iter()
+            .map(|name| format!("{base}/{name}/"))
+            .collect(),
+    );
+    let (owner, csrf, user) = register_user(&state, "arr_owner").await;
+    let (viewer, viewer_csrf, viewer_user) = register_user(&state, "arr_viewer").await;
+    let root = std::env::temp_dir().join(format!("grimoire-arr-{}", Uuid::new_v4()));
+    for path in [
+        "shows/Show/Season 01/ep01.mkv",
+        "movies/Movie/Movie.mkv",
+        "music/Artist/Album/song.flac",
+        "movies/NotInArr.mkv",
+    ] {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, b"synthetic media").unwrap();
+    }
+    let source = Uuid::new_v4().to_string();
+    let user_id = Uuid::parse_str(user["id"].as_str().unwrap()).unwrap();
+    sqlx::query("INSERT INTO sources(id,owner_id,name,path) VALUES ($1,$2,'Arr test',$3)")
+        .bind(&source)
+        .bind(user_id)
+        .bind(root.to_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO source_permissions(source_id,user_id,can_discover,can_access_media) VALUES ($1,$2,true,true)").bind(&source).bind(Uuid::parse_str(viewer_user["id"].as_str().unwrap()).unwrap()).execute(&pool).await.unwrap();
+    let endpoint = format!("/api/sources/{source}/arr");
+    let initial = body(
+        request(
+            &state,
+            Method::GET,
+            &endpoint,
+            Some(&owner),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(initial["connections"], json!([]));
+    assert!(requests.lock().unwrap().is_empty());
+    assert_eq!(
+        request(
+            &state,
+            Method::GET,
+            &endpoint,
+            Some(&viewer),
+            None,
+            None,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    for (app, path, remote, subpath, title) in [
+        (
+            "sonarr",
+            "shows/Show/Season 01/ep01.mkv",
+            "/tv",
+            "shows",
+            "Arr Pilot",
+        ),
+        (
+            "sonarr5",
+            "shows/Show/Season 01/ep01.mkv",
+            "/tv",
+            "shows",
+            "Arr Pilot",
+        ),
+        (
+            "radarr",
+            "movies/Movie/Movie.mkv",
+            "/movies",
+            "movies",
+            "An Arr Movie",
+        ),
+        (
+            "lidarr",
+            "music/Artist/Album/song.flac",
+            "/music",
+            "music",
+            "Arr Song",
+        ),
+    ] {
+        let id = Uuid::new_v4();
+        let connection = format!("{endpoint}/{id}");
+        let kind = if app == "sonarr5" { "sonarr" } else { app };
+        let settings = json!({"name":app,"kind":kind,"base_url":format!("{base}/{app}/"),"remote_root":remote,"source_subpath":subpath,"api_key":"synthetic-arr-key"});
+        assert_eq!(
+            request(
+                &state,
+                Method::PUT,
+                &connection,
+                Some(&viewer),
+                Some(&viewer_csrf),
+                Some(ORIGIN),
+                Some(settings.clone())
+            )
+            .await
+            .status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            request(
+                &state,
+                Method::PUT,
+                &connection,
+                Some(&owner),
+                None,
+                Some(ORIGIN),
+                Some(settings.clone())
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN
+        );
+        let saved = request(
+            &state,
+            Method::PUT,
+            &connection,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(settings.clone()),
+        )
+        .await;
+        assert_eq!(saved.status(), StatusCode::OK);
+        assert!(!body(saved).await.to_string().contains("synthetic-arr-key"));
+        let encrypted: Vec<u8> =
+            sqlx::query_scalar("SELECT api_key_encrypted FROM arr_connections WHERE id=$1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(!encrypted
+            .windows(17)
+            .any(|bytes| bytes == b"synthetic-arr-key"));
+        assert_eq!(
+            request(
+                &state,
+                Method::POST,
+                &format!("{connection}/test"),
+                Some(&owner),
+                Some(&csrf),
+                Some(ORIGIN),
+                None
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            request(
+                &state,
+                Method::POST,
+                &format!("{connection}/test"),
+                Some(&viewer),
+                Some(&viewer_csrf),
+                Some(ORIGIN),
+                None
+            )
+            .await
+            .status(),
+            StatusCode::NOT_FOUND
+        );
+        let preview_url = format!("{connection}/preview");
+        if kind == "radarr" {
+            assert_eq!(
+                request(
+                    &state,
+                    Method::POST,
+                    &preview_url,
+                    Some(&owner),
+                    Some(&csrf),
+                    Some(ORIGIN),
+                    Some(json!({"path":"movies/NotInArr.mkv"}))
+                )
+                .await
+                .status(),
+                StatusCode::BAD_REQUEST
+            );
+        }
+
+        assert_eq!(
+            request(
+                &state,
+                Method::POST,
+                &preview_url,
+                Some(&viewer),
+                Some(&viewer_csrf),
+                Some(ORIGIN),
+                Some(json!({"path":path}))
+            )
+            .await
+            .status(),
+            StatusCode::NOT_FOUND
+        );
+        let preview = request(
+            &state,
+            Method::POST,
+            &preview_url,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(json!({"path":path})),
+        )
+        .await;
+        assert_eq!(preview.status(), StatusCode::OK);
+        let preview = body(preview).await;
+        assert_eq!(preview["fields"]["title"], title);
+        if kind == "lidarr" {
+            assert_eq!(preview["fields"]["genres"], json!(["jazz"]));
+        }
+        let apply_url = format!("/api/sources/{source}/metadata/apply");
+        let apply = json!({"path":path,"review_token":preview["review_token"]});
+        let applied = request(
+            &state,
+            Method::POST,
+            &apply_url,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(apply.clone()),
+        )
+        .await;
+        assert_eq!(applied.status(), StatusCode::OK);
+        let applied = body(applied).await;
+        assert_eq!(applied["metadata"]["fields"]["title"], title);
+        assert!(applied["metadata"]["artwork_url"].is_string());
+        assert_eq!(applied["warnings"], json!([]));
+        assert_eq!(
+            request(
+                &state,
+                Method::POST,
+                &apply_url,
+                Some(&owner),
+                Some(&csrf),
+                Some(ORIGIN),
+                Some(apply)
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+        let stale = body(
+            request(
+                &state,
+                Method::POST,
+                &preview_url,
+                Some(&owner),
+                Some(&csrf),
+                Some(ORIGIN),
+                Some(json!({"path":path})),
+            )
+            .await,
+        )
+        .await;
+        let mut edited = settings.clone();
+        edited["api_key"] = Value::Null;
+        edited["enabled"] = json!(false);
+        assert_eq!(
+            request(
+                &state,
+                Method::PUT,
+                &connection,
+                Some(&owner),
+                Some(&csrf),
+                Some(ORIGIN),
+                Some(edited)
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            request(
+                &state,
+                Method::POST,
+                &apply_url,
+                Some(&owner),
+                Some(&csrf),
+                Some(ORIGIN),
+                Some(json!({"path":path,"review_token":stale["review_token"]}))
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            request(
+                &state,
+                Method::DELETE,
+                &connection,
+                Some(&owner),
+                Some(&csrf),
+                Some(ORIGIN),
+                None
+            )
+            .await
+            .status(),
+            StatusCode::NO_CONTENT
+        );
+    }
+    let redirect_id = Uuid::new_v4();
+    let redirect_url = format!("{endpoint}/{redirect_id}");
+    let settings = json!({"name":"Redirect test","kind":"radarr","base_url":format!("{base}/redirect/"),"remote_root":"/movies","api_key":"synthetic-arr-key"});
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            &redirect_url,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(settings)
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            &format!("{redirect_url}/test"),
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::BAD_GATEWAY
+    );
+    assert!(!requests
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|request| request.contains("must-not-be-followed")));
+    assert_eq!(
+        request(
+            &state,
+            Method::DELETE,
+            &redirect_url,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    let denied = json!({"name":"Bad target","kind":"sonarr","base_url":"http://169.254.169.254/","remote_root":"/tv","api_key":"synthetic-arr-key"});
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            &format!("{endpoint}/{}", Uuid::new_v4()),
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(denied)
+        )
+        .await
+        .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let final_list = body(
+        request(
+            &state,
+            Method::GET,
+            &endpoint,
+            Some(&owner),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(final_list["connections"], json!([]));
+    assert!(requests
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|request| request.starts_with("GET ")));
+    assert!(root.join("shows/Show/Season 01/ep01.mkv").is_file());
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}

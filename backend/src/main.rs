@@ -483,6 +483,21 @@ async fn not_found() -> (StatusCode, Json<ApiError>) {
 fn app(state: AppState) -> Router {
     use axum::{extract::DefaultBodyLimit, middleware};
     let protected = Router::new()
+        .route("/api/sources/{source_id}/arr", get(metadata::arr::list))
+        .route(
+            "/api/sources/{source_id}/arr/{connection_id}",
+            axum::routing::put(metadata::arr::save)
+                .delete(metadata::arr::remove)
+                .layer(DefaultBodyLimit::max(16 * 1024)),
+        )
+        .route(
+            "/api/sources/{source_id}/arr/{connection_id}/test",
+            axum::routing::post(metadata::arr::test),
+        )
+        .route(
+            "/api/sources/{source_id}/arr/{connection_id}/preview",
+            axum::routing::post(metadata::arr::preview).layer(DefaultBodyLimit::max(16 * 1024)),
+        )
         .route("/api/metadata/providers", get(metadata::provider_status))
         .route("/api/metadata/artwork/{file_key}", get(metadata::artwork))
         .route(

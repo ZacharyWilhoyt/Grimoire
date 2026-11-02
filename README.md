@@ -517,6 +517,15 @@ Catalog cards show authorized artwork, with genre filters and album/series group
 Filenames and bookmarks remain unchanged. See [Metadata](docs/METADATA.md) for setup,
 permissions, FFmpeg requirements, provider credentials, and extraction limits.
 
+### Optional Arr metadata connections
+
+Owners can connect Sonarr, Radarr and Lidarr per source, test connections, map
+folders, and preview metadata for existing Arr library files. Current local
+extraction and online matching remain the default; Arr is optional. See
+[Arr integrations](docs/ARR_INTEGRATIONS.md) for encryption-key setup, approved
+URLs, folder mapping, API versions and operational limits. Download/acquisition
+requests remain future work.
+
 ### Site branding
 
 The sidebar logo and browser icons use `Data/Assets/Grimoire_Icon.svg`.

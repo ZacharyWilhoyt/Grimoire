@@ -1,3 +1,4 @@
+import type { ArrConnection } from './ArrConnections'
 import MetadataCredits from './MetadataCredits'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { X, Search, RefreshCw } from 'lucide-react'
@@ -7,8 +8,8 @@ import { displayTitle, type MediaItem, type MetadataFields, type MetadataView } 
 type Provider = 'tmdb_movie' | 'tmdb_tv' | 'musicbrainz' | 'openlibrary'
 type Status = { provider: Provider; enabled: boolean; message: string | null }
 type Candidate = { id: string; title: string; creator: string | null; collection: string | null; year: number | null }
-type Review = { review_token: string; provider: Provider; provider_id: string; fields: MetadataFields; has_artwork: boolean }
-const providerName = (provider: Provider) => ({ tmdb_movie: 'TMDB movies', tmdb_tv: 'TMDB television', musicbrainz: 'MusicBrainz recordings', openlibrary: 'Open Library books' })[provider]
+type Review = { review_token: string; provider: Provider | 'arr_sonarr' | 'arr_radarr' | 'arr_lidarr'; provider_id: string; fields: MetadataFields; has_artwork: boolean }
+const providerName = (provider: Review['provider']) => ({ arr_sonarr: 'Sonarr', arr_radarr: 'Radarr', arr_lidarr: 'Lidarr', tmdb_movie: 'TMDB movies', tmdb_tv: 'TMDB television', musicbrainz: 'MusicBrainz recordings', openlibrary: 'Open Library books' })[provider]
 const providersFor = (kind: string): Provider[] => kind === 'video' ? ['tmdb_movie', 'tmdb_tv'] : kind === 'music' ? ['musicbrainz'] : ['openlibrary']
 async function call<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await apiFetch(url, init)
@@ -27,6 +28,8 @@ export default function MetadataEditor({ item, onClose, onUpdated }: { item: Med
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [provider, setProvider] = useState<Provider>(providersFor(item.kind)[0])
+  const [arr, setArr] = useState<ArrConnection[]>([])
+  const [arrError, setArrError] = useState('')
   const [statuses, setStatuses] = useState<Status[]>([])
   const [query, setQuery] = useState(displayTitle(item))
   const [results, setResults] = useState<Candidate[]>([])
@@ -43,6 +46,12 @@ export default function MetadataEditor({ item, onClose, onUpdated }: { item: Med
     call<Status[]>('/api/metadata/providers').then(statuses => { if (active) setStatuses(statuses) }).catch(() => {})
     return () => { active = false; element?.close() }
   }, [endpoint, item.relative_path])
+  useEffect(() => {
+    if (!view?.can_edit || item.kind === 'book') return
+    let active = true
+    call<{ connections: ArrConnection[] }>(`/api/sources/${encodeURIComponent(item.source_id)}/arr`).then(data => { if (active) setArr(data.connections.filter(connection => item.kind === 'music' ? connection.kind === 'lidarr' : connection.kind !== 'lidarr')) }).catch(error => { if (active) setArrError(error instanceof Error ? error.message : 'Could not load Arr connections.') })
+    return () => { active = false }
+  }, [view?.can_edit, item.source_id, item.kind])
   const action = async (work: () => Promise<void>) => { setBusy(true); setError(''); setMessage(''); try { await work() } catch (error) { setError(error instanceof Error ? error.message : 'Metadata operation failed.') } finally { setBusy(false) } }
   const save = (event: FormEvent) => { event.preventDefault(); void action(async () => {
     const result = await call<MetadataView>(endpoint, { ...json({ path: item.relative_path, fields: { ...fields, genres: genres.split('\n').map(value => value.trim()).filter(Boolean) }, artwork_preference: artwork }), method: 'PUT' })
@@ -78,7 +87,7 @@ export default function MetadataEditor({ item, onClose, onUpdated }: { item: Med
     <div className="metadata-content"><p className="metadata-original">Original file: {item.relative_path}</p>
       {!view && !error && <p role="status">Loading metadata…</p>}
       {view && <>
-        <div className="metadata-provenance"><span>Active metadata: {view.origin}</span>{view.artwork_url && <img src={view.artwork_url} alt="Current artwork"/>}</div>
+        <div className="metadata-provenance"><span>Active metadata: {providerName(view.origin as Review['provider']) ?? view.origin}</span>{view.artwork_url && <img src={view.artwork_url} alt="Current artwork"/>}</div>
         <form className="metadata-form" onSubmit={save}>
           {field('title', 'Display title')}{field('creator', item.kind === 'music' ? 'Artist / album artist' : item.kind === 'book' ? 'Author / writer' : 'Creator')}{field('collection', item.kind === 'music' ? 'Album' : 'Series / collection')}
           <div className="metadata-numbers">{number('year', 'Year')}{item.kind === 'video' && <>{number('season', 'Season')}{number('episode', 'Episode')}</>}{item.kind === 'music' && <>{number('disc', 'Disc')}{number('track', 'Track')}</>}{item.kind === 'book' && number('volume', 'Volume / series position')}</div>
@@ -89,11 +98,14 @@ export default function MetadataEditor({ item, onClose, onUpdated }: { item: Med
         {view.can_edit && <>
           <div className="metadata-local"><button disabled={busy} className="track-play" onClick={extract}><RefreshCw size={13}/> Read local tags and artwork</button>{view.has_custom && <button disabled={busy} className="track-play" onClick={reset}>Use gathered metadata</button>}</div>
           <p className="metadata-help">Custom metadata is a complete owner-edited version. Local rescans and online matches preserve it until you choose to replace it.</p>
+          {!!arr.length && <section className="metadata-online"><h3>From your Arr library</h3><p>Preview metadata for this exact mapped file. Applying a match preserves custom edits unless you explicitly replace them.</p><div className="arr-buttons">{arr.map(connection => <button key={connection.id} className="track-play" disabled={busy || !connection.usable} onClick={() => { void action(async () => { setReview(null); setReplaceCustom(false); setReview(await call<Review>(`/api/sources/${encodeURIComponent(item.source_id)}/arr/${connection.id}/preview`, json({ path: item.relative_path }))) }) }}>Preview from {connection.name}</button>)}</div></section>}
+          {arrError && <p className="video-error" role="alert">{arrError}</p>}
+            {review && <div className="metadata-review"><h4>Review before applying</h4><strong>{review.fields.title}</strong><p>{[review.fields.creator, review.fields.collection, review.fields.year].filter(Boolean).join(' · ')}</p><p>{(review.fields.genres ?? []).join(', ')}</p><p>{review.fields.description}</p><small>{providerName(review.provider)} · {review.provider_id} · {review.has_artwork ? 'Provider artwork will be requested on apply.' : 'No provider artwork specified.'}</small>{view.has_custom && <label className="grant-toggle"><input type="checkbox" checked={replaceCustom} onChange={event => setReplaceCustom(event.target.checked)}/><span>Replace my custom metadata with this match</span></label>}<button className="connect-submit" disabled={busy} onClick={apply}>Apply reviewed match</button></div>}
           <section className="metadata-online"><h3>Reviewed online matching</h3><p>Searching sends the query below to the selected provider. Preview a candidate and confirm before applying it. Files are never uploaded.</p>
             <form className="metadata-form" onSubmit={search}><label>Provider<select value={provider} disabled={busy} onChange={event => { setProvider(event.target.value as Provider); setResults([]); setReview(null); setSearched(false) }}>{providersFor(item.kind).map(provider => <option key={provider} value={provider}>{providerName(provider)}</option>)}</select></label><label>Search query<input value={query} maxLength={200} required disabled={busy} onChange={event => setQuery(event.target.value)}/></label>{selected?.message && <p className="metadata-help">{selected.message}</p>}<button className="track-play" disabled={busy || !selected?.enabled}><Search size={14}/> Search provider</button></form>
             {searched && !results.length && <p>No matching results. Try a different title.</p>}
             <div className="metadata-matches">{results.map(result => <article key={result.id}><div><strong>{result.title}</strong><span>{[result.creator, result.collection, result.year].filter(Boolean).join(' · ')}</span></div><button className="track-play" disabled={busy} onClick={() => preview(result)}>Preview match</button></article>)}</div>
-            {review && <div className="metadata-review"><h4>Review before applying</h4><strong>{review.fields.title}</strong><p>{[review.fields.creator, review.fields.collection, review.fields.year].filter(Boolean).join(' · ')}</p><p>{(review.fields.genres ?? []).join(', ')}</p><p>{review.fields.description}</p><small>{providerName(review.provider)} · {review.provider_id} · {review.has_artwork ? 'Provider artwork will be requested on apply.' : 'No provider artwork specified.'}</small>{view.has_custom && <label className="grant-toggle"><input type="checkbox" checked={replaceCustom} onChange={event => setReplaceCustom(event.target.checked)}/><span>Replace my custom metadata with this match</span></label>}<button className="connect-submit" disabled={busy} onClick={apply}>Apply reviewed match</button></div>}
+
 
           </section>
         </>}

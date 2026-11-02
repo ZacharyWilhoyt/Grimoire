@@ -27,6 +27,14 @@ media, or grant access to anything outside the user's authorized catalog.
    edition, release, or episode database. Distinct collections with identical
    names can still group together; owners can correct their collection labels.
 
+## Optional Arr metadata
+
+The existing local/online workflow remains the default. Owners with Sonarr,
+Radarr or Lidarr can additionally configure per-source connections and preview
+metadata for existing files. See [Arr integrations](ARR_INTEGRATIONS.md) for setup,
+folder mappings, encrypted credentials and the separate approved-network boundary.
+No acquisition requests or automatic Arr synchronization are enabled.
+
 ## Local extraction
 
 - Audio/video: optional `ffprobe` reads embedded title, artist/album artist, album,
@@ -64,7 +72,7 @@ The reader's existing independent archive limits remain unchanged.
 Three versions are stored separately in PostgreSQL:
 
 1. Filename hints + locally extracted fields.
-2. Reviewed provider fields overlay local fields where supplied.
+2. Reviewed provider fields (including optional Arr matches) overlay local fields where supplied.
 3. An optional complete owner-edited version replaces those display fields.
 
 Local rescans and online matches preserve the complete custom version. **Use
@@ -144,7 +152,7 @@ Jobs use the existing bounded directory scan (10,000 media files, 100,000 entrie
 after interruption, a five-minute stale-job lease allows a fresh scan. Unchanged
 files already processed are skipped. Jobs are not yet a durable distributed queue;
 filesystem stalls and processing isolation remain operational considerations.
-Metadata never triggers acquisition integrations or creates sharing permissions.
+Metadata never triggers acquisition requests or creates sharing permissions.
 
 Metadata edits, reset, extraction, and match applications are audited in the
 control-plane database. Source disconnection cascades current metadata/reviews/jobs

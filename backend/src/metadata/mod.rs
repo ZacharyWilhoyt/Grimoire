@@ -1,3 +1,4 @@
+pub mod arr;
 mod local;
 pub mod model;
 mod providers;
@@ -23,6 +24,7 @@ use tokio::sync::Semaphore;
 use uuid::Uuid;
 
 pub struct Runtime {
+    pub arr: arr::Config,
     pub client: reqwest::Client,
     pub online: bool,
     pub tmdb_token: Option<String>,
@@ -32,6 +34,7 @@ pub struct Runtime {
 impl Runtime {
     pub fn new() -> Self {
         Self {
+            arr: arr::Config::from_env(),
             client: reqwest::Client::builder()
                 .https_only(true)
                 .redirect(reqwest::redirect::Policy::none())
@@ -599,6 +602,8 @@ struct ReviewRow {
     provider_id: String,
     data: String,
     artwork_ref: Option<String>,
+    arr_connection_id: Option<Uuid>,
+    arr_revision: Option<Uuid>,
 }
 pub async fn apply(
     State(state): State<AppState>,
@@ -618,34 +623,49 @@ pub async fn apply(
                 "Metadata processing is busy.".into(),
             )
         })?;
-    let review=sqlx::query_as::<_,ReviewRow>("SELECT provider,provider_id,data,artwork_ref FROM metadata_reviews WHERE id=$1 AND owner_id=$2 AND source_id=$3 AND file_key=$4 AND expires_at>now()").bind(apply.review_token).bind(identity.user.id).bind(&source).bind(&file.key).fetch_optional(&state.db).await.map_err(|_|auth::unavailable())?.ok_or_else(||crate::bad_request("This review expired or belongs to a different file/account. Preview the match again."))?;
-    let provider: Provider =
-        serde_json::from_value(serde_json::Value::String(review.provider.clone()))
-            .map_err(|_| auth::unavailable())?;
-    if !providers::enabled(&state, provider) {
-        return Err(AppError(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "This provider is disabled.".into(),
-        ));
-    }
+    let review=sqlx::query_as::<_,ReviewRow>("SELECT provider,provider_id,data,artwork_ref,arr_connection_id,arr_revision FROM metadata_reviews WHERE id=$1 AND owner_id=$2 AND source_id=$3 AND file_key=$4 AND expires_at>now()").bind(apply.review_token).bind(identity.user.id).bind(&source).bind(&file.key).fetch_optional(&state.db).await.map_err(|_|auth::unavailable())?.ok_or_else(||crate::bad_request("This review expired or belongs to a different file/account. Preview the match again."))?;
     let mut warnings = Vec::new();
-    let artwork = if let Some(art) = review
-        .artwork_ref
-        .as_deref()
-        .and_then(|value| serde_json::from_str::<providers::Art>(value).ok())
-    {
-        match providers::artwork(&state, &art).await {
-            Ok(bytes) => Some(bytes),
-            Err(_) => {
-                warnings.push("The match was applied, but provider artwork was unavailable. Existing local artwork remains available.".into());
-                None
-            }
-        }
+    let artwork = if let Some(connection) = review.arr_connection_id {
+        arr::review_artwork(
+            &state,
+            &source,
+            connection,
+            review.arr_revision,
+            review.artwork_ref.as_deref(),
+            &mut warnings,
+        )
+        .await?
     } else {
-        None
+        let provider: Provider =
+            serde_json::from_value(serde_json::Value::String(review.provider.clone()))
+                .map_err(|_| auth::unavailable())?;
+        if !providers::enabled(&state, provider) {
+            return Err(AppError(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "This provider is disabled.".into(),
+            ));
+        }
+        if let Some(art) = review
+            .artwork_ref
+            .as_deref()
+            .and_then(|value| serde_json::from_str::<providers::Art>(value).ok())
+        {
+            match providers::artwork(&state, &art).await {
+                Ok(bytes) => Some(bytes),
+                Err(_) => {
+                    warnings.push("The match was applied, but provider artwork was unavailable. Existing local artwork remains available.".into());
+                    None
+                }
+            }
+        } else {
+            None
+        }
     };
     let mut tx = state.db.begin().await.map_err(|_| auth::unavailable())?;
     owner_lock(&mut tx, &source, identity.user.id).await?;
+    if let Some(id) = review.arr_connection_id {
+        arr::check_review(&mut tx, &source, id, review.arr_revision).await?;
+    }
     ensure_row(&mut tx, &source, &apply.path, &file.key).await?;
     let removed=sqlx::query("DELETE FROM metadata_reviews WHERE id=$1 AND owner_id=$2 AND source_id=$3 AND file_key=$4 AND expires_at>now()").bind(apply.review_token).bind(identity.user.id).bind(&source).bind(&file.key).execute(&mut *tx).await.map_err(|_|auth::unavailable())?;
     if removed.rows_affected() != 1 {
