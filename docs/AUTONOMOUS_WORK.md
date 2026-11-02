@@ -147,3 +147,11 @@ not overwrite terminal job states. Tests cover non-owner administrators, wrong
 source/job, missing CSRF, idempotent stops, terminal records, queued extraction
 cancellation, source-byte preservation and UI state refresh. All 19 PostgreSQL/
 extraction tests and 52 frontend tests pass; Clippy and build pass.
+
+## Metadata status recovery
+
+Added a read-only Retry scan status action for initial and polling failures.
+Unknown/last-known status no longer enables scan mutations, and pending status
+reads/timers are canceled on navigation. Status errors are separate from mutation
+errors. Initial failure and timed-poll failure recovery tests pass along with all
+54 frontend tests and the production build.

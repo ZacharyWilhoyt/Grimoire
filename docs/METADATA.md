@@ -228,3 +228,8 @@ finish first; stopping does not undo a metadata update already in progress. A
 worker retains its extraction/job slot until it actually exits, so starting a new
 scan immediately may briefly return the existing busy response. Late worker
 completion/failure cannot overwrite the interrupted job state.
+
+If job-status loading or polling fails, **Retry scan status** only reloads status;
+it never starts/stops a scan. Displayed progress is labeled last-known until a
+successful reload. Scan controls are disabled while status is unknown. Navigating
+away cancels pending status reads and polling timers.
