@@ -5,17 +5,18 @@ use axum::{
     routing::{delete, get},
     Json, Router,
 };
+mod admin;
+mod auth;
+#[cfg(test)]
+mod auth_integration;
+
 use serde::{Deserialize, Serialize};
 use std::{
-    fs, io,
+    fs,
     net::SocketAddr,
     path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
+    sync::Arc,
 };
-use tokio::sync::RwLock;
 use tower_http::{services::ServeFile, trace::TraceLayer};
 
 const MAX_MEDIA_FILES: usize = 10_000;
@@ -24,16 +25,17 @@ const MAX_DIRECTORY_DEPTH: usize = 32;
 
 #[derive(Clone)]
 struct AppState {
-    sources: Arc<RwLock<Vec<Source>>>,
-    data_dir: Arc<PathBuf>,
-    next_source_id: Arc<AtomicU64>,
+    db: sqlx::PgPool,
+    config: Arc<auth::Config>,
+    hashing: Arc<tokio::sync::Semaphore>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(sqlx::FromRow)]
 struct Source {
     id: String,
     name: String,
-    path: PathBuf,
+    path: String,
+    owner_id: uuid::Uuid,
 }
 
 #[derive(Serialize)]
@@ -72,19 +74,16 @@ struct AppError(StatusCode, String);
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        (self.0, Json(ApiError { error: self.1 })).into_response()
+        let mut response = (self.0, Json(ApiError { error: self.1 })).into_response();
+        response
+            .headers_mut()
+            .insert("cache-control", "private, no-store".parse().unwrap());
+        response
     }
 }
 
 fn bad_request(message: impl Into<String>) -> AppError {
     AppError(StatusCode::BAD_REQUEST, message.into())
-}
-
-fn internal_error() -> AppError {
-    AppError(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "The source registry could not be saved.".into(),
-    )
 }
 
 async fn health() -> Json<Health> {
@@ -94,123 +93,145 @@ async fn health() -> Json<Health> {
     })
 }
 
-async fn list_sources(State(state): State<AppState>) -> Json<Vec<SourceSummary>> {
-    let sources = state.sources.read().await;
-    Json(
+async fn list_sources(
+    State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<auth::Identity>,
+) -> Result<Json<Vec<SourceSummary>>, AppError> {
+    let sources = sqlx::query_as::<_, Source>(
+        "SELECT id,name,path,owner_id FROM sources WHERE owner_id=$1 ORDER BY created_at,id",
+    )
+    .bind(identity.user.id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| auth::unavailable())?;
+    Ok(Json(
         sources
-            .iter()
+            .into_iter()
             .map(|source| SourceSummary {
-                id: source.id.clone(),
-                name: source.name.clone(),
-                available: source.path.is_dir(),
+                id: source.id,
+                name: source.name,
+                available: Path::new(&source.path).is_dir(),
             })
             .collect(),
-    )
+    ))
 }
 
 async fn add_source(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<auth::Identity>,
     Json(request): Json<AddSourceRequest>,
 ) -> Result<(StatusCode, Json<SourceSummary>), AppError> {
-    let input = request.path.trim();
-    if input.is_empty() || input.len() > 4096 {
-        return Err(bad_request(
-            "Enter a directory path up to 4096 characters long.",
+    if !identity.user.is_admin {
+        return Err(AppError(
+            StatusCode::FORBIDDEN,
+            "Only an administrator may register server directories.".into(),
         ));
     }
-
-    let canonical_path = fs::canonicalize(input)
+    let input = request.path.trim();
+    if input.is_empty() || input.len() > 4096 || !Path::new(input).is_absolute() {
+        return Err(bad_request(
+            "Enter an absolute directory path up to 4096 bytes long.",
+        ));
+    }
+    let input = input.to_string();
+    let path = tokio::task::spawn_blocking(move || fs::canonicalize(input))
+        .await
+        .map_err(|_| auth::unavailable())?
         .map_err(|_| bad_request("That directory could not be found or opened."))?;
-    if !canonical_path.is_dir() {
+    if !path.is_dir() {
         return Err(bad_request("The selected path is not a directory."));
     }
-    if canonical_path.to_str().is_none() {
-        return Err(bad_request("Directory paths must use valid UTF-8."));
-    }
-
-    let mut sources = state.sources.write().await;
-    if sources.iter().any(|source| source.path == canonical_path) {
-        return Err(AppError(
-            StatusCode::CONFLICT,
-            "That directory is already connected.".into(),
-        ));
-    }
-
-    let source_id = state.next_source_id.fetch_add(1, Ordering::Relaxed);
-    let name = canonical_path
+    let path_string = path
+        .to_str()
+        .ok_or_else(|| bad_request("Directory paths must use valid UTF-8."))?;
+    let name = path
         .file_name()
         .and_then(|part| part.to_str())
-        .filter(|part| !part.is_empty())
         .unwrap_or("Local directory")
         .to_string();
-    let source = Source {
-        id: format!("source-{source_id}"),
-        name: name.clone(),
-        path: canonical_path,
-    };
+    let id = uuid::Uuid::new_v4().to_string();
+    let result = sqlx::query("INSERT INTO sources (id,owner_id,name,path) VALUES ($1,$2,$3,$4)")
+        .bind(&id)
+        .bind(identity.user.id)
+        .bind(&name)
+        .bind(path_string)
+        .execute(&state.db)
+        .await;
+    match result {
+        Ok(_) => Ok((
+            StatusCode::CREATED,
+            Json(SourceSummary {
+                id,
+                name,
+                available: true,
+            }),
+        )),
+        Err(error)
+            if error
+                .as_database_error()
+                .is_some_and(|e| e.is_unique_violation()) =>
+        {
+            Err(AppError(
+                StatusCode::CONFLICT,
+                "That directory is already registered.".into(),
+            ))
+        }
+        Err(_) => Err(auth::unavailable()),
+    }
+}
 
-    let mut updated = sources.clone();
-    updated.push(source.clone());
-    persist_sources(&state.data_dir, &updated)
-        .await
-        .map_err(|_| internal_error())?;
-    *sources = updated;
-
-    Ok((
-        StatusCode::CREATED,
-        Json(SourceSummary {
-            id: source.id,
-            name,
-            available: true,
-        }),
-    ))
+async fn owned_root(
+    state: &AppState,
+    user: &auth::User,
+    source_id: &str,
+) -> Result<PathBuf, AppError> {
+    let source = sqlx::query_as::<_, Source>(
+        "SELECT id,name,path,owner_id FROM sources WHERE id=$1 AND owner_id=$2",
+    )
+    .bind(source_id)
+    .bind(user.id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| auth::unavailable())?
+    .ok_or_else(|| AppError(StatusCode::NOT_FOUND, "Source not found.".into()))?;
+    // The database filter is the authorization boundary; never trust possession of a source ID.
+    debug_assert_eq!(source.owner_id, user.id);
+    Ok(PathBuf::from(source.path))
 }
 
 async fn remove_source(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<auth::Identity>,
     RoutePath(source_id): RoutePath<String>,
 ) -> Result<StatusCode, AppError> {
-    let mut sources = state.sources.write().await;
-    if !sources.iter().any(|source| source.id == source_id) {
+    let removed = sqlx::query("DELETE FROM sources WHERE id=$1 AND owner_id=$2")
+        .bind(source_id)
+        .bind(identity.user.id)
+        .execute(&state.db)
+        .await
+        .map_err(|_| auth::unavailable())?;
+    if removed.rows_affected() == 0 {
         return Err(AppError(StatusCode::NOT_FOUND, "Source not found.".into()));
     }
-    let updated: Vec<_> = sources
-        .iter()
-        .filter(|source| source.id != source_id)
-        .cloned()
-        .collect();
-    persist_sources(&state.data_dir, &updated)
-        .await
-        .map_err(|_| internal_error())?;
-    *sources = updated;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn list_media(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<auth::Identity>,
     RoutePath(source_id): RoutePath<String>,
 ) -> Result<Json<Vec<MediaFile>>, AppError> {
-    let root = {
-        let sources = state.sources.read().await;
-        sources
-            .iter()
-            .find(|source| source.id == source_id)
-            .map(|source| source.path.clone())
-            .ok_or_else(|| AppError(StatusCode::NOT_FOUND, "Source not found.".into()))?
-    };
-
+    let root = owned_root(&state, &identity.user, &source_id).await?;
     if !root.is_dir() {
         return Err(AppError(
             StatusCode::SERVICE_UNAVAILABLE,
             "This directory is currently unavailable.".into(),
         ));
     }
-
     let files = tokio::task::spawn_blocking(move || scan_directory(&root))
         .await
-        .map_err(|_| internal_error())?
+        .map_err(|_| auth::unavailable())?
         .map_err(|message| AppError(StatusCode::INTERNAL_SERVER_ERROR, message))?;
-
     Ok(Json(files))
 }
 
@@ -219,50 +240,55 @@ struct MediaRequest {
     path: String,
 }
 
-// This boundary currently trusts the single local operator. Keep loopback binding
-// until real identity and source/media authorization are implemented.
+// Identity is resolved server-side for every request, including byte-range requests.
 async fn stream_audio(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<auth::Identity>,
     RoutePath(source_id): RoutePath<String>,
     Query(query): Query<MediaRequest>,
     request: Request,
 ) -> Result<Response, AppError> {
-    stream_media(state, source_id, query, request, "music").await
+    stream_media(state, identity.user, source_id, query, request, "music").await
 }
 
 async fn stream_video(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<auth::Identity>,
     RoutePath(source_id): RoutePath<String>,
     Query(query): Query<MediaRequest>,
     request: Request,
 ) -> Result<Response, AppError> {
-    stream_media(state, source_id, query, request, "video").await
+    stream_media(state, identity.user, source_id, query, request, "video").await
 }
 
 async fn stream_book(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<auth::Identity>,
     RoutePath(source_id): RoutePath<String>,
     Query(query): Query<MediaRequest>,
     request: Request,
 ) -> Result<Response, AppError> {
-    stream_media(state, source_id, query, request, "book").await
+    stream_media(state, identity.user, source_id, query, request, "book").await
 }
 
 async fn stream_media(
     state: AppState,
+    user: auth::User,
     source_id: String,
     query: MediaRequest,
     request: Request,
     kind: &str,
 ) -> Result<Response, AppError> {
-    let sources = state.sources.read().await;
-    let root = sources
-        .iter()
-        .find(|source| source.id == source_id)
-        .ok_or_else(|| AppError(StatusCode::NOT_FOUND, "Source not found.".into()))?
-        .path
-        .clone();
+    let root = owned_root(&state, &user, &source_id).await?;
     let path = resolve_media_path(&root, &query.path, kind)?;
+    serve_media_file(path, request, kind).await
+}
+
+async fn serve_media_file(
+    path: PathBuf,
+    request: Request,
+    kind: &str,
+) -> Result<Response, AppError> {
     if kind == "book"
         && fs::metadata(&path)
             .map_err(|_| bad_request("Book unavailable."))?
@@ -420,25 +446,6 @@ fn scan_directory(root: &Path) -> Result<Vec<MediaFile>, String> {
     Ok(files)
 }
 
-async fn persist_sources(data_dir: &Path, sources: &[Source]) -> io::Result<()> {
-    tokio::fs::create_dir_all(data_dir).await?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        tokio::fs::set_permissions(data_dir, fs::Permissions::from_mode(0o700)).await?;
-    }
-    let json = serde_json::to_vec_pretty(sources).map_err(io::Error::other)?;
-    let temporary_file = data_dir.join("sources.json.tmp");
-    let registry_file = data_dir.join("sources.json");
-    tokio::fs::write(&temporary_file, json).await?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        tokio::fs::set_permissions(&temporary_file, fs::Permissions::from_mode(0o600)).await?;
-    }
-    tokio::fs::rename(temporary_file, registry_file).await
-}
-
 async fn not_found() -> (StatusCode, Json<ApiError>) {
     (
         StatusCode::NOT_FOUND,
@@ -448,49 +455,106 @@ async fn not_found() -> (StatusCode, Json<ApiError>) {
     )
 }
 
-#[tokio::main]
-async fn main() {
-    let data_dir = std::env::var_os("GRIMOIRE_DATA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("data"));
-    let registry_file = data_dir.join("sources.json");
-    let existing_sources: Vec<Source> = match tokio::fs::read(&registry_file).await {
-        Ok(contents) => serde_json::from_slice(&contents)
-            .expect("source registry is invalid; repair it before restarting Grimoire"),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => panic!("could not read source registry: {error}"),
-    };
-    let next_id = existing_sources
-        .iter()
-        .filter_map(|source| source.id.strip_prefix("source-")?.parse::<u64>().ok())
-        .max()
-        .unwrap_or(0)
-        + 1;
-
-    let state = AppState {
-        sources: Arc::new(RwLock::new(existing_sources)),
-        data_dir: Arc::new(data_dir),
-        next_source_id: Arc::new(AtomicU64::new(next_id)),
-    };
-    let app = Router::new()
-        .route("/api/health", get(health))
+fn app(state: AppState) -> Router {
+    use axum::{extract::DefaultBodyLimit, middleware};
+    let protected = Router::new()
+        .route("/api/auth/me", get(auth::me))
+        .route("/api/auth/logout", axum::routing::post(auth::logout))
+        .route(
+            "/api/auth/password",
+            axum::routing::post(auth::change_password),
+        )
         .route("/api/sources", get(list_sources).post(add_source))
         .route("/api/sources/{source_id}", delete(remove_source))
         .route("/api/sources/{source_id}/media", get(list_media))
         .route("/api/sources/{source_id}/audio", get(stream_audio))
         .route("/api/sources/{source_id}/video", get(stream_video))
         .route("/api/sources/{source_id}/book", get(stream_book))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_session,
+        ));
+    Router::new()
+        .merge(protected)
+        .route("/api/health", get(health))
+        .route("/api/auth/register", axum::routing::post(auth::register))
+        .route("/api/auth/login", axum::routing::post(auth::login))
         .fallback(not_found)
+        .layer(DefaultBodyLimit::max(4096))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::origin_and_limits,
+        ))
         .with_state(state)
-        .layer(TraceLayer::new_for_http());
+        .layer(TraceLayer::new_for_http())
+}
 
-    let address = SocketAddr::from(([127, 0, 0, 1], 3000));
+#[tokio::main]
+async fn main() {
+    dotenvy::dotenv().ok();
+    let database_url =
+        std::env::var("DATABASE_URL").expect("Set DATABASE_URL to a PostgreSQL connection string.");
+    let options: sqlx::postgres::PgConnectOptions = database_url
+        .parse()
+        .expect("Invalid PostgreSQL connection configuration");
+    if !matches!(options.get_host(), "localhost" | "127.0.0.1" | "::1")
+        && !options.get_host().starts_with('/')
+        && !matches!(
+            options.get_ssl_mode(),
+            sqlx::postgres::PgSslMode::VerifyFull
+        )
+    {
+        panic!("Remote PostgreSQL connections require sslmode=verify-full.");
+    }
+    let db = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(10)
+        .connect_with(options)
+        .await
+        .expect("PostgreSQL connection failed");
+    sqlx::migrate!()
+        .run(&db)
+        .await
+        .expect("Database migration failed");
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if !args.is_empty() {
+        if let Err(message) = admin::command(&db, &args).await {
+            eprintln!("{message}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    let has_admin: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE is_admin AND NOT disabled)")
+            .fetch_one(&db)
+            .await
+            .expect("Administrator lookup failed");
+    if !has_admin {
+        eprintln!("Create the initial administrator first: cargo run -- bootstrap-admin USERNAME");
+        std::process::exit(1);
+    }
+    let dummy = auth::hash_password(&uuid::Uuid::new_v4().to_string())
+        .unwrap_or_else(|_| panic!("Password hashing initialization failed"));
+    let config = auth::Config::from_env(dummy).unwrap_or_else(|message| panic!("{message}"));
+    let state = AppState {
+        db,
+        config: Arc::new(config),
+        hashing: Arc::new(tokio::sync::Semaphore::new(4)),
+    };
+    let port = std::env::var("GRIMOIRE_PORT")
+        .unwrap_or_else(|_| "3000".into())
+        .parse::<u16>()
+        .expect("GRIMOIRE_PORT must be a valid port");
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
     let listener = tokio::net::TcpListener::bind(address)
         .await
-        .expect("failed to bind API listener");
+        .expect("Failed to bind API listener");
     println!("Grimoire API listening on http://{address}");
-
-    axum::serve(listener, app).await.expect("API server failed");
+    axum::serve(
+        listener,
+        app(state).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .expect("API server failed");
 }
 
 #[cfg(test)]
@@ -562,179 +626,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn audio_supports_ranges_and_requires_registered_source() {
+    async fn media_ranges_and_book_size_limits() {
         let root = fixture();
-        let state = AppState {
-            sources: Arc::new(RwLock::new(vec![Source {
-                id: "local".into(),
-                name: "Local".into(),
-                path: root.clone(),
-            }])),
-            data_dir: Arc::new(root.clone()),
-            next_source_id: Arc::new(AtomicU64::new(2)),
-        };
-        let request = Request::builder()
-            .header("range", "bytes=2-4")
-            .body(axum::body::Body::empty())
-            .unwrap();
-        let response = stream_audio(
-            State(state.clone()),
-            RoutePath("local".into()),
-            Query(MediaRequest {
-                path: "track.mp3".into(),
-            }),
-            request,
-        )
-        .await
-        .unwrap_or_else(|_| panic!("stream failed"));
-        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
-        assert_eq!(response.headers()["content-range"], "bytes 2-4/10");
-        assert_eq!(response.headers()["cache-control"], "private, no-store");
-        assert_eq!(
-            axum::body::to_bytes(response.into_body(), 10)
+        for (file, kind) in [
+            ("track.mp3", "music"),
+            ("clip.mp4", "video"),
+            ("story.epub", "book"),
+            ("comic.cbz", "book"),
+        ] {
+            let request = Request::builder()
+                .header("range", "bytes=2-4")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let response = serve_media_file(root.join(file), request, kind)
                 .await
-                .unwrap()
-                .as_ref(),
-            b"234"
-        );
-        state.sources.write().await.clear();
-        let result = stream_audio(
-            State(state),
-            RoutePath("local".into()),
-            Query(MediaRequest {
-                path: "track.mp3".into(),
-            }),
-            Request::new(axum::body::Body::empty()),
-        )
-        .await;
-        assert!(matches!(result, Err(AppError(StatusCode::NOT_FOUND, _))));
-        fs::remove_dir_all(root).unwrap();
-    }
-    #[test]
-    fn book_paths_require_books_and_deny_escapes() {
-        let root = fixture();
-        for path in ["story.epub", "comic.cbz"] {
-            assert!(resolve_media_path(&root, path, "book").is_ok());
+                .unwrap_or_else(|_| panic!("stream failed"));
+            assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+            assert_eq!(response.headers()["content-range"], "bytes 2-4/10");
+            assert_eq!(response.headers()["cache-control"], "private, no-store");
+            assert_eq!(
+                axum::body::to_bytes(response.into_body(), 10)
+                    .await
+                    .unwrap()
+                    .as_ref(),
+                b"234"
+            );
         }
-        for path in ["track.mp3", "clip.mp4", "../story.epub", "/etc/passwd"] {
-            assert!(resolve_media_path(&root, path, "book").is_err());
-        }
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[tokio::test]
-    async fn video_supports_ranges_and_requires_registered_source() {
-        let root = fixture();
-        let state = AppState {
-            sources: Arc::new(RwLock::new(vec![Source {
-                id: "local".into(),
-                name: "Local".into(),
-                path: root.clone(),
-            }])),
-            data_dir: Arc::new(root.clone()),
-            next_source_id: Arc::new(AtomicU64::new(2)),
-        };
-        let request = Request::builder()
-            .header("range", "bytes=2-4")
-            .body(axum::body::Body::empty())
-            .unwrap();
-        let response = stream_video(
-            State(state.clone()),
-            RoutePath("local".into()),
-            Query(MediaRequest {
-                path: "clip.mp4".into(),
-            }),
-            request,
-        )
-        .await
-        .unwrap_or_else(|_| panic!("stream failed"));
-        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
-        assert_eq!(response.headers()["content-range"], "bytes 2-4/10");
-        assert_eq!(response.headers()["cache-control"], "private, no-store");
-        assert_eq!(
-            axum::body::to_bytes(response.into_body(), 10)
-                .await
-                .unwrap()
-                .as_ref(),
-            b"234"
-        );
-        state.sources.write().await.clear();
-        let result = stream_video(
-            State(state),
-            RoutePath("local".into()),
-            Query(MediaRequest {
-                path: "clip.mp4".into(),
-            }),
-            Request::new(axum::body::Body::empty()),
-        )
-        .await;
-        assert!(matches!(result, Err(AppError(StatusCode::NOT_FOUND, _))));
-        fs::remove_dir_all(root).unwrap();
-    }
-    #[tokio::test]
-    async fn book_supports_ranges_and_requires_registered_source() {
-        let root = fixture();
-        let state = AppState {
-            sources: Arc::new(RwLock::new(vec![Source {
-                id: "local".into(),
-                name: "Local".into(),
-                path: root.clone(),
-            }])),
-            data_dir: Arc::new(root.clone()),
-            next_source_id: Arc::new(AtomicU64::new(2)),
-        };
-        let request = Request::builder()
-            .header("range", "bytes=2-4")
-            .body(axum::body::Body::empty())
-            .unwrap();
-        let response = stream_book(
-            State(state.clone()),
-            RoutePath("local".into()),
-            Query(MediaRequest {
-                path: "story.epub".into(),
-            }),
-            request,
-        )
-        .await
-        .unwrap_or_else(|_| panic!("stream failed"));
-        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
-        assert_eq!(response.headers()["content-range"], "bytes 2-4/10");
-        assert_eq!(response.headers()["cache-control"], "private, no-store");
-        assert_eq!(
-            axum::body::to_bytes(response.into_body(), 10)
-                .await
-                .unwrap()
-                .as_ref(),
-            b"234"
-        );
         fs::File::create(root.join("oversized.epub"))
             .unwrap()
             .set_len(129 * 1024 * 1024)
             .unwrap();
-        let oversized = stream_book(
-            State(state.clone()),
-            RoutePath("local".into()),
-            Query(MediaRequest {
-                path: "oversized.epub".into(),
-            }),
+        let result = serve_media_file(
+            root.join("oversized.epub"),
             Request::new(axum::body::Body::empty()),
+            "book",
         )
         .await;
         assert!(matches!(
-            oversized,
+            result,
             Err(AppError(StatusCode::PAYLOAD_TOO_LARGE, _))
         ));
-        state.sources.write().await.clear();
-        let result = stream_book(
-            State(state),
-            RoutePath("local".into()),
-            Query(MediaRequest {
-                path: "story.epub".into(),
-            }),
-            Request::new(axum::body::Body::empty()),
-        )
-        .await;
-        assert!(matches!(result, Err(AppError(StatusCode::NOT_FOUND, _))));
         fs::remove_dir_all(root).unwrap();
     }
 }

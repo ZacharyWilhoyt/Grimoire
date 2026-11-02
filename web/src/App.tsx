@@ -1,3 +1,6 @@
+import AccountSettings from './AccountSettings'
+import Authentication, { type User } from './Authentication'
+import { apiFetch } from './api'
 import BookReader from './BookReader'
 import VideoPlayer from './VideoPlayer'
 import MusicPlayer from './MusicPlayer'
@@ -20,7 +23,8 @@ const items: MediaItem[] = [
 
 const art = (id: string, width = 800) => `https://images.unsplash.com/${id}?auto=format&fit=crop&w=${width}&q=85`
 
-function App() {
+function Workspace({ user, logout }: { user: User; logout: () => void }) {
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [reading, setReading] = useState<{ source: Source; file: SourceFile } | null>(null)
   const [video, setVideo] = useState<{ source: Source; file: SourceFile } | null>(null)
   const [playback, setPlayback] = useState<{ source: Source; tracks: SourceFile[]; index: number } | null>(null)
@@ -40,10 +44,10 @@ function App() {
   const [connecting, setConnecting] = useState(false)
 
   useEffect(() => {
-    fetch('/api/health').then(async response => {
+    apiFetch('/api/health').then(async response => {
       if (!response.ok) throw new Error('API unavailable')
       setApiStatus('connected')
-      const sourceResponse = await fetch('/api/sources')
+      const sourceResponse = await apiFetch('/api/sources')
       if (sourceResponse.ok) setSources(await sourceResponse.json() as Source[])
     }).catch(() => setApiStatus('offline'))
   }, [])
@@ -53,7 +57,7 @@ function App() {
     setSourceFiles([])
     setSourceLoading(true)
     setSourceError('')
-    fetch(`/api/sources/${encodeURIComponent(selectedSource.id)}/media`)
+    apiFetch(`/api/sources/${encodeURIComponent(selectedSource.id)}/media`)
       .then(async response => {
         const data = await response.json()
         if (!response.ok) throw new Error(data.error ?? 'Could not scan this directory.')
@@ -71,7 +75,7 @@ function App() {
     setConnecting(true)
     setConnectError('')
     try {
-      const response = await fetch('/api/sources', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: directoryPath }) })
+      const response = await apiFetch('/api/sources', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: directoryPath }) })
       const result = await response.json()
       if (!response.ok) throw new Error(result.error ?? 'Could not connect that directory.')
       const source = result as Source
@@ -89,7 +93,7 @@ function App() {
   }
   const removeSource = async (source: Source) => {
     if (!window.confirm(`Disconnect “${source.name}”? Grimoire will not delete files from your computer.`)) return
-    const response = await fetch(`/api/sources/${encodeURIComponent(source.id)}`, { method: 'DELETE' })
+    const response = await apiFetch(`/api/sources/${encodeURIComponent(source.id)}`, { method: 'DELETE' })
     if (!response.ok) return
     if (reading?.source.id === source.id) setReading(null)
     if (video?.source.id === source.id) setVideo(null)
@@ -104,20 +108,20 @@ function App() {
   return <div className="app-shell">
     <aside className={`sidebar ${menuOpen ? 'open' : ''}`}>
       <a className="brand" href="#home"><img className="brand-logo" src="/logo.svg" alt="" aria-hidden="true" width="38" height="38" /><span>grimoire<span className="brand-dot">.</span></span></a>
-      <div className="profile"><div className="avatar">M</div><div className="profile-copy"><strong>My space</strong><span>Personal library</span></div><ChevronDown size={15} /></div>
+      <div className="profile"><div className="avatar">{user.username[0].toUpperCase()}</div><div className="profile-copy"><strong>{user.username}</strong><span>{user.is_admin ? 'Administrator' : 'Personal account'}</span></div><ChevronDown size={15} /></div>
       <div className="side-label">YOUR SPACE</div>
-      <nav className="main-nav">{nav.map(({ label, icon: Icon }) => <button key={label} className={`nav-item ${activeNav === label ? 'selected' : ''}`} onClick={() => { setActiveNav(label); setSelectedSource(null); setMenuOpen(false) }}><Icon size={18} strokeWidth={1.8} />{label}{label === 'My library' && <span className="nav-count">24</span>}</button>)}</nav>
-      <div className="side-label sources-label">YOUR SOURCES <button title="Connect a directory" onClick={() => setConnectOpen(true)}><Plus size={15} /></button></div>
+      <nav className="main-nav">{nav.map(({ label, icon: Icon }) => <button key={label} className={`nav-item ${activeNav === label ? 'selected' : ''}`} onClick={() => { setActiveNav(label); setSelectedSource(null); setMenuOpen(false) }}><Icon size={18} strokeWidth={1.8} />{label}</button>)}</nav>
+      <div className="side-label sources-label">YOUR SOURCES {user.is_admin && <button title="Connect a directory" onClick={() => setConnectOpen(true)}><Plus size={15} /></button>}</div>
       {sources.map(source => <button key={source.id} className={`source-row ${selectedSource?.id === source.id ? 'source-selected' : ''}`} onClick={() => { setSelectedSource(source); setActiveNav(source.name); setFilter('All'); setMenuOpen(false) }}><span className="source-icon owner"><FolderOpen size={16} /></span><span className="source-copy"><strong>{source.name}</strong><small>Local directory</small></span><span className={`source-dot ${source.available ? 'online' : ''}`} /></button>)}
       {sources.length === 0 && <p className="no-sources">No directories connected yet.</p>}
-      <button className="add-source" onClick={() => setConnectOpen(true)}><Plus size={15} /> Connect a directory</button>
-      <div className="sidebar-bottom"><button className="nav-item"><Settings2 size={18} />Settings</button><div className="connection"><span className={`connection-dot ${apiStatus}`} />{apiStatus === 'connected' ? 'Connected to Grimoire' : apiStatus === 'offline' ? 'API not connected' : 'Connecting…'}</div></div>
+      {user.is_admin && <button className="add-source" onClick={() => setConnectOpen(true)}><Plus size={15} /> Connect a directory</button>}
+      <div className="sidebar-bottom"><button className="nav-item" onClick={() => setSettingsOpen(true)}><Settings2 size={18} />Account settings</button><button className="nav-item" onClick={logout}>Sign out</button><div className="connection"><span className={`connection-dot ${apiStatus}`} />{apiStatus === 'connected' ? 'Connected to Grimoire' : apiStatus === 'offline' ? 'API not connected' : 'Connecting…'}</div></div>
     </aside>
 
     <main className="main-content" id="home">
-      <header className="topbar"><button className="mobile-menu" aria-label="Toggle menu" onClick={() => setMenuOpen(!menuOpen)}><Menu size={21} /></button><div className="breadcrumbs"><span>My space</span><span className="crumb-slash">/</span><strong>{activeNav}</strong></div><label className="search-box"><Search size={17} /><input aria-label="Search your media" value={query} onChange={e => setQuery(e.target.value)} placeholder="Search anything..." /><kbd>⌘ K</kbd></label><button className="top-avatar">M</button></header>
+      <header className="topbar"><button className="mobile-menu" aria-label="Toggle menu" onClick={() => setMenuOpen(!menuOpen)}><Menu size={21} /></button><div className="breadcrumbs"><span>My space</span><span className="crumb-slash">/</span><strong>{activeNav}</strong></div><label className="search-box"><Search size={17} /><input aria-label="Search your media" value={query} onChange={e => setQuery(e.target.value)} placeholder="Search anything..." /><kbd>⌘ K</kbd></label><span className="top-avatar" title={user.username}>{user.username[0].toUpperCase()}</span></header>
       <div className="page-wrap">
-        <section className="welcome-row"><div><div className="eyebrow"><span className="eyebrow-line" />YOUR PRIVATE MEDIA SPACE</div><h1>{selectedSource ? selectedSource.name : <>Your worlds,<br className="mobile-break" /> all in one place</>}<span className="title-period">.</span></h1><p className="welcome-copy">{selectedSource ? 'Files found in this connected directory.' : 'A little something to watch, hear, or get lost in.'}</p></div><button className="invite-button" onClick={() => setConnectOpen(true)}><Plus size={16} /> Connect directory</button></section>
+        <section className="welcome-row"><div><div className="eyebrow"><span className="eyebrow-line" />YOUR PRIVATE MEDIA SPACE</div><h1>{selectedSource ? selectedSource.name : <>Your worlds,<br className="mobile-break" /> all in one place</>}<span className="title-period">.</span></h1><p className="welcome-copy">{selectedSource ? 'Files found in this connected directory.' : 'A little something to watch, hear, or get lost in.'}</p></div>{user.is_admin && <button className="invite-button" onClick={() => setConnectOpen(true)}><Plus size={16} /> Connect directory</button>}</section>
 
         {selectedSource ? <section className="directory-view">
           <div className="section-heading"><div><div className="section-kicker">LOCAL CONTENT SOURCE</div><h2>Available media</h2></div><div className="source-heading-actions"><span>{sourceFiles.length} {sourceFiles.length === 1 ? 'file' : 'files'}</span><button className="disconnect-button" onClick={() => removeSource(selectedSource)} title="Disconnect this source"><Trash2 size={14}/> Disconnect</button></div></div>
@@ -129,6 +133,7 @@ function App() {
           <p className="source-footnote">Select Play for music, Watch for video, or Read for EPUB and CBZ books.</p>
         </section> : <>
 
+        <p className="sample-notice">Sample catalog preview. Select a connected source to browse your media.</p>
         <section className="featured" aria-label="Featured media">
           <img className="featured-art" src={art('photo-1470252649378-9c29740c9fa8', 1800)} alt="Sunrise over a quiet mountain landscape" />
           <div className="featured-shade" />
@@ -150,11 +155,14 @@ function App() {
         <footer className="footer"><span>MADE FOR THE MOMENTS BETWEEN</span><span>GRIMOIRE <b>·</b> EARLY ACCESS</span></footer>
       </div>
     </main>
+    {settingsOpen && <AccountSettings onClose={() => setSettingsOpen(false)} />}
     {reading && <BookReader sourceId={reading.source.id} sourceName={reading.source.name} file={reading.file} onClose={() => setReading(null)} />}
     {video && <VideoPlayer sourceId={video.source.id} sourceName={video.source.name} file={video.file} onClose={() => setVideo(null)} />}
     {playback && <MusicPlayer sourceName={playback.source.name} sourceId={playback.source.id} tracks={playback.tracks} index={playback.index} onIndex={index => setPlayback(current => current ? { ...current, index } : null)} onClose={() => setPlayback(null)} />}
-    {connectOpen && <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setConnectOpen(false) }}><form className="connect-modal" onSubmit={connectDirectory}><button className="modal-close" type="button" aria-label="Close" onClick={() => setConnectOpen(false)}><X size={17}/></button><span className="modal-icon"><FolderOpen size={19}/></span><div className="section-kicker">ADD A CONTENT SOURCE</div><h2>Connect a directory</h2><p>Choose an existing folder on the computer running Grimoire. We’ll scan its subfolders for supported media.</p><label htmlFor="directory-path">Directory path</label><input id="directory-path" autoFocus value={directoryPath} onChange={event => setDirectoryPath(event.target.value)} placeholder="/home/you/Media" required/><small className="path-hint">Use a full local path, such as <code>/home/you/Videos</code>.</small>{connectError && <div className="connect-error">{connectError}</div>}<button className="connect-submit" type="submit" disabled={connecting}>{connecting ? 'Connecting…' : 'Connect directory'}</button><span className="modal-note">Disconnecting a source never deletes its files.</span></form></div>}
+    {connectOpen && user.is_admin && <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setConnectOpen(false) }}><form className="connect-modal" onSubmit={connectDirectory}><button className="modal-close" type="button" aria-label="Close" onClick={() => setConnectOpen(false)}><X size={17}/></button><span className="modal-icon"><FolderOpen size={19}/></span><div className="section-kicker">ADD A CONTENT SOURCE</div><h2>Connect a directory</h2><p>Choose an existing folder on the computer running Grimoire. We’ll scan its subfolders for supported media.</p><label htmlFor="directory-path">Directory path</label><input id="directory-path" autoFocus value={directoryPath} onChange={event => setDirectoryPath(event.target.value)} placeholder="/home/you/Media" required/><small className="path-hint">Use a full local path, such as <code>/home/you/Videos</code>.</small>{connectError && <div className="connect-error">{connectError}</div>}<button className="connect-submit" type="submit" disabled={connecting}>{connecting ? 'Connecting…' : 'Connect directory'}</button><span className="modal-note">Disconnecting a source never deletes its files.</span></form></div>}
   </div>
 }
 
-export default App
+export default function App() {
+  return <Authentication>{(user, logout) => <Workspace key={user.id} user={user} logout={logout}/>}</Authentication>
+}

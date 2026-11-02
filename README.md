@@ -397,13 +397,18 @@ The initial application foundation lives in two small projects:
 - `web/` is a React and TypeScript single-page app built with Vite.
 - `backend/` is a Rust HTTP API built with Axum.
 
-The frontend currently provides a responsive media-library starting
-point with video, music, and book views. The local single-user backend can
-register directories and list supported media file names, relative paths,
-types, and sizes. Directory registrations persist in `backend/data/`
-(or the directory set by `GRIMOIRE_DATA_DIR`). The sample catalog on the
-home page is still presentation data. Music/video playback and EPUB/CBZ reading from connected sources are available. Accounts and
-source/media authorization are not implemented.
+The frontend provides video/music playback and EPUB/CBZ reading. Local
+username/password accounts support public registration and PostgreSQL-backed
+sessions. Sources and media are private to their owners; only administrators
+may connect directories on the API host. User uploads remain planned as a
+separate contribution workflow. The home page sample catalog is presentation
+data, not a grant of access to real media.
+
+Before starting the API, follow [account and PostgreSQL setup](docs/AUTHENTICATION.md):
+create a dedicated database role, copy `backend/.env.example` to `backend/.env`,
+and run `cargo run -- bootstrap-admin YOUR_USERNAME` from `backend/`. Existing
+single-user sources can be explicitly imported with
+`cargo run -- import-legacy-sources YOUR_USERNAME`. The original JSON is preserved.
 
 Install Node.js (with npm) and Rust (with Cargo), then run the API in one
 terminal:
@@ -432,12 +437,13 @@ recursively lists common video (`mkv`, `mp4`, `webm`, and others), audio
 (`mp3`, `flac`, `m4a`, and others), EPUB, and CBZ files. It skips symbolic
 links, limits each scan to 10,000 media files and 100,000 directory
 entries, and serves selected media and book files through scoped endpoints. Disconnecting a source
-only removes its registration; it never deletes files. The source registry
-is stored with owner-only permissions on Unix systems.
+only removes its registration; it never deletes files. Source registrations and ownership are stored in PostgreSQL.
 
-This first version trusts the single local operator who can access the
-loopback API. It does not have user accounts or source-level authorization
-yet; do not expose the API to a network. Multi-user sharing remains future work.
+Accounts authenticate before accessing any source or media endpoint. New public
+accounts start with no source/media access. Directory registration remains a
+server administrator operation. Public HTTPS hosting, account operations, session
+policies, and current limitations are documented in
+[Authentication and authorization](docs/AUTHENTICATION.md).
 
 ### Music playback
 
@@ -450,8 +456,8 @@ source stops playback. Restart the Rust API after updating the code.
 Audio is delivered through `GET /api/sources/{id}/audio?path=...`, with HTTP
 range support for seeking via [tower-http ServeFile](https://docs.rs/tower-http/0.6/tower_http/services/struct.ServeFile.html). Each request
 requires a registered source and a relative audio-file path within it;
-symlinks and traversal are rejected, and responses disable caching. This
-remains a local single-operator API, not a public sharing endpoint. Browser
+symlinks and traversal are rejected, and responses disable caching. Each request also authenticates its session and checks source ownership; sharing
+grants are not implemented yet. Browser
 codec support determines which listed audio formats play; there is no
 transcoding yet. Local filesystem writers are trusted: files must not be
 replaced concurrently with symlinks while requests are being resolved.
