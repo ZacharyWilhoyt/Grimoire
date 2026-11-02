@@ -57,5 +57,12 @@ it('shows EPUB navigation titles while preserving chapter progress locators', as
     expect(host.querySelector('select')?.textContent).toContain('An actual chapter title')
     expect(host.querySelector('iframe')?.getAttribute('sandbox')).toBe('')
     expect(session.save).toHaveBeenLastCalledWith({ position: 0, total: 1, locator: 'OPS/one.xhtml' })
+    const theme = host.querySelector<HTMLSelectElement>('select[aria-label="Reading theme"]')!
+    expect(theme.value).toBe('paper')
+    session.save.mockClear()
+    await act(async () => { theme.value = 'night'; theme.dispatchEvent(new Event('change', { bubbles: true })) })
+    expect(host.querySelector('iframe')?.getAttribute('srcdoc')).toContain('background:#18191d')
+    expect(host.querySelector('iframe')?.getAttribute('sandbox')).toBe('')
+    expect(session.save).not.toHaveBeenCalled()
   } finally { await act(async () => root.unmount()); vi.restoreAllMocks(); vi.unstubAllGlobals() }
 })

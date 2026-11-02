@@ -100,3 +100,9 @@ For you loads its independent sections even when one endpoint fails. The error
 notice identifies the unavailable section; healthy sections remain usable.
 Refresh retries the page. Requests remain sequential to respect scan limits,
 and navigating away cancels the remaining load.
+
+The EPUB reader offers Paper (default) and Night themes. These and text sizing
+apply only to the open reader session and do not persist across account sessions.
+Changing text size or theme redraws the current chapter and can return its view to
+the top; saved progress remains at the same chapter. The iframe sandbox and
+external-resource restrictions are unchanged.

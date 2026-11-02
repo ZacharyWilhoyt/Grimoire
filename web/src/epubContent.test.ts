@@ -18,3 +18,14 @@ describe('EPUB isolation', () => {
     expect(document).toContain('font-size:30px')
   })
 })
+
+it('keeps paper as default and applies night colors without changing the isolation policy', () => {
+  const paper = chapterDocument('<p>Text</p>', 19)
+  const night = chapterDocument('<p>Text</p>', 19, 'night')
+  expect(paper).toContain('background:#f5f0e6')
+  expect(night).toContain('background:#18191d')
+  expect(night).toContain('color-scheme:dark')
+  expect(night).toContain("default-src 'none'")
+  expect(night).toContain("img-src blob:")
+  expect(chapterDocument('', NaN)).toContain('font-size:19px')
+})

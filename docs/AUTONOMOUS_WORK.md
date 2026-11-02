@@ -117,3 +117,11 @@ required control-plane database, with a two-second deadline and two-probe
 concurrency bound, generic response data and no-store caching. PostgreSQL
 integration coverage checks healthy/saturated/recovered/closed pools and verifies
 liveness stays independent. Individual community sources are not readiness gates.
+
+## EPUB reading theme
+
+Added a session-only Night theme beside the existing text-size control, preserving
+Paper as the default and leaving comic image colors unchanged. Theme choices use
+fixed palettes, keep the chapter CSP/sandbox intact, and do not rewrite progress.
+Documented the existing chapter-redraw behavior of text appearance controls.
+All 47 frontend tests and the production build pass.

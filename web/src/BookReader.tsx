@@ -2,7 +2,7 @@ import { epubChapters, type Chapter } from './epubChapters'
 import { ProgressSession } from './progress'
 import { displayTitle, type MetadataView } from './media'
 import { useEffect, useRef, useState } from 'react'
-import { sanitizeChapter, chapterDocument } from './epubContent'
+import { sanitizeChapter, chapterDocument, type ReadingTheme } from './epubContent'
 import { ChevronLeft, ChevronRight, X } from 'lucide-react'
 import { archivePath, isImage, openArchive, parseXml, type BookArchive } from './bookArchive'
 
@@ -19,6 +19,7 @@ export default function BookReader({ sourceId, sourceName, file, onClose }: Prop
   const [index, setIndex] = useState(0)
   const [zoom, setZoom] = useState(100)
   const [fontSize, setFontSize] = useState(19)
+  const [theme, setTheme] = useState<ReadingTheme>('paper')
   const [content, setContent] = useState('')
   const [image, setImage] = useState('')
   const [error, setError] = useState('')
@@ -98,11 +99,11 @@ export default function BookReader({ sourceId, sourceName, file, onClose }: Prop
     if (progressReady && renderedIndex === index && !loading && !error && chapters[index]) progress.current?.save({ position: index, total: chapters.length, locator: chapters[index].path })
   }, [index, renderedIndex, chapters, progressReady, loading, error])
 
-  const srcDocument = chapterDocument(content, fontSize)
+  const srcDocument = chapterDocument(content, fontSize, theme)
   return <dialog ref={dialog} className="video-backdrop" aria-labelledby="reader-title" onCancel={event => { event.preventDefault(); onClose() }}>
     <section className="book-dialog">
       <header className="video-header"><div><h2 id="reader-title">{displayTitle(file)}</h2><span>{sourceName} · {comic ? 'CBZ' : 'EPUB'}</span></div><button aria-label="Close reader" onClick={onClose}><X size={21}/></button></header>
-      <div className="reader-toolbar"><button disabled={index === 0 || loading} onClick={() => setIndex(index - 1)} aria-label="Previous"><ChevronLeft size={18}/></button><label>{comic ? 'Page' : 'Chapter'} <select aria-label={comic ? 'Page' : 'Chapter'} value={index} disabled={!chapters.length || loading} onChange={event => setIndex(Number(event.target.value))}>{chapters.map((chapter, i) => <option key={chapter.path} value={i}>{comic ? i + 1 : chapter.label}</option>)}</select> / {chapters.length}</label><button disabled={index >= chapters.length - 1 || loading} onClick={() => setIndex(index + 1)} aria-label="Next"><ChevronRight size={18}/></button>{comic && <label>Page width <input aria-label="Page width" type="range" min="50" max="200" step="10" value={zoom} onChange={event => setZoom(Number(event.target.value))}/>{zoom}%</label>}{!comic && <label>Text size <input aria-label="Text size" type="range" min="14" max="30" value={fontSize} onChange={event => setFontSize(Number(event.target.value))}/></label>}</div>
+      <div className="reader-toolbar"><button disabled={index === 0 || loading} onClick={() => setIndex(index - 1)} aria-label="Previous"><ChevronLeft size={18}/></button><label>{comic ? 'Page' : 'Chapter'} <select aria-label={comic ? 'Page' : 'Chapter'} value={index} disabled={!chapters.length || loading} onChange={event => setIndex(Number(event.target.value))}>{chapters.map((chapter, i) => <option key={chapter.path} value={i}>{comic ? i + 1 : chapter.label}</option>)}</select> / {chapters.length}</label><button disabled={index >= chapters.length - 1 || loading} onClick={() => setIndex(index + 1)} aria-label="Next"><ChevronRight size={18}/></button>{comic && <label>Page width <input aria-label="Page width" type="range" min="50" max="200" step="10" value={zoom} onChange={event => setZoom(Number(event.target.value))}/>{zoom}%</label>}{!comic && <><label>Text size <input aria-label="Text size" type="range" min="14" max="30" value={fontSize} onChange={event => setFontSize(Number(event.target.value))}/></label><label>Theme <select aria-label="Reading theme" value={theme} onChange={event => setTheme(event.target.value === 'night' ? 'night' : 'paper')}><option value="paper">Paper</option><option value="night">Night</option></select></label></>}</div>
       {loading && <p className="source-message" role="status">Opening book content…</p>}
       {progressError && <p className="video-error" role="status">{progressError}</p>}
       {error && <p className="video-error" role="alert">{error}</p>}

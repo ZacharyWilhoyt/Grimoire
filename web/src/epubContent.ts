@@ -8,7 +8,9 @@ export function sanitizeChapter(markup: string) {
   })
 }
 
-export function chapterDocument(content: string, fontSize: number) {
-  const size = Math.max(14, Math.min(30, fontSize))
-  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src blob:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><style>body{max-width:720px;margin:auto;padding:28px;font-family:Georgia,serif;font-size:${size}px;line-height:1.8;color:#292525;background:#f5f0e6}img{max-width:100%;height:auto}pre{white-space:pre-wrap}*{overflow-wrap:anywhere}</style></head><body>${content}</body></html>`
+export type ReadingTheme = 'paper' | 'night'
+export function chapterDocument(content: string, fontSize: number, theme: ReadingTheme = 'paper') {
+  const size = Number.isFinite(fontSize) ? Math.max(14, Math.min(30, fontSize)) : 19
+  const palette = theme === 'night' ? { text: '#e2ddd3', background: '#18191d', scheme: 'dark' } : { text: '#292525', background: '#f5f0e6', scheme: 'light' }
+  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src blob:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><style>html,body{color:${palette.text};background:${palette.background};color-scheme:${palette.scheme}}body{max-width:720px;margin:auto;padding:28px;font-family:Georgia,serif;font-size:${size}px;line-height:1.8}img{max-width:100%;height:auto}pre{white-space:pre-wrap}*{overflow-wrap:anywhere}</style></head><body>${content}</body></html>`
 }
