@@ -90,3 +90,8 @@ repeat-all wraps. Previous follows that same order. Repeat-one uses native audio
 looping; repeat-all wraps the queue, including a single-track queue. These controls
 never expand the queue beyond the accessible items selected by the current view or
 folder. Saved progress and current delivery permission checks still apply.
+
+EPUB chapter selectors use titles from the EPUB3 navigation TOC or EPUB2 NCX when
+available, with numbered labels as fallback. The package spine remains the
+reading order. Fragment links into the same spine file do not create separate
+reader chapters; the first matching TOC title labels that spine entry.

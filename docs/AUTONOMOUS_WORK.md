@@ -74,3 +74,12 @@ starting playback again. CBZ pages are recorded only after the browser image loa
 succeeds, so damaged images do not overwrite the previous reading position.
 Regression tests cover delayed lookup, early seeking, image success/failure and
 retain the existing file-switch save test. All 36 frontend tests and build pass.
+
+## EPUB chapter titles
+
+EPUB3 navigation documents and EPUB2 NCX titles now label the chapter selector.
+Reading order and saved archive locators remain based on the package spine.
+Malformed/missing optional navigation falls back to numbered sections, and TOC
+links cannot add off-spine or external resources. Parser and reader integration
+tests cover titles, nested entries, encoded paths, fallback and saved locators.
+All 40 frontend tests and the production build pass.

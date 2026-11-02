@@ -1,3 +1,4 @@
+import { epubChapters, type Chapter } from './epubChapters'
 import { ProgressSession } from './progress'
 import { displayTitle, type MetadataView } from './media'
 import { useEffect, useRef, useState } from 'react'
@@ -6,7 +7,6 @@ import { ChevronLeft, ChevronRight, X } from 'lucide-react'
 import { archivePath, isImage, openArchive, parseXml, type BookArchive } from './bookArchive'
 
 type Props = { sourceId: string; sourceName: string; file: { metadata?: MetadataView | null; name: string; relative_path: string; extension: string }; onClose: () => void }
-type Chapter = { path: string; label: string }
 
 export default function BookReader({ sourceId, sourceName, file, onClose }: Props) {
   const dialog = useRef<HTMLDialogElement>(null)
@@ -45,12 +45,7 @@ export default function BookReader({ sourceId, sourceName, file, onClose }: Prop
         const packagePath = container.querySelector('rootfile')?.getAttribute('full-path')
         if (!packagePath) throw new Error('The EPUB package was not found.')
         const packageXml = parseXml(await (await opened.read(packagePath)).text())
-        const manifest = new Map([...packageXml.querySelectorAll('manifest > item')].map(item => [item.getAttribute('id'), item]))
-        pages = [...packageXml.querySelectorAll('spine > itemref')].filter(item => item.getAttribute('linear') !== 'no').map((item, i) => {
-          const entry = manifest.get(item.getAttribute('idref'))
-          if (!entry || entry.getAttribute('media-type') !== 'application/xhtml+xml') throw new Error('This EPUB has an unsupported chapter format.')
-          return { path: archivePath(packagePath, entry.getAttribute('href') ?? ''), label: `Chapter ${i + 1}` }
-        })
+        pages = await epubChapters(opened, packagePath, packageXml)
       }
       if (!pages.length) throw new Error('No readable pages were found in this book.')
       if (!controller.signal.aborted) {

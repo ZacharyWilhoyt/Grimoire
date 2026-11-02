@@ -5,7 +5,25 @@ import { expect, it, vi } from 'vitest'
 import BookReader from './BookReader'
 const session = vi.hoisted(() => ({ save: vi.fn() }))
 vi.mock('./progress', () => ({ ProgressSession: class { load = async () => null; save = session.save } }))
-vi.mock('./bookArchive', async importOriginal => ({ ...await importOriginal<object>(), openArchive: async () => ({ entries: new Map([['1.png', {}], ['2.png', {}]]), read: async () => new Blob(['image']), close: async () => {} }) }))
+const epubFiles = vi.hoisted((): Record<string, string> => ({
+  'META-INF/container.xml': '<container><rootfiles><rootfile full-path="OPS/package.opf"/></rootfiles></container>',
+  'OPS/package.opf': '<package><manifest><item id="chapter" href="one.xhtml" media-type="application/xhtml+xml"/><item id="nav" href="nav.xhtml" properties="nav"/></manifest><spine><itemref idref="chapter"/></spine></package>',
+  'OPS/nav.xhtml': '<html xmlns:epub="http://www.idpf.org/2007/ops"><body><nav epub:type="toc"><a href="one.xhtml">An actual chapter title</a></nav></body></html>',
+  'OPS/one.xhtml': '<html><body><p>Chapter content</p></body></html>',
+}))
+vi.mock('./bookArchive', async importOriginal => ({
+  ...await importOriginal<object>(),
+  openArchive: async (url: string) => url.includes('epub') ? {
+    entries: new Map(),
+    read: async (path: string) => ({ text: async () => epubFiles[path] ?? '' }),
+    close: async () => {},
+  } : {
+    entries: new Map([['1.png', {}], ['2.png', {}]]),
+    read: async () => new Blob(['image']),
+    close: async () => {},
+  },
+}))
+
 it('saves a comic page only after its image loads and does not save a damaged image', async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
   Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: vi.fn() })
@@ -25,5 +43,19 @@ it('saves a comic page only after its image loads and does not save a damaged im
     await act(async () => host.querySelector('img')!.dispatchEvent(new Event('error')))
     expect(host.textContent).toContain('damaged or unsupported')
     expect(session.save).not.toHaveBeenCalled()
+  } finally { await act(async () => root.unmount()); vi.restoreAllMocks(); vi.unstubAllGlobals() }
+})
+
+it('shows EPUB navigation titles while preserving chapter progress locators', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: vi.fn() })
+  Object.defineProperty(HTMLDialogElement.prototype, 'close', { configurable: true, value: vi.fn() })
+  session.save.mockClear()
+  const host = document.createElement('div'), root = createRoot(host)
+  try {
+    await act(async () => root.render(<BookReader sourceId="source" sourceName="Test" file={{ name: 'Book', relative_path: 'book.epub', extension: 'epub' }} onClose={() => {}}/>))
+    expect(host.querySelector('select')?.textContent).toContain('An actual chapter title')
+    expect(host.querySelector('iframe')?.getAttribute('sandbox')).toBe('')
+    expect(session.save).toHaveBeenLastCalledWith({ position: 0, total: 1, locator: 'OPS/one.xhtml' })
   } finally { await act(async () => root.unmount()); vi.restoreAllMocks(); vi.unstubAllGlobals() }
 })
