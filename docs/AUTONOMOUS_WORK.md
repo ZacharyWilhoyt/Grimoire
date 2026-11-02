@@ -83,3 +83,12 @@ Malformed/missing optional navigation falls back to numbered sections, and TOC
 links cannot add off-spine or external resources. Parser and reader integration
 tests cover titles, nested entries, encoded paths, fallback and saved locators.
 All 40 frontend tests and the production build pass.
+
+## Permission roster failure handling
+
+A failed permission-list request no longer looks like an empty grant roster or
+claims the source is owner-only. The editor now requires a successful retry
+before changing grants. Successful mutations remain reported as applied when a
+subsequent roster refresh fails, and further editing is blocked pending reload.
+Regression tests cover initial failure/retry and revocation followed by refresh
+failure. Server-side authorization remains unchanged.

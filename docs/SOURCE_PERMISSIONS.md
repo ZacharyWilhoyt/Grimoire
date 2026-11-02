@@ -85,3 +85,8 @@ integration checks (`cargo test -- --ignored` with a disposable test role/databa
 exercise visibility-only grants, independent acquisition/media settings, owner-only
 editing, attempted self-escalation, shared delivery, grant removal, and source
 removal. See [authentication setup](AUTHENTICATION.md) for the test database setup.
+
+If the permission roster cannot be fetched, the dialog shows an unavailable state
+and a retry action instead of assuming no grants exist. Editing resumes after a
+successful load. If a change succeeds but refreshing the roster fails, the dialog
+reports the applied change and requires retry before further editing.

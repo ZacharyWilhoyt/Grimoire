@@ -11,6 +11,8 @@ export const policyLabel = (policy: AcquisitionPolicy) => ({ auto_deny: 'Auto-de
 export default function SourcePermissions({ source, ownerUsername, onClose, onSaved }: { source: { id: string; name: string }; ownerUsername: string; onClose: () => void; onSaved: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null)
   const [permissions, setPermissions] = useState<Permission[]>([])
+  const [loaded, setLoaded] = useState(false)
+  const [attempt, setAttempt] = useState(0)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [username, setUsername] = useState('')
@@ -24,27 +26,30 @@ export default function SourcePermissions({ source, ownerUsername, onClose, onSa
     const element = dialog.current
     element?.showModal()
     let active = true
+    setLoading(true); setLoaded(false); setPermissions([]); setError('')
     apiFetch(endpoint).then(async response => {
       const data = await response.json()
       if (!response.ok) throw new Error(data.error ?? 'Could not load permissions.')
-      if (active) setPermissions(data as Permission[])
+      if (active) { setPermissions(data as Permission[]); setLoaded(true) }
     }).catch(error => { if (active) setError(error instanceof Error ? error.message : 'Could not load permissions.') }).finally(() => { if (active) setLoading(false) })
     return () => { active = false; element?.close() }
-  }, [endpoint])
+  }, [endpoint, attempt])
   const reload = async () => {
-    const response = await apiFetch(endpoint)
-    const data = await response.json()
-    if (!response.ok) throw new Error(data.error ?? 'Could not refresh permissions.')
-    setPermissions(data as Permission[])
-    onSaved()
+    try {
+      const response = await apiFetch(endpoint)
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error ?? 'Could not refresh permissions.')
+      setPermissions(data as Permission[])
+      onSaved()
+    } catch (error) { setLoaded(false); throw error }
   }
   const save = async (event: FormEvent) => {
     event.preventDefault(); setBusy(true); setError(''); setMessage('')
     try {
       const response = await apiFetch(`${endpoint}/${encodeURIComponent(username.trim())}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(effective) })
       if (!response.ok) { const data = await response.json(); throw new Error(data.error ?? 'Could not save permissions.') }
-      await reload()
       setMessage(`Permissions saved for ${username.trim().toLowerCase()}.`)
+      await reload()
       setUsername(''); setGrant(denied())
     } catch (error) { setError(error instanceof Error ? error.message : 'Could not save permissions.') }
     finally { setBusy(false) }
@@ -54,9 +59,9 @@ export default function SourcePermissions({ source, ownerUsername, onClose, onSa
     try {
       const response = await apiFetch(`${endpoint}/${encodeURIComponent(name)}`, { method: 'DELETE' })
       if (!response.ok) { const data = await response.json(); throw new Error(data.error ?? 'Could not remove permissions.') }
+      setMessage(`Permissions reset to defaults for ${name}.`)
       await reload()
       if (name === username.trim().toLowerCase()) { setUsername(''); setGrant(denied()) }
-      setMessage(`Permissions reset to defaults for ${name}.`)
     } catch (error) { setError(error instanceof Error ? error.message : 'Could not remove permissions.') }
     finally { setBusy(false) }
   }
@@ -64,7 +69,7 @@ export default function SourcePermissions({ source, ownerUsername, onClose, onSa
     <section className="permissions-panel">
       <header className="video-header"><div><h2 id="permissions-title">Source permissions</h2><span>{source.name}</span></div><button aria-label="Close source permissions" onClick={onClose}><X size={21}/></button></header>
       <div className="permissions-content"><p>Grant access by username. Visibility, media access, and acquisition are separate permissions. Everyone else is denied by default.</p>
-        {loading ? <p role="status">Loading permissions…</p> : <>
+        {loading ? <p role="status">Loading permissions…</p> : !loaded ? <div><p>The permission roster is unavailable. Retry before editing access.</p><button className="track-play" onClick={() => setAttempt(value => value + 1)}>Retry loading permissions</button></div> : <>
           <div className="grants-list">{permissions.length === 0 ? <p>No per-user permissions configured. Only you can access this source.</p> : permissions.map(permission => <article className="grant-row" key={permission.user_id}>
             <div><strong>{permission.username}{permission.username === ownerUsername ? ' (owner)' : ''}</strong><span>{permission.can_discover ? 'Visible' : 'Hidden'} · {permission.can_access_media ? 'Media allowed' : 'Media denied'} · Acquisition: {policyLabel(permission.acquisition_policy)}</span></div>
             <button disabled={busy} onClick={() => { setUsername(permission.username); setGrant({ can_discover: permission.can_discover, can_access_media: permission.can_access_media, acquisition_policy: permission.acquisition_policy }); setMessage('') }} aria-label={`Edit permissions for ${permission.username}`}>Edit</button>
