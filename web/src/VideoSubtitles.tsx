@@ -10,6 +10,7 @@ export default function VideoSubtitles({ video, sourceId, path }: Props) {
   const [message, setMessage] = useState('')
   const [offset, setOffset] = useState(0)
   const renderer = useRef<JASSUB | null>(null)
+  const offsetRef = useRef(0)
   const base = `/api/sources/${encodeURIComponent(sourceId)}`
   useEffect(() => {
     const controller = new AbortController()
@@ -26,8 +27,9 @@ export default function VideoSubtitles({ video, sourceId, path }: Props) {
     const controller = new AbortController()
     let instance: JASSUB | null = null
     let element: HTMLTrackElement | null = null
+    let overlay: Element | null = null
     let destroyed = false
-    const dispose = () => { if (instance && !destroyed) { destroyed = true; void instance.destroy().catch(() => {}) } }
+    const dispose = () => { if (instance && !destroyed) { destroyed = true; void instance.destroy().catch(() => {}); overlay?.remove() } }
     let objectUrl: string | null = null
     setMessage('Loading subtitles…')
     const load = async () => {
@@ -49,7 +51,11 @@ export default function VideoSubtitles({ video, sourceId, path }: Props) {
           fonts.push(bytes)
         }
         if (controller.signal.aborted) return
-        instance = new Renderer({ video, subContent: text, fonts, queryFonts: false, libassMemoryLimit: 64, libassGlyphLimit: 10000 })
+        instance = new Renderer({ video, subContent: text, fonts, timeOffset: -offsetRef.current, queryFonts: false, libassMemoryLimit: 64, libassGlyphLimit: 10000 })
+        // Capture our overlay: a retried video may be detached before destroy(),
+        // when the library can no longer locate its original parent.
+        const sibling = video.nextElementSibling
+        overlay = sibling?.classList.contains('JASSUB') ? sibling : null
         renderer.current = instance
         let timer: ReturnType<typeof setTimeout> | undefined
         try { await Promise.race([instance.ready, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Subtitle renderer startup timed out. Check browser WebAssembly/worker support.')), 60000) })]) } finally { clearTimeout(timer) }
@@ -73,7 +79,14 @@ export default function VideoSubtitles({ video, sourceId, path }: Props) {
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
   }, [video, selected, listing, base, path])
-  useEffect(() => { if (renderer.current) { renderer.current.timeOffset = -offset; void renderer.current.resize(true) } }, [offset])
+  useEffect(() => {
+    offsetRef.current = offset
+    const instance = renderer.current
+    if (instance) {
+      instance.timeOffset = -offset
+      void instance.ready.then(() => { if (renderer.current === instance) return instance.resize(true) }).catch(() => {})
+    }
+  }, [offset])
   const ass = listing?.tracks.find(track => track.path === selected)?.format === 'ass'
   return <div className="video-subtitles">
     <label>Subtitles <select aria-label="Subtitle track" value={selected} onChange={event => { setSelected(event.target.value); setOffset(0) }}><option value="">Off</option>{listing?.tracks.map(track => <option key={track.path} value={track.path}>{track.label}</option>)}</select></label>

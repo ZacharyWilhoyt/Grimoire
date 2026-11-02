@@ -5,7 +5,7 @@ import { expect, it, vi } from 'vitest'
 import { useMediaProgress } from './useMediaProgress'
 const session = vi.hoisted(() => ({ load: vi.fn(), save: vi.fn() }))
 vi.mock('./progress', () => ({ ProgressSession: class { load = session.load; save = session.save } }))
-function Player() { const { media } = useMediaProgress<HTMLVideoElement>('source', 'video.mp4'); return <video ref={media}/> }
+function Player() { const { media, retry, retryKey } = useMediaProgress<HTMLVideoElement>('source', 'video.mp4'); return <><video key={retryKey} ref={media}/><button onClick={retry}>Retry</button></> }
 for (const manualPause of [false, true]) it(`restores saved time and ${manualPause ? 'honors an early pause' : 'starts playback normally'}`, async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
   let resolve!: (value: { position: number }) => void
@@ -38,5 +38,25 @@ it('preserves a manual seek while the saved position is loading', async () => {
     video.currentTime = 50; video.dispatchEvent(new Event('seeking'))
     await act(async () => { resolve({ position: 25 }) })
     expect(video.currentTime).toBe(50)
+  } finally { await act(async () => root.unmount()); play.mockRestore(); vi.unstubAllGlobals() }
+})
+
+it('reconnects with a fresh progress read and preserves playback settings on retry', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+  session.load.mockReset().mockResolvedValue({ position: 25 })
+  const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
+  const host = document.createElement('div'), root = createRoot(host)
+  try {
+    await act(async () => root.render(<Player/>))
+    const first = host.querySelector('video')!
+    first.volume = 0.4; first.muted = true; first.playbackRate = 1.5
+    await act(async () => host.querySelector('button')!.click())
+    const second = host.querySelector('video')!
+    expect(second).not.toBe(first)
+    expect(session.load).toHaveBeenCalledTimes(2)
+    Object.defineProperties(second, { duration: { value: 100 }, readyState: { value: 1 } })
+    await act(async () => second.dispatchEvent(new Event('loadedmetadata')))
+    expect(second.currentTime).toBe(25)
+    expect(second.volume).toBe(0.4); expect(second.muted).toBe(true); expect(second.playbackRate).toBe(1.5)
   } finally { await act(async () => root.unmount()); play.mockRestore(); vi.unstubAllGlobals() }
 })

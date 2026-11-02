@@ -106,3 +106,8 @@ apply only to the open reader session and do not persist across account sessions
 Changing text size or theme redraws the current chapter and can return its view to
 the top; saved progress remains at the same chapter. The iframe sandbox and
 external-resource restrictions are unchanged.
+
+Playback errors offer Retry audio / Retry video. Retry reconnects to the protected
+stream, reloads saved progress and preserves volume, mute and playback speed.
+It does not convert unsupported codecs or bypass a revoked permission. The current
+music queue and selected video subtitle track remain selected during retry.

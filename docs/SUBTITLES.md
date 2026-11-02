@@ -68,3 +68,7 @@ JASSUB source, build recipes and component licensing are provided by the
 served at `/licenses/jassub.txt`; upstream includes libass/FreeType/HarfBuzz and
 other compiled dependencies with their own terms. Preserve those terms and source
 availability when redistributing renderer binaries.
+
+Video retries replace the media element; subtitle cleanup also removes its owned
+canvas overlay if the original video has already been detached. The selected
+track is reloaded against the new video element without leaving old overlays.

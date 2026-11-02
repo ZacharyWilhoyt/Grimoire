@@ -3,7 +3,8 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { expect, it, vi } from 'vitest'
 import MusicPlayer from './MusicPlayer'
-vi.mock('./useMediaProgress', () => ({ useMediaProgress: () => ({ media: { current: null }, progressError: '' }) }))
+const progress = vi.hoisted(() => ({ retry: vi.fn() }))
+vi.mock('./useMediaProgress', () => ({ useMediaProgress: () => ({ media: { current: null }, progressError: '', retry: progress.retry, retryKey: 0 }) }))
 it('cycles repeat states, toggles shuffle, and preserves the selected queue', async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true)
   const host=document.createElement('div');document.body.append(host);const root=createRoot(host), change=vi.fn()
@@ -29,4 +30,19 @@ it('loops a one-track queue when repeat-all is selected', async()=>{
     expect(host.querySelector('audio')!.loop).toBe(true)
     expect(host.querySelector<HTMLButtonElement>('button[aria-label="Shuffle"]')!.disabled).toBe(true)
   } finally {await act(async()=>root.unmount());vi.unstubAllGlobals()}
+})
+
+it('retries a failed audio track without changing the queue selection', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+  const host = document.createElement('div'), root = createRoot(host), change = vi.fn()
+  progress.retry.mockClear()
+  try {
+    await act(async () => root.render(<MusicPlayer tracks={[{ name: 'Only', relative_path: 'only.mp3', source_id: 'source', source_name: 'Source' }]} index={0} busy={false} onIndex={change} onClose={() => {}}/>))
+    await act(async () => host.querySelector('audio')!.dispatchEvent(new Event('error')))
+    expect(host.textContent).toContain('Could not play this file')
+    await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'Retry audio')!.click())
+    expect(progress.retry).toHaveBeenCalledOnce()
+    expect(change).not.toHaveBeenCalled()
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+  } finally { await act(async () => root.unmount()); vi.unstubAllGlobals() }
 })

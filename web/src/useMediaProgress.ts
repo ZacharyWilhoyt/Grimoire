@@ -1,11 +1,19 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ProgressSession } from './progress'
 export function useMediaProgress<T extends HTMLMediaElement>(sourceId: string, path: string) {
   const media = useRef<T | null>(null)
   const [error, setError] = useState('')
+  const [retryKey, setRetryKey] = useState(0)
+  const retrySettings = useRef<{ volume: number; muted: boolean; playbackRate: number } | null>(null)
+  const retry = useCallback(() => {
+    const element = media.current
+    if (element) retrySettings.current = { volume: element.volume, muted: element.muted, playbackRate: element.playbackRate }
+    setRetryKey(value => value + 1)
+  }, [])
   useEffect(() => {
     const element = media.current
     if (!element) return
+    if (retrySettings.current) { Object.assign(element, retrySettings.current); retrySettings.current = null }
     let active = true, loaded = false, restored = false, savedPosition = 0, lastSave = 0, interacted = false, pausedEarly = false
     setError('')
     const session = new ProgressSession(sourceId, path, message => { if (active) setError(message) })
@@ -38,6 +46,6 @@ export function useMediaProgress<T extends HTMLMediaElement>(sourceId: string, p
       element.removeEventListener('seeking', earlyInteraction); element.removeEventListener('loadedmetadata', restore); element.removeEventListener('timeupdate', tick); element.removeEventListener('pause', paused); element.removeEventListener('seeked', save); element.removeEventListener('ended', save)
       document.removeEventListener('visibilitychange', hidden); window.removeEventListener('pagehide', save)
     }
-  }, [sourceId, path])
-  return { media, progressError: error }
+  }, [sourceId, path, retryKey])
+  return { media, progressError: error, retry, retryKey }
 }

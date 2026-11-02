@@ -125,3 +125,15 @@ Paper as the default and leaving comic image colors unchanged. Theme choices use
 fixed palettes, keep the chapter CSP/sandbox intact, and do not rewrite progress.
 Documented the existing chapter-redraw behavior of text appearance controls.
 All 47 frontend tests and the production build pass.
+
+## Media retry and ASS overlay cleanup
+
+Audio/video failures now offer explicit retry without leaving the player. Retry
+recreates the media element and progress session, rechecks saved position, and
+preserves volume/mute/speed. Existing revision conflict protections remain active.
+ASS overlays are explicitly released even when their old video element was
+already detached, covering retries and in-place video replacement. Hook and DOM
+regressions cover restored settings, retry actions and detached-overlay cleanup.
+Subtitle delay is also preserved when the video element is replaced; delayed
+renderer startup no longer attempts to resize a renderer before it is ready.
+All 51 frontend tests and the production build pass.
