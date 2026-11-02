@@ -137,3 +137,13 @@ regressions cover restored settings, retry actions and detached-overlay cleanup.
 Subtitle delay is also preserved when the video element is replaced; delayed
 renderer startup no longer attempts to resize a renderer before it is ready.
 All 51 frontend tests and the production build pass.
+
+## Owner-controlled scan stopping
+
+Added Stop scan for the current local metadata job, scoped by source and job ID
+with owner/Origin/CSRF enforcement. Uses the existing interrupted state and keeps
+completed metadata/source files. Workers check before further extraction and do
+not overwrite terminal job states. Tests cover non-owner administrators, wrong
+source/job, missing CSRF, idempotent stops, terminal records, queued extraction
+cancellation, source-byte preservation and UI state refresh. All 19 PostgreSQL/
+extraction tests and 52 frontend tests pass; Clippy and build pass.

@@ -211,3 +211,20 @@ Provider identifiers are `tmdb_movie`, `tmdb_tv`, `musicbrainz`, and `openlibrar
 `artwork_preference` is `auto`, `local`, `matched`, or `none`. The catalog, source
 media listing, library, and activity responses add an optional `metadata` view
 alongside their original file fields. Existing delivery URLs remain unchanged.
+
+## Stopping a local scan
+
+The source owner can use **Stop scan** while a local metadata job is running.
+The API action is `POST /api/sources/{source_id}/metadata/job/{job_id}/cancel`,
+requiring the owner's authenticated session, Origin and CSRF token. Media grants
+and administrator status on another owner's account do not authorize this action.
+The supplied job must belong to that source and owner. Repeating a stop is safe;
+completed/failed/interrupted jobs are not changed.
+
+Stopping records the existing `interrupted` state and preserves completed metadata
+and source files. Workers check this state between files, including after waiting
+for extraction capacity. The current file or bounded directory enumeration may
+finish first; stopping does not undo a metadata update already in progress. A
+worker retains its extraction/job slot until it actually exits, so starting a new
+scan immediately may briefly return the existing busy response. Late worker
+completion/failure cannot overwrite the interrupted job state.

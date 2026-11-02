@@ -37,5 +37,15 @@ export default function SourceMetadataTools({ sourceId, onUpdated }: { sourceId:
     } catch (error) { setError(error instanceof Error ? error.message : 'Could not start metadata gathering.') }
     finally { setBusy(false) }
   }
-  return <div className="source-metadata-tools"><div><button className="track-play" disabled={busy || (!!job && job.status === 'running' && !job.stale)} onClick={() => { void start() }}><RefreshCw size={13}/> Gather local metadata</button><label><input type="checkbox" checked={force} disabled={busy || job?.status === 'running' && !job.stale} onChange={event => setForce(event.target.checked)}/> Re-read unchanged files</label></div>{job && <p role="status">{job.stale ? 'Previous scan stopped responding. You can start it again.' : `${job.status}: ${job.processed}/${job.total} files · ${job.skipped} unchanged · ${job.warnings} warnings`}{job.message ? ` · ${job.message}` : ''}</p>}{error && <p className="video-error" role="alert">{error}</p>}<small>Reads embedded metadata, cover art, and filename hints. Online matching is reviewed separately per item.</small></div>
+  const stop = async () => {
+    if (!job) return
+    setBusy(true); setError('')
+    try {
+      const response = await apiFetch(`/api/sources/${encodeURIComponent(sourceId)}/metadata/job/${encodeURIComponent(job.id)}/cancel`, { method: 'POST' })
+      if (!response.ok) { const data = await response.json(); throw new Error(data.error ?? 'Could not stop metadata gathering.') }
+      setRefresh(value => value + 1)
+    } catch (error) { setError(error instanceof Error ? error.message : 'Could not stop metadata gathering.') }
+    finally { setBusy(false) }
+  }
+  return <div className="source-metadata-tools"><div><button className="track-play" disabled={busy || (!!job && job.status === 'running' && !job.stale)} onClick={() => { void start() }}><RefreshCw size={13}/> Gather local metadata</button>{job?.status === 'running' && <button className="track-play" disabled={busy} onClick={() => { void stop() }}>Stop scan</button>}<label><input type="checkbox" checked={force} disabled={busy || job?.status === 'running' && !job.stale} onChange={event => setForce(event.target.checked)}/> Re-read unchanged files</label></div>{job && <p role="status">{job.stale ? 'Previous scan stopped responding. You can start it again.' : `${job.status}: ${job.processed}/${job.total} files · ${job.skipped} unchanged · ${job.warnings} warnings`}{job.message ? ` · ${job.message}` : ''}</p>}{error && <p className="video-error" role="alert">{error}</p>}<small>Reads embedded metadata, cover art, and filename hints. Online matching is reviewed separately per item.</small></div>
 }

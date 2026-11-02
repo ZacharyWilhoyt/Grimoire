@@ -3493,3 +3493,166 @@ async fn readiness_checks_database_and_times_out_without_exposing_details(pool: 
         StatusCode::OK
     );
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn metadata_scan_stop_is_owner_scoped_csrf_protected_and_preserves_terminal_jobs(
+    pool: PgPool,
+) {
+    let app_state = state(pool.clone());
+    let (owner, csrf, owner_user) = register_user(&app_state, "scan_owner").await;
+    let (viewer, viewer_csrf, viewer_user) = register_user(&app_state, "scan_viewer").await;
+    let source = Uuid::new_v4().to_string();
+    let owner_id = Uuid::parse_str(owner_user["id"].as_str().unwrap()).unwrap();
+    let viewer_id = Uuid::parse_str(viewer_user["id"].as_str().unwrap()).unwrap();
+    sqlx::query(
+        "INSERT INTO sources(id,owner_id,name,path) VALUES ($1,$2,'Cancel test','/nonexistent')",
+    )
+    .bind(&source)
+    .bind(owner_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO source_permissions(source_id,user_id,can_discover,can_access_media) VALUES ($1,$2,true,true)").bind(&source).bind(viewer_id).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE users SET is_admin=true WHERE id=$1")
+        .bind(viewer_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let id = Uuid::new_v4();
+    sqlx::query("INSERT INTO metadata_jobs(id,source_id,owner_id,status,total,processed) VALUES ($1,$2,$3,'running',10,3)").bind(id).bind(&source).bind(owner_id).execute(&pool).await.unwrap();
+    let url = format!("/api/sources/{source}/metadata/job/{id}/cancel");
+    assert_eq!(
+        request(
+            &app_state,
+            Method::POST,
+            &url,
+            Some(&viewer),
+            Some(&viewer_csrf),
+            Some(ORIGIN),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &app_state,
+            Method::POST,
+            &url,
+            Some(&owner),
+            None,
+            Some(ORIGIN),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    let second_source = Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO sources(id,owner_id,name,path) VALUES ($1,$2,'Other source','/other')",
+    )
+    .bind(&second_source)
+    .bind(owner_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let wrong_source = format!("/api/sources/{second_source}/metadata/job/{id}/cancel");
+    assert_eq!(
+        request(
+            &app_state,
+            Method::POST,
+            &wrong_source,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    let wrong_job = format!(
+        "/api/sources/{source}/metadata/job/{}/cancel",
+        Uuid::new_v4()
+    );
+    assert_eq!(
+        request(
+            &app_state,
+            Method::POST,
+            &wrong_job,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            request(
+                &app_state,
+                Method::POST,
+                &url,
+                Some(&owner),
+                Some(&csrf),
+                Some(ORIGIN),
+                None
+            )
+            .await
+            .status(),
+            StatusCode::ACCEPTED
+        );
+    }
+    let job = body(
+        request(
+            &app_state,
+            Method::GET,
+            &format!("/api/sources/{source}/metadata/job"),
+            Some(&owner),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(job["status"], "interrupted");
+    assert_eq!(job["processed"], 3);
+    assert!(job["message"]
+        .as_str()
+        .unwrap()
+        .contains("Stopped by owner"));
+    for terminal in ["completed", "failed", "interrupted"] {
+        sqlx::query("UPDATE metadata_jobs SET status=$2,message=NULL WHERE id=$1")
+            .bind(id)
+            .bind(terminal)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            request(
+                &app_state,
+                Method::POST,
+                &url,
+                Some(&owner),
+                Some(&csrf),
+                Some(ORIGIN),
+                None
+            )
+            .await
+            .status(),
+            StatusCode::ACCEPTED
+        );
+        let status: String = sqlx::query_scalar("SELECT status FROM metadata_jobs WHERE id=$1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(status, terminal);
+    }
+}

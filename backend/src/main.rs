@@ -596,6 +596,10 @@ fn app(state: AppState) -> Router {
             axum::routing::post(metadata::scan),
         )
         .route("/api/sources/{source_id}/metadata/job", get(metadata::job))
+        .route(
+            "/api/sources/{source_id}/metadata/job/{job_id}/cancel",
+            axum::routing::post(metadata::cancel_scan),
+        )
         .route("/api/catalog", get(catalog::discover))
         .route("/api/continue", get(catalog::continue_media))
         .route(

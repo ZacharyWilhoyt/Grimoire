@@ -835,6 +835,42 @@ pub async fn job(
     }
     Ok(Json(sqlx::query_as::<_,Job>("SELECT id,status,total,processed,skipped,warnings,message,(status='running' AND updated_at<now()-interval '5 minutes') AS stale FROM metadata_jobs WHERE source_id=$1 ORDER BY created_at DESC LIMIT 1").bind(source).fetch_optional(&state.db).await.map_err(|_|auth::unavailable())?))
 }
+pub async fn cancel_scan(
+    State(state): State<AppState>,
+    Extension(identity): Extension<auth::Identity>,
+    Path((source, id)): Path<(String, Uuid)>,
+) -> Result<impl IntoResponse, AppError> {
+    let mut tx = state.db.begin().await.map_err(|_| auth::unavailable())?;
+    owner_lock(&mut tx, &source, identity.user.id).await?;
+    let status: Option<String> = sqlx::query_scalar(
+        "SELECT status FROM metadata_jobs WHERE id=$1 AND source_id=$2 AND owner_id=$3 FOR UPDATE",
+    )
+    .bind(id)
+    .bind(&source)
+    .bind(identity.user.id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|_| auth::unavailable())?;
+    match status.as_deref() {
+        None => return Err(not_found()),
+        Some("running") => {
+            sqlx::query("UPDATE metadata_jobs SET status='interrupted',message='Stopped by owner. Completed metadata is retained; the current file may finish before the worker is released.',updated_at=now() WHERE id=$1")
+                .bind(id).execute(&mut *tx).await.map_err(|_| auth::unavailable())?;
+        }
+        Some(_) => {} // A repeated stop cannot change a terminal result.
+    }
+    tx.commit().await.map_err(|_| auth::unavailable())?;
+    Ok(StatusCode::ACCEPTED)
+}
+async fn scan_running(state: &AppState, id: Uuid) -> Result<bool, AppError> {
+    sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM metadata_jobs WHERE id=$1 AND status='running')",
+    )
+    .bind(id)
+    .fetch_one(&state.db)
+    .await
+    .map_err(|_| auth::unavailable())
+}
 pub async fn scan(
     State(state): State<AppState>,
     Extension(identity): Extension<auth::Identity>,
@@ -881,7 +917,7 @@ pub async fn scan(
         let _permit = permit;
         let result = run_scan(&state, &identity.user, &source, id, scan.force).await;
         if result.is_err() {
-            let _=sqlx::query("UPDATE metadata_jobs SET status='failed',message='Scan failed or source/account access changed.',updated_at=now() WHERE id=$1").bind(id).execute(&state.db).await;
+            let _=sqlx::query("UPDATE metadata_jobs SET status='failed',message='Scan failed or source/account access changed.',updated_at=now() WHERE id=$1 AND status='running'").bind(id).execute(&state.db).await;
         }
     });
     Ok((StatusCode::ACCEPTED, Json(serde_json::json!({"id":id}))))
@@ -893,6 +929,9 @@ async fn run_scan(
     id: Uuid,
     force: bool,
 ) -> Result<(), AppError> {
+    if !scan_running(state, id).await? {
+        return Ok(());
+    }
     let root = crate::media_root(state, user, source).await?;
     if std::fs::read_dir(&root).is_err() {
         return Err(not_found());
@@ -901,12 +940,14 @@ async fn run_scan(
         .await
         .map_err(|_| auth::unavailable())?
         .map_err(|_| auth::unavailable())?;
-    sqlx::query("UPDATE metadata_jobs SET total=$2,updated_at=now() WHERE id=$1")
-        .bind(id)
-        .bind(files.len() as i32)
-        .execute(&state.db)
-        .await
-        .map_err(|_| auth::unavailable())?;
+    sqlx::query(
+        "UPDATE metadata_jobs SET total=$2,updated_at=now() WHERE id=$1 AND status='running'",
+    )
+    .bind(id)
+    .bind(files.len() as i32)
+    .execute(&state.db)
+    .await
+    .map_err(|_| auth::unavailable())?;
     let mut skipped = 0;
     let mut warnings = 0;
     for (index, file) in files.into_iter().enumerate() {
@@ -921,14 +962,17 @@ async fn run_scan(
             .acquire_owned()
             .await
             .map_err(|_| auth::unavailable())?;
+        if !scan_running(state, id).await? {
+            return Ok(());
+        }
         match extract_one(state, user, source, &file.relative_path, force).await {
             Ok(None) => skipped += 1,
             Ok(Some(notes)) => warnings += notes.len() as i32,
             Err(_) => warnings += 1,
         }
-        sqlx::query("UPDATE metadata_jobs SET processed=$2,skipped=$3,warnings=$4,updated_at=now() WHERE id=$1").bind(id).bind(index as i32+1).bind(skipped).bind(warnings).execute(&state.db).await.map_err(|_|auth::unavailable())?;
+        sqlx::query("UPDATE metadata_jobs SET processed=$2,skipped=$3,warnings=$4,updated_at=now() WHERE id=$1 AND status='running'").bind(id).bind(index as i32+1).bind(skipped).bind(warnings).execute(&state.db).await.map_err(|_|auth::unavailable())?;
     }
-    sqlx::query("UPDATE metadata_jobs SET status='completed',updated_at=now() WHERE id=$1")
+    sqlx::query("UPDATE metadata_jobs SET status='completed',updated_at=now() WHERE id=$1 AND status='running'")
         .bind(id)
         .execute(&state.db)
         .await
@@ -1024,5 +1068,106 @@ mod credit_tests {
         assert!(credits(Some(&tv), false, false, true).is_empty());
         tv.artwork_preference = "local".into();
         assert!(credits(Some(&tv), true, false, false).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod scan_tests {
+    use super::*;
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+    async fn stopped_scan_does_not_extract_files_after_waiting_for_worker_capacity(
+        pool: sqlx::PgPool,
+    ) {
+        let owner = auth::User {
+            id: Uuid::new_v4(),
+            username: "cancel_owner".into(),
+            is_admin: false,
+        };
+        sqlx::query("INSERT INTO users(id,username,password_hash) VALUES ($1,$2,'unused')")
+            .bind(owner.id)
+            .bind(&owner.username)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let root = std::env::temp_dir().join(format!("grimoire-stop-{}", Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("film.mp4"), b"untouched source bytes").unwrap();
+        let source = Uuid::new_v4().to_string();
+        sqlx::query("INSERT INTO sources(id,owner_id,name,path) VALUES ($1,$2,'Stop test',$3)")
+            .bind(&source)
+            .bind(owner.id)
+            .bind(root.to_str().unwrap())
+            .execute(&pool)
+            .await
+            .unwrap();
+        let id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO metadata_jobs(id,source_id,owner_id,status) VALUES ($1,$2,$3,'running')",
+        )
+        .bind(id)
+        .bind(&source)
+        .bind(owner.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let runtime = Arc::new(Runtime::new());
+        let blocked = runtime.work.clone().acquire_many_owned(2).await.unwrap();
+        let state = AppState {
+            db: pool.clone(),
+            config: Arc::new(auth::Config {
+                origin: "http://localhost:5173".into(),
+                insecure_local: true,
+                dummy_hash: "unused".into(),
+            }),
+            hashing: Arc::new(Semaphore::new(1)),
+            catalog_scans: Arc::new(Semaphore::new(1)),
+            metadata: runtime,
+        };
+        let worker =
+            tokio::spawn(async move { run_scan(&state, &owner, &source, id, false).await.is_ok() });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let total: i32 = sqlx::query_scalar("SELECT total FROM metadata_jobs WHERE id=$1")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                if total == 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        sqlx::query("UPDATE metadata_jobs SET status='interrupted' WHERE id=$1")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        drop(blocked);
+        assert!(tokio::time::timeout(Duration::from_secs(5), worker)
+            .await
+            .unwrap()
+            .unwrap());
+        let (status, processed): (String, i32) =
+            sqlx::query_as("SELECT status,processed FROM metadata_jobs WHERE id=$1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "interrupted");
+        assert_eq!(processed, 0);
+        let records: i64 = sqlx::query_scalar("SELECT count(*) FROM media_metadata")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(records, 0);
+        assert_eq!(
+            std::fs::read(root.join("film.mp4")).unwrap(),
+            b"untouched source bytes"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
