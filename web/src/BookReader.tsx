@@ -73,7 +73,7 @@ export default function BookReader({ sourceId, sourceName, file, onClose }: Prop
       const chapter = chapters[index]
       const blob = await archive.read(chapter.path)
       if (cancelled) return
-      if (comic) { setImage(objectUrl(blob)); setRenderedIndex(index); return }
+      if (comic) { setImage(objectUrl(blob)); return }
       const xml = parseXml(await blob.text())
       const body = xml.querySelector('body')
       if (!body) throw new Error('This chapter has no readable content.')
@@ -111,7 +111,7 @@ export default function BookReader({ sourceId, sourceName, file, onClose }: Prop
       {loading && <p className="source-message" role="status">Opening book content…</p>}
       {progressError && <p className="video-error" role="status">{progressError}</p>}
       {error && <p className="video-error" role="alert">{error}</p>}
-      {!loading && !error && (comic ? <div className="comic-page" key={index}><img style={{ width: `${zoom}%`, maxWidth: 'none' }} src={image} alt={`Page ${index + 1}`} onError={() => setError('This page image is damaged or unsupported by your browser.')}/></div> : <iframe key={index} title={`Book chapter ${index + 1}`} className="epub-page" sandbox="" referrerPolicy="no-referrer" srcDoc={srcDocument}/>)}
+      {!loading && !error && (comic ? <div className="comic-page" key={index}><img style={{ width: `${zoom}%`, maxWidth: 'none' }} src={image} alt={`Page ${index + 1}`} onLoad={() => setRenderedIndex(index)} onError={() => setError('This page image is damaged or unsupported by your browser.')}/></div> : <iframe key={index} title={`Book chapter ${index + 1}`} className="epub-page" sandbox="" referrerPolicy="no-referrer" srcDoc={srcDocument}/>)}
     </section>
   </dialog>
 }

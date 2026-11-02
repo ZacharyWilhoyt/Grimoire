@@ -66,3 +66,11 @@ Synthetic MKV verification confirmed positioned text, vector drawing, italics,
 karaoke and corrected fullscreen alignment. Authorization/revocation, original
 script preservation and byte-exact font extraction have regression coverage.
 See SUBTITLES.md for processing limits and remaining bitmap/transcoding work.
+
+## Progress edge cases
+
+A delayed progress lookup now respects a pause made before restoration instead of
+starting playback again. CBZ pages are recorded only after the browser image load
+succeeds, so damaged images do not overwrite the previous reading position.
+Regression tests cover delayed lookup, early seeking, image success/failure and
+retain the existing file-switch save test. All 36 frontend tests and build pass.
