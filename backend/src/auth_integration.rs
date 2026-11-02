@@ -2978,3 +2978,111 @@ async fn group_artwork_and_tags_inherit_without_crossing_ownership_or_revocation
     fs::remove_dir_all(root).unwrap();
     fs::remove_dir_all(second_root).unwrap();
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn progress_is_private_permission_checked_and_revision_guarded(pool: PgPool) {
+    let state = state(pool.clone());
+    let (owner, csrf, user) = register_user(&state, "progress_owner").await;
+    let (other, other_csrf, _) = register_user(&state, "progress_other").await;
+    let root = shared_media_fixture();
+    let source = Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO sources(id,owner_id,name,path) VALUES ($1,$2,'Progress test',$3)")
+        .bind(&source)
+        .bind(Uuid::parse_str(user["id"].as_str().unwrap()).unwrap())
+        .bind(root.to_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let url = format!("/api/progress?source_id={source}&relative_path=clip.mp4");
+    assert_eq!(
+        request(&state, Method::GET, &url, None, None, None, None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(
+        body(request(&state, Method::GET, &url, Some(&owner), None, None, None).await)
+            .await
+            .is_null()
+    );
+    let update = json!({"source_id":source,"relative_path":"clip.mp4","position":15.5,"total":100.0,"expected_revision":0});
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            "/api/progress",
+            Some(&other),
+            Some(&other_csrf),
+            Some(ORIGIN),
+            Some(update.clone())
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            "/api/progress",
+            Some(&owner),
+            None,
+            Some(ORIGIN),
+            Some(update.clone())
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    let saved = request(
+        &state,
+        Method::PUT,
+        "/api/progress",
+        Some(&owner),
+        Some(&csrf),
+        Some(ORIGIN),
+        Some(update.clone()),
+    )
+    .await;
+    assert_eq!(saved.status(), StatusCode::OK);
+    assert_eq!(body(saved).await["revision"], 1);
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            "/api/progress",
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(update)
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    let read = body(request(&state, Method::GET, &url, Some(&owner), None, None, None).await).await;
+    assert_eq!(read["position"], 15.5);
+    let other_id: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE username='progress_other'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO source_permissions(source_id,user_id,can_discover,can_access_media) VALUES ($1,$2,true,true)").bind(&source).bind(other_id).execute(&pool).await.unwrap();
+    assert!(
+        body(request(&state, Method::GET, &url, Some(&other), None, None, None).await)
+            .await
+            .is_null()
+    );
+    sqlx::query("DELETE FROM source_permissions WHERE source_id=$1")
+        .bind(&source)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        request(&state, Method::GET, &url, Some(&other), None, None, None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    fs::remove_dir_all(root).unwrap();
+}

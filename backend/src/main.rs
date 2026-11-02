@@ -12,6 +12,7 @@ mod auth_integration;
 mod catalog;
 mod metadata;
 mod permissions;
+mod progress;
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -483,6 +484,12 @@ async fn not_found() -> (StatusCode, Json<ApiError>) {
 fn app(state: AppState) -> Router {
     use axum::{extract::DefaultBodyLimit, middleware};
     let protected = Router::new()
+        .route(
+            "/api/progress",
+            get(progress::get)
+                .put(progress::put)
+                .layer(DefaultBodyLimit::max(16 * 1024)),
+        )
         .route(
             "/api/sources/{source_id}/groups/{group_id}",
             get(metadata::groups::details),

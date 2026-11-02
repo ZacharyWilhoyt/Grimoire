@@ -28,3 +28,13 @@ Completed increments are tested, committed and pushed individually.
 
 No credentials should be written here. Do not include AGENTS.md in commits: it was
 already an untracked owner-provided file before this work started.
+
+## Progress implementation status
+
+The backend now exposes session-protected GET/PUT `/api/progress`, keyed to the
+current user and an authorized source/path. Positions use seconds for audio/video
+and zero-based chapter/page indexes for books, with an optional book locator.
+Writes require the revision returned by the preceding read; conflicting players
+receive 409 instead of silently overwriting each other. This API is not wired to
+players/readers yet; that is the next increment. Completion rules remain deferred
+rather than inventing an arbitrary percentage threshold.
