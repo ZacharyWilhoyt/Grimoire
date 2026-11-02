@@ -101,3 +101,11 @@ loading; errors identify the affected section. Requests remain sequential to
 respect server scan limits, and navigation aborts stop subsequent requests and
 discard late responses. Loader and full App rendering tests cover partial failure,
 page-specific endpoints and cancellation. All 46 frontend tests and build pass.
+
+## Bounded API shutdown
+
+Added SIGTERM (Unix) and Ctrl+C draining: stop accepting connections, allow active
+requests up to 30 seconds, then close lingering streams. Existing unit tests and
+Clippy pass; runtime checks use only the disposable preview database and synthetic
+media. See OPERATIONS.md for supervisor timing and the distinction between active
+HTTP requests and non-durable background metadata jobs.

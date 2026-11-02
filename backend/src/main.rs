@@ -19,9 +19,11 @@ mod subtitles_mkv;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
+    future::IntoFuture,
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 use tower_http::{services::ServeFile, trace::TraceLayer};
 
@@ -681,12 +683,44 @@ async fn main() {
         .await
         .expect("Failed to bind API listener");
     println!("Grimoire API listening on http://{address}");
-    axum::serve(
+    let (shutdown, requested) = tokio::sync::oneshot::channel::<()>();
+    let server = axum::serve(
         listener,
         app(state).into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .await
-    .expect("API server failed");
+    .with_graceful_shutdown(async {
+        let _ = requested.await;
+    })
+    .into_future();
+    tokio::pin!(server);
+    tokio::select! {
+        result = &mut server => result.expect("API server failed"),
+        () = shutdown_signal() => {
+            eprintln!("Shutdown requested; draining active requests for up to 30 seconds.");
+            let _ = shutdown.send(());
+            match tokio::time::timeout(Duration::from_secs(30), &mut server).await {
+                Ok(result) => result.expect("API server failed during shutdown"),
+                Err(_) => eprintln!("Shutdown deadline reached; closing remaining requests."),
+            }
+        }
+    }
+}
+
+async fn shutdown_signal() {
+    let interrupt = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Could not install interrupt handler");
+    };
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("Could not install termination handler");
+        tokio::select! { () = interrupt => {}, _ = terminate.recv() => {} }
+    }
+    #[cfg(not(unix))]
+    interrupt.await;
 }
 
 #[cfg(test)]

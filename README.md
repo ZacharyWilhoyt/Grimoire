@@ -603,3 +603,5 @@ A project license has not yet been specified. Licensing information will
 be added once the project owner selects a license.
 
 Video subtitle support and deployment requirements are documented in [SUBTITLES.md](docs/SUBTITLES.md).
+
+API shutdown/restart behavior is documented in [OPERATIONS.md](docs/OPERATIONS.md).
