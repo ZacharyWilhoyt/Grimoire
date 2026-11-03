@@ -4135,7 +4135,7 @@ async fn mkv_audio_selection_transcodes_and_rechecks_permissions(pool: PgPool) {
 async fn transcode_sessions_segments_and_revocation_are_scoped(pool: PgPool) {
     let state = state(pool.clone());
     let (owner, csrf, user) = register_user(&state, "transcode_owner").await;
-    let (viewer, _, viewer_user) = register_user(&state, "transcode_viewer").await;
+    let (viewer, viewer_csrf, viewer_user) = register_user(&state, "transcode_viewer").await;
     let root = shared_media_fixture();
     let file = root.join("stream.mkv");
     assert!(tokio::process::Command::new("ffmpeg")
@@ -4175,8 +4175,81 @@ async fn transcode_sessions_segments_and_revocation_are_scoped(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
-    let settings =
-        json!({"source_id":source,"path":"stream.mkv","encoder":"cpu","height":720,"audio":1});
+    let policy_url = format!("/api/sources/{source}/transcoding");
+    assert_eq!(
+        body(
+            request(
+                &state,
+                Method::GET,
+                &policy_url,
+                Some(&owner),
+                None,
+                None,
+                None
+            )
+            .await
+        )
+        .await["encoder"],
+        "cpu"
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            &policy_url,
+            Some(&viewer),
+            Some(&viewer_csrf),
+            Some(ORIGIN),
+            Some(json!({"encoder":"amd"}))
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            &policy_url,
+            Some(&owner),
+            None,
+            Some(ORIGIN),
+            Some(json!({"encoder":"amd"}))
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            "/api/transcode",
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(json!({"source_id":source,"path":"stream.mkv","height":0,"encoder":"amd"}))
+        )
+        .await
+        .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let qualities = body(
+        request(
+            &state,
+            Method::GET,
+            &format!("/api/transcode/qualities?source_id={source}&path=stream.mkv"),
+            Some(&owner),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(qualities[0]["height"], 180);
+    assert_eq!(qualities[0]["bitrate_kbps"], 1000);
+    let settings = json!({"source_id":source,"path":"stream.mkv","height":0,"audio":1});
     assert_eq!(
         request(
             &state,
@@ -4203,6 +4276,8 @@ async fn transcode_sessions_segments_and_revocation_are_scoped(pool: PgPool) {
     .await;
     assert_eq!(result.status(), StatusCode::OK);
     let started = body(result).await;
+    assert_eq!(started["encoder"], "cpu");
+    assert_eq!(started["height"], 180);
     let id = started["id"].as_str().unwrap();
     let manifest = format!("/api/transcode/{id}/manifest.m3u8");
     let segment = format!("/api/transcode/{id}/segment?index=1");
@@ -4277,6 +4352,34 @@ async fn transcode_sessions_segments_and_revocation_are_scoped(pool: PgPool) {
             Method::GET,
             &segment,
             Some(&viewer),
+            None,
+            None,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            &policy_url,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(json!({"encoder":"nvidia"}))
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::GET,
+            &segment,
+            Some(&owner),
             None,
             None,
             None

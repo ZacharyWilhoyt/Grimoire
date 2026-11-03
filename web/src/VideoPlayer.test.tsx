@@ -6,6 +6,7 @@ import VideoPlayer from './VideoPlayer'
 const progress = vi.hoisted(() => ({ media: { current: null }, progressError: '', retry: vi.fn(), retryKey: 0 }))
 vi.mock('./useMediaProgress', () => ({ useMediaProgress: () => progress }))
 vi.mock('./WatchSidebar', () => ({ default: () => <aside><textarea disabled/></aside> }))
+vi.mock('./TranscodeOptions', () => ({ default: () => null }))
 vi.mock('./VideoAudio', () => ({ default: () => null }))
 vi.mock('./VideoSubtitles', () => ({ default: () => null }))
 it('offers an explicit retry after a video failure without closing the player', async () => {

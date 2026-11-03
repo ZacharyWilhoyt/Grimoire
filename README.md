@@ -497,13 +497,15 @@ and starting music closes video, so only one media item plays at a time.
 
 Video uses `GET /api/sources/{id}/video?path=...` with the same source checks,
 path restrictions, byte-range delivery, and private cache policy as audio.
-This endpoint accepts only recognized video extensions. Files stream directly;
-container and codec support depend on the browser. Companion subtitle files and
+This legacy endpoint accepts only recognized video extensions. The web player
+now always uses segmented H.264/AAC transcoding, with source-owner encoder policy
+and viewer-selectable resolution/bitrate. Companion subtitle files and
 embedded MKV text tracks are available through the subtitle selector. ASS uses
 libass with embedded font support; use **Fullscreen with subtitles** for overlays.
 See [watch pages, shareable links and MKV audio selection](docs/WATCH_PAGES.md)
 and [subtitle setup and limits](docs/SUBTITLES.md). Audio selection now starts segmented H.264/AAC playback. CPU and optional
-NVIDIA/AMD encoding are available under player Settings; see
+NVIDIA/AMD encoding are configured by the source owner; player Settings select
+quality and display target bitrates. See
 [transcoding setup, limits and testing](docs/TRANSCODING.md). Bitmap captions
 remain future work. Restart the Rust API after updating.
 

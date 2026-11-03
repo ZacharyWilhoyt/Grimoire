@@ -79,10 +79,9 @@ export default function VideoSubtitles({ video, sourceId, path }: Props) {
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
   }, [video, selected, listing, base, path])
-  const ass = listing?.tracks.find(track => track.path === selected)?.format === 'ass'
+  const choose=(value:string)=>{setSelected(value);const track=listing?.tracks.find(t=>t.path===value);preferences?.update({subtitle:track?{label:track.label,format:track.format,sourceId,path,track:track.path}:null})}
   return <div className="video-subtitles">
-    <label>Subtitles <select aria-label="Subtitle track" value={selected} onChange={event => { const value=event.target.value;setSelected(value);const track=listing?.tracks.find(t=>t.path===value);preferences?.update({subtitle:track?{label:track.label,format:track.format,sourceId,path,track:track.path}:null}) }}><option value="">Off</option>{listing?.tracks.map(track => <option key={track.path} value={track.path}>{track.label}{listing.tracks.filter(t=>t.label===track.label).length>1?` · ${track.path.replace('embedded:', 'Stream ')}`:''}</option>)}</select></label>
-    {ass && <p>ASS uses libass with embedded fonts. Fonts missing from the file use the bundled fallback; online font lookup is disabled. <a href="/licenses/subtitle-renderer.txt" target="_blank" rel="noreferrer">Renderer credits</a>.</p>}
+    <div className="track-options" role="group" aria-label="Subtitle tracks"><button aria-pressed={!selected} onClick={()=>choose('')}>Off</button>{listing?.tracks.map(track=><button key={track.path} aria-pressed={selected===track.path} onClick={()=>choose(track.path)}>{track.label}{listing.tracks.filter(t=>t.label===track.label).length>1?` · ${track.path.replace('embedded:', 'Stream ')}`:''}</button>)}</div>
     {(message || listing?.warning || listing?.truncated) && <p role="status">{message || listing?.warning || 'Only the first 32 subtitle tracks are shown.'}</p>}
   </div>
 }

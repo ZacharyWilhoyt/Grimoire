@@ -527,6 +527,11 @@ fn app(state: AppState) -> Router {
     use axum::{extract::DefaultBodyLimit, middleware};
     let protected = Router::new()
         .route("/api/transcode/capabilities", get(transcode::status))
+        .route("/api/transcode/qualities", get(transcode::qualities))
+        .route(
+            "/api/sources/{source_id}/transcoding",
+            get(transcode::get_policy).put(transcode::set_policy),
+        )
         .route("/api/transcode", axum::routing::post(transcode::start))
         .route(
             "/api/transcode/{id}/manifest.m3u8",

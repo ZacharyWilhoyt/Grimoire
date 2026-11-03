@@ -1,8 +1,8 @@
 # Watch pages, links, and MKV audio
 
-**Current player:** audio selection now uses [segmented transcoding](TRANSCODING.md).
+**Current player:** all video playback now uses [segmented transcoding](TRANSCODING.md).
 The whole-file compatibility API documented below remains available for older
-clients. Player settings now offer CPU, NVIDIA and AMD video transcoding.
+clients. Source owners control CPU/NVIDIA/AMD encoding; viewers choose quality and bitrate.
 
 
 Video and EPUB/CBZ open in full-page layouts with a related-content sidebar.
@@ -114,11 +114,9 @@ control bar. Video uses its selected fit mode (Contain by default), so aspect
 ratio letterboxing can remain. Mobile ordinary view stacks related content below
 the video; cozy still fills the viewport.
 
-Transcoding enabled/direct mode, applied encoder and resolution, and subtitle
-track label/format are saved in browser local storage, scoped by account ID.
+Playback resolution and subtitle track label/format are saved in browser local storage, scoped by account ID.
 They survive reloads and moving to another episode on the same browser, but do
 not synchronize between devices. Original stream indexes are not reused between
 files. A subtitle preference is restored only if a matching label/format exists;
-otherwise subtitles stay off. Choosing Off saves that preference. Unavailable
-saved encoders report an error so the viewer can choose Auto/CPU. Storage errors
+otherwise subtitles stay off. Choosing Off saves that preference. Encoder policy is stored server-side per source and cannot be overridden by viewer preferences. Storage errors
 or blocked storage leave playback usable with session-only settings.

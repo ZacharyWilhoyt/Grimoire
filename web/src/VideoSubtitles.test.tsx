@@ -22,12 +22,12 @@ it('keeps subtitles off until selected and preserves ASS script and font bytes f
   try {
     await act(async () => root.render(<VideoSubtitles video={video} sourceId="source" path="clip.mkv"/>))
     expect(renderer.options).not.toHaveBeenCalled()
-    const select = host.querySelector('select')!
-    await act(async () => { select.value = 'embedded:2'; select.dispatchEvent(new Event('change', { bubbles: true })) })
+    const select = [...host.querySelectorAll('button')].find(b=>b.textContent==='Styled')!
+    await act(async () => { select.click() })
     expect(renderer.options).toHaveBeenCalledWith(expect.objectContaining({ video, subContent: script, fonts: [new Uint8Array([1, 2, 3])], queryFonts: false }))
     expect(stage.querySelector('.JASSUB')).not.toBeNull()
     video.remove() // React has already replaced the element during retry.
-    await act(async () => { select.value = ''; select.dispatchEvent(new Event('change', { bubbles: true })) })
+    await act(async () => { [...host.querySelectorAll('button')].find(b=>b.textContent==='Off')!.click() })
     expect(renderer.destroy).toHaveBeenCalledTimes(1)
     expect(stage.querySelector('.JASSUB')).toBeNull()
   } finally { await act(async () => root.unmount()); vi.unstubAllGlobals() }
@@ -43,8 +43,8 @@ it('preserves the selected track at original timing when retry replaces the vide
   renderer.options.mockClear()
   try {
     await act(async () => root.render(<VideoSubtitles video={first} sourceId="source" path="clip.mkv"/>))
-    const select = host.querySelector('select')!
-    await act(async () => { select.value = 'embedded:2'; select.dispatchEvent(new Event('change', { bubbles: true })) })
+    const select = [...host.querySelectorAll('button')].find(b=>b.textContent==='Styled')!
+    await act(async () => { select.click() })
     expect(host.querySelector('input')).toBeNull()
     await act(async () => root.render(<VideoSubtitles video={second} sourceId="source" path="clip.mkv"/>))
     expect(renderer.options).toHaveBeenLastCalledWith(expect.objectContaining({ video: second, timeOffset: 0 }))
@@ -58,8 +58,8 @@ it('shows the specific server failure and has no manual timing override',async()
  const host=document.createElement('div'),root=createRoot(host),video=document.createElement('video')
  try{
  await act(async()=>root.render(<VideoSubtitles video={video} sourceId="s" path="film.mkv"/>))
- const select=host.querySelector('select')!
- await act(async()=>{select.value='embedded:2';select.dispatchEvent(new Event('change',{bubbles:true}))})
+ const select=[...host.querySelectorAll('button')].find(b=>b.textContent==='Styled')!
+ await act(async()=>{select.click()})
  expect(host.textContent).toContain('16 MiB output limit')
  expect(host.querySelector('input')).toBeNull()
  }finally{await act(async()=>root.unmount());vi.unstubAllGlobals()}
@@ -73,8 +73,8 @@ it('restores the exact same-file track when multiple subtitle labels are identic
  const host=document.createElement('div'),root=createRoot(host),video=document.createElement('video')
  const render=(key:number)=>root.render(<PlayerPreferences key={key} userId="subtitle-test"><VideoSubtitles video={video} sourceId="s" path="film.mkv"/></PlayerPreferences>)
  try{
- await act(async()=>render(1));const select=host.querySelector('select')!
- await act(async()=>{select.value='embedded:3';select.dispatchEvent(new Event('change',{bubbles:true}))})
- await act(async()=>render(2));expect(host.querySelector('select')!.value).toBe('embedded:3')
+ await act(async()=>render(1));const select=[...host.querySelectorAll('button')].find(b=>b.textContent?.includes('Stream 3'))!
+ await act(async()=>{select.click()})
+ await act(async()=>render(2));expect(host.querySelector('button[aria-pressed=true]')!.textContent).toContain('Stream 3')
  }finally{await act(async()=>root.unmount());localStorage.clear();vi.unstubAllGlobals()}
 })

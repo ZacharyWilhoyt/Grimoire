@@ -39,6 +39,7 @@ struct Session {
     path: String,
     fingerprint: String,
     encoder: Encoder,
+    policy: Encoder,
     height: u32,
     audio: Option<u32>,
     duration: f64,
@@ -61,7 +62,7 @@ impl Runtime {
     }
 }
 fn failed() -> AppError {
-    bad_request("Transcoding failed. Check FFmpeg, encoder drivers/device permissions, and input format. Try CPU if hardware encoding fails.")
+    bad_request("Transcoding failed. Check FFmpeg, encoder drivers/device permissions, and input format. Ask the source owner to check the configured encoder if hardware encoding fails.")
 }
 fn missing() -> AppError {
     AppError(
@@ -124,7 +125,7 @@ fn encoder_args(encoder: Encoder, height: u32) -> Vec<String> {
         .into(),
     ];
     if encoder == Encoder::Cpu {
-        args.extend(["-preset", "veryfast", "-crf", "23"].map(String::from));
+        args.extend(["-preset", "veryfast"].map(String::from));
     }
     if encoder == Encoder::Nvidia {
         args.extend(["-preset", "p4"].map(String::from));
@@ -134,13 +135,13 @@ fn encoder_args(encoder: Encoder, height: u32) -> Vec<String> {
             "-profile:v",
             "main",
             "-level:v",
-            "4.1",
+            if height > 1080 { "5.1" } else { "4.1" },
             "-b:v",
-            if height == 1080 { "5000k" } else { "2500k" },
+            &format!("{}k", bitrate(height)),
             "-maxrate",
-            if height == 1080 { "6000k" } else { "3000k" },
+            &format!("{}k", bitrate(height) * 12 / 10),
             "-bufsize",
-            "6000k",
+            &format!("{}k", bitrate(height) * 2),
             "-r",
             "30",
             "-g",
@@ -193,7 +194,7 @@ async fn execute(
             match value {
                 Ok(Err(e)) => Err(e),
                 _ => Err(bad_request(
-                    "Transcoding timed out. Try a lower resolution or another encoder.",
+                    "Transcoding timed out. Try a lower resolution or ask the source owner to check its encoder.",
                 )),
             }
         }
@@ -224,15 +225,25 @@ async fn capabilities(runtime: &Runtime) -> Vec<Capability> {
         .await
         .clone()
 }
-pub async fn status(State(state): State<AppState>) -> Json<Vec<Capability>> {
-    Json(capabilities(&state.transcode).await)
+pub async fn status(
+    State(state): State<AppState>,
+    Extension(identity): Extension<auth::Identity>,
+) -> Result<Response, AppError> {
+    let owner: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sources WHERE owner_id=$1)")
+        .bind(identity.user.id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(|_| auth::unavailable())?;
+    if !owner {
+        return Err(missing());
+    }
+    json_response(capabilities(&state.transcode).await)
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Start {
     source_id: String,
     path: String,
-    encoder: Encoder,
     height: u32,
     audio: Option<u32>,
 }
@@ -240,6 +251,9 @@ pub struct Start {
 pub struct Started {
     id: String,
     encoder: Encoder,
+    height: u32,
+    bitrate_kbps: u32,
+    audio_bitrate_kbps: u32,
 }
 async fn probe(path: &FsPath) -> Result<serde_json::Value, AppError> {
     let mut cmd = tokio::process::Command::new("ffprobe");
@@ -255,7 +269,7 @@ async fn probe(path: &FsPath) -> Result<serde_json::Value, AppError> {
     .arg(path)
     .args([
         "-show_entries",
-        "format=duration:stream=index,codec_type:stream_disposition=default",
+        "format=duration:stream=index,codec_type,height:stream_disposition=default",
         "-of",
         "json",
     ]);
@@ -265,8 +279,11 @@ pub async fn start(
     State(state): State<AppState>,
     Extension(identity): Extension<auth::Identity>,
     Json(body): Json<Start>,
-) -> Result<Json<Started>, AppError> {
-    if ![720, 1080].contains(&body.height) || body.path.len() > 4096 || body.source_id.len() > 128 {
+) -> Result<Response, AppError> {
+    if ![0, 480, 720, 1080, 1440, 2160].contains(&body.height)
+        || body.path.len() > 4096
+        || body.source_id.len() > 128
+    {
         return Err(bad_request("Invalid transcoding settings."));
     }
     let root = crate::media_root(&state, &identity.user, &body.source_id).await?;
@@ -278,21 +295,29 @@ pub async fn start(
         300,
     )
     .await?;
-    let available = capabilities(&state.transcode).await;
-    let encoder = if body.encoder == Encoder::Auto {
+    let policy = source_policy(&state, &body.source_id).await?;
+    let available = if policy == Encoder::Cpu {
+        vec![Capability {
+            encoder: Encoder::Cpu,
+            available: true,
+        }]
+    } else {
+        capabilities(&state.transcode).await
+    };
+    let encoder = if policy == Encoder::Auto {
         [Encoder::Nvidia, Encoder::Amd, Encoder::Amf, Encoder::Cpu]
             .into_iter()
             .find(|e| available.iter().any(|c| c.encoder == *e && c.available))
             .ok_or_else(failed)?
     } else {
-        body.encoder
+        policy
     };
     if !available
         .iter()
         .any(|c| c.encoder == encoder && c.available)
     {
         return Err(bad_request(
-            "Selected encoder is unavailable. Check drivers/device permissions or choose CPU.",
+            "The source provider encoder is unavailable. Ask the source owner to check its drivers/device permissions or choose CPU.",
         ));
     }
     let _job = state.transcode.jobs.try_acquire().map_err(|_| busy())?;
@@ -301,6 +326,17 @@ pub async fn start(
     if streams.len() > 128 || !streams.iter().any(|s| s["codec_type"] == "video") {
         return Err(failed());
     }
+    let source_height = streams
+        .iter()
+        .find(|s| s["codec_type"] == "video")
+        .and_then(|s| s["height"].as_u64())
+        .filter(|h| *h >= 2)
+        .ok_or_else(failed)? as u32;
+    let height = if body.height == 0 {
+        source_height.min(2160)
+    } else {
+        body.height.min(source_height).min(2160)
+    };
     let audio = if let Some(index) = body.audio {
         if !streams
             .iter()
@@ -323,6 +359,9 @@ pub async fn start(
         .filter(|v| v.is_finite() && *v > 0. && *v <= 86400.)
         .ok_or_else(failed)?;
     crate::media_root(&state, &identity.user, &body.source_id).await?;
+    if source_policy(&state, &body.source_id).await? != policy {
+        return Err(missing());
+    }
     let session = Session {
         id: uuid::Uuid::new_v4().to_string(),
         user: identity.user.id,
@@ -330,7 +369,8 @@ pub async fn start(
         path: body.path,
         fingerprint: fingerprint(&path)?,
         encoder,
-        height: body.height,
+        height,
+        policy,
         audio,
         duration,
         touched: Instant::now(),
@@ -338,6 +378,9 @@ pub async fn start(
     let response = Started {
         id: session.id.clone(),
         encoder,
+        height,
+        bitrate_kbps: bitrate(height),
+        audio_bitrate_kbps: if audio.is_some() { 192 } else { 0 },
     };
     let mut sessions = state.transcode.sessions.lock().unwrap();
     sessions.retain(|s| s.touched.elapsed() < Duration::from_secs(1800));
@@ -352,7 +395,7 @@ pub async fn start(
         return Err(busy());
     }
     sessions.push(session);
-    Ok(Json(response))
+    json_response(response)
 }
 async fn session(
     state: &AppState,
@@ -371,7 +414,9 @@ async fn session(
     };
     let root = crate::media_root(state, user, &session.source).await?;
     let path = crate::resolve_media_path(&root, &session.path, "video")?;
-    if fingerprint(&path)? != session.fingerprint {
+    if source_policy(state, &session.source).await? != session.policy
+        || fingerprint(&path)? != session.fingerprint
+    {
         return Err(missing());
     }
     Ok((session, path))
@@ -482,7 +527,7 @@ async fn encode(
         "mpegts",
         "pipe:1",
     ]);
-    execute(command, 16 * 1024 * 1024, 90).await
+    execute(command, 24 * 1024 * 1024, 90).await
 }
 pub async fn segment(
     State(state): State<AppState>,
@@ -556,4 +601,129 @@ mod tests {
         assert!(encoder_args(Encoder::Cpu, 720).contains(&"libx264".into()));
         assert!(demux(FsPath::new("playlist.m3u8")).is_err());
     }
+}
+
+fn bitrate(height: u32) -> u32 {
+    match height {
+        0..=480 => 1000,
+        481..=720 => 2500,
+        721..=1080 => 5000,
+        1081..=1440 => 10000,
+        _ => 20000,
+    }
+}
+async fn source_policy(state: &AppState, source: &str) -> Result<Encoder, AppError> {
+    let value: String = sqlx::query_scalar("SELECT transcode_encoder FROM sources WHERE id=$1")
+        .bind(source)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|_| auth::unavailable())?
+        .ok_or_else(missing)?;
+    serde_json::from_value(serde_json::Value::String(value)).map_err(|_| failed())
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Policy {
+    encoder: Encoder,
+}
+pub async fn get_policy(
+    State(state): State<AppState>,
+    Extension(identity): Extension<auth::Identity>,
+    Path(source): Path<String>,
+) -> Result<Response, AppError> {
+    let owner: bool = sqlx::query_scalar("SELECT owner_id=$2 FROM sources WHERE id=$1")
+        .bind(&source)
+        .bind(identity.user.id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|_| auth::unavailable())?
+        .ok_or_else(missing)?;
+    if !owner {
+        return Err(missing());
+    }
+    json_response(PolicyView {
+        encoder: source_policy(&state, &source).await?,
+    })
+}
+#[derive(Serialize)]
+pub struct PolicyView {
+    encoder: Encoder,
+}
+pub async fn set_policy(
+    State(state): State<AppState>,
+    Extension(identity): Extension<auth::Identity>,
+    Path(source): Path<String>,
+    Json(body): Json<Policy>,
+) -> Result<StatusCode, AppError> {
+    let value = serde_json::to_value(body.encoder).map_err(|_| failed())?;
+    let changed =
+        sqlx::query("UPDATE sources SET transcode_encoder=$3 WHERE id=$1 AND owner_id=$2")
+            .bind(&source)
+            .bind(identity.user.id)
+            .bind(value.as_str().unwrap())
+            .execute(&state.db)
+            .await
+            .map_err(|_| auth::unavailable())?
+            .rows_affected();
+    if changed == 0 {
+        return Err(missing());
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QualityQuery {
+    source_id: String,
+    path: String,
+}
+#[derive(Serialize)]
+pub struct Quality {
+    height: u32,
+    bitrate_kbps: u32,
+}
+pub async fn qualities(
+    State(state): State<AppState>,
+    Extension(identity): Extension<auth::Identity>,
+    Query(query): Query<QualityQuery>,
+) -> Result<Response, AppError> {
+    let root = crate::media_root(&state, &identity.user, &query.source_id).await?;
+    let path = crate::resolve_media_path(&root, &query.path, "video")?;
+    auth::rate_limit(
+        &state.db,
+        format!("transcode-quality:{}", identity.user.id),
+        60,
+        300,
+    )
+    .await?;
+    let _permit = state.transcode.jobs.try_acquire().map_err(|_| busy())?;
+    let value = probe(&path).await?;
+    let height = value["streams"]
+        .as_array()
+        .and_then(|s| s.iter().find(|s| s["codec_type"] == "video"))
+        .and_then(|v| v["height"].as_u64())
+        .filter(|v| *v >= 2)
+        .ok_or_else(failed)? as u32;
+    let max = height.min(2160);
+    let mut heights: Vec<_> = [480, 720, 1080, 1440, 2160]
+        .into_iter()
+        .filter(|h| *h < max)
+        .collect();
+    heights.push(max);
+    crate::media_root(&state, &identity.user, &query.source_id).await?;
+    json_response(
+        heights
+            .into_iter()
+            .map(|height| Quality {
+                height,
+                bitrate_kbps: bitrate(height),
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn json_response(value: impl Serialize) -> Result<Response, AppError> {
+    Ok(response(
+        serde_json::to_vec(&value).map_err(|_| auth::unavailable())?,
+        "application/json",
+    ))
 }

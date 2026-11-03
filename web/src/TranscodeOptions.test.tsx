@@ -3,18 +3,18 @@ import {act} from 'react'
 import {createRoot} from 'react-dom/client'
 import {expect,it,vi} from 'vitest'
 import TranscodeOptions from './TranscodeOptions'
-it('disables unavailable GPU encoders and preserves audio selection when applying a video profile',async()=>{
+it('starts highest-quality transcoding without a viewer encoder override or direct playback option',async()=>{
  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true)
- const fetch=vi.fn().mockResolvedValueOnce(new Response(JSON.stringify([{encoder:'cpu',available:true},{encoder:'nvidia',available:false}]))).mockResolvedValueOnce(new Response(JSON.stringify({id:'session',encoder:'cpu'})))
+ const fetch=vi.fn(async(url:string,_options?:RequestInit)=>new Response(JSON.stringify(url.includes('qualities')?[{height:480,bitrate_kbps:1000},{height:1080,bitrate_kbps:5000}]:{id:'session',encoder:'cpu',height:1080,bitrate_kbps:5000})))
  vi.stubGlobal('fetch',fetch)
  const host=document.createElement('div'),root=createRoot(host),onSelect=vi.fn()
  try{
- await act(async()=>root.render(<TranscodeOptions sourceId="s" path="film.mkv" profile={{encoder:'cpu',height:720,audio:2}} onProfile={()=>{}} onSelect={onSelect}/>))
- expect(host.querySelector<HTMLOptionElement>('option[value="nvidia"]')!.disabled).toBe(true)
- await act(async()=>[...host.querySelectorAll('button')].find(b=>b.textContent==='Apply transcoding')!.click())
- expect(JSON.parse(fetch.mock.calls[1][1].body)).toMatchObject({encoder:'cpu',height:720,audio:2})
+ await act(async()=>root.render(<TranscodeOptions sourceId="s" path="film.mkv" profile={{height:0,audio:2}} onProfile={()=>{}} onSelect={onSelect}/>))
+ expect(host.querySelector('[aria-label="Transcoding encoder"]')).toBeNull()
+ expect(host.textContent).toContain('1080p · 5.0 Mbps')
+ expect(host.textContent).not.toContain('direct playback')
+ const post=fetch.mock.calls.find(([url])=>url==='/api/transcode')!
+ expect(JSON.parse(post[1]!.body as string)).toEqual({source_id:'s',path:'film.mkv',height:0,audio:2})
  expect(onSelect).toHaveBeenCalledWith('/api/transcode/session/manifest.m3u8')
- await act(async()=>[...host.querySelectorAll('button')].find(b=>b.textContent==='Original / direct playback')!.click())
- expect(onSelect).toHaveBeenLastCalledWith(null)
  }finally{await act(async()=>root.unmount());vi.unstubAllGlobals()}
 })
