@@ -31,7 +31,7 @@ export default function VideoPlayer({ sourceId, sourceName, file, onClose }: Pro
     <main className="watch-main">
       <header className="watch-header"><button ref={closeButton} className="watch-back" aria-label="Close video player" onClick={onClose}><ArrowLeft size={23}/> Back</button><div><h1 id="video-title">{displayTitle(file)}</h1><span>{sourceName}</span></div></header>
       <div className="video-stage watch-stage" ref={stage}>
-        <video key={`${url}:${retryKey}`} ref={attachVideo} src={url} controls controlsList="nofullscreen" playsInline preload="metadata" onLoadedData={() => setFailed(false)} onError={() => setFailed(true)} />
+        <video key={`${url}:${retryKey}`} ref={attachVideo} src={url} playsInline preload="metadata" onLoadedData={() => setFailed(false)} onError={() => setFailed(true)} />
         <VideoToolbar video={videoElement} sourceId={sourceId} path={file.relative_path} onAudio={setAudioUrl} cozy={cozy} onCozy={() => setCozy(value=>!value)} fullscreen={fullscreen} onFullscreen={() => { void toggle() }}/>
       </div>
       {fullscreenError && <p className="video-error" role="status">{fullscreenError}</p>}

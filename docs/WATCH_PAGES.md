@@ -4,7 +4,7 @@ Video and EPUB/CBZ open in full-page layouts with a related-content sidebar.
 Books keep chapter/page, zoom, text size and theme controls; they have no video
 controls. Comments are a disabled visual placeholder. The video fullscreen
 button enters/exits the containing stage, keeping the libass subtitle overlay
-visible. Native video controls remain available.
+visible. Playback uses the unified custom control bar.
 
 ## Sharing links
 
@@ -73,8 +73,7 @@ The video options bar sits inside the fullscreen stage. Its buttons open episode
 preview, subtitle, audio and settings panels; **Cozy view** hides the right sidebar.
 Audio and subtitle components remain mounted when their panels close, preserving
 selection and ASS rendering. Settings offer playback speed, contain/cover/fill,
-and pause when the document is hidden (without automatic resume). Native playback,
-volume and seek controls remain above the options bar. Filters and upscaling are
+and pause when the document is hidden (without automatic resume). Playback, volume, seek and options share the same custom control bar. Filters and upscaling are
 not implemented. Original video quality is unchanged; CDN selection and automatic
 intro/outro skipping require future backend capabilities.
 
@@ -83,3 +82,9 @@ from encoder errors, incompatible MP4 stream copying, temporary storage exhausti
 size limits and timeouts. A working terminal executable does not establish that
 the API service can launch it, and an encoder failure does not mean it is missing.
 Diagnostics never return raw FFmpeg stderr (which can contain private file paths).
+
+Playback and options now share one custom control bar: seek timeline above,
+rewind/play/forward/mute/volume on the left, options/cozy/fullscreen on the right.
+The native browser control bar is disabled. Controls follow media events when
+playback is started, paused, ended or its source changes. Keyboard-accessible
+buttons and range inputs provide seeking and volume adjustment.

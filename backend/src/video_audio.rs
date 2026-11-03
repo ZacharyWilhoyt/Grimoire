@@ -479,6 +479,19 @@ fn encoder_error(stderr: &str) -> AppError {
         || stderr.contains("Could not find tag for codec")
     {
         "This video codec cannot be copied into MP4. Video transcoding is required for this file; FFmpeg is installed."
+    } else if stderr.contains("Invalid argument")
+        && (stderr.contains("timestamp") || stderr.contains("Timestamp"))
+    {
+        "FFmpeg rejected the source timestamps while copying video to MP4. This file needs timestamp repair or video transcoding."
+    } else if stderr.contains("Error loading shared libraries")
+        || stderr.contains("error while loading shared libraries")
+        || stderr.contains("symbol lookup error")
+    {
+        "FFmpeg could not load its runtime libraries in the API process environment. Check the API service library path."
+    } else if stderr.contains("Cannot allocate memory") || stderr.contains("Failed to allocate") {
+        "FFmpeg could not allocate a required buffer. The file may exceed the encoder allocation limit or the host is low on memory."
+    } else if stderr.contains("Invalid data found") {
+        "FFmpeg could not decode this file or selected audio stream: invalid or unsupported input data."
     } else if stderr.contains("Unrecognized option") || stderr.contains("Option not found") {
         "The installed FFmpeg rejected a processing option. Check the API host FFmpeg version."
     } else {

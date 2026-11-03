@@ -1,12 +1,22 @@
 import { useEffect, useRef, useState } from 'react'
-import { ListVideo, Captions, AudioLines, Settings, PanelRightClose, Maximize, Minimize, X } from 'lucide-react'
+import { ListVideo, Captions, AudioLines, Settings, PanelRightClose, Maximize, Minimize, X, Play, Pause, RotateCcw, RotateCw, Volume2, VolumeX } from 'lucide-react'
 import VideoAudio from './VideoAudio'
 import VideoSubtitles from './VideoSubtitles'
 import WatchSidebar from './WatchSidebar'
 type Props = { video: HTMLVideoElement | null; sourceId: string; path: string; onAudio: (url: string | null) => void; cozy: boolean; onCozy: () => void; fullscreen: boolean; onFullscreen: () => void }
 export default function VideoToolbar(p: Props) {
   const [panel, setPanel] = useState(''), [speed, setSpeed] = useState(1), [fit, setFit] = useState('contain'), [away, setAway] = useState(false)
+  const [playing,setPlaying]=useState(false),[time,setTime]=useState(0),[duration,setDuration]=useState(0),[volume,setVolume]=useState(1),[muted,setMuted]=useState(false),[playError,setPlayError]=useState('')
   const root = useRef<HTMLDivElement>(null)
+  useEffect(()=>{
+    const video=p.video;if(!video)return
+    const update=()=>{setPlaying(!video.paused&&!video.ended);setTime(video.currentTime||0);setDuration(Number.isFinite(video.duration)?video.duration:0);setVolume(video.volume);setMuted(video.muted)}
+    const events=['play','pause','ended','timeupdate','durationchange','loadedmetadata','volumechange']
+    update();events.forEach(event=>video.addEventListener(event,update));return()=>events.forEach(event=>video.removeEventListener(event,update))
+  },[p.video])
+  const seek=(value:number)=>{if(p.video&&duration>0)p.video.currentTime=Math.min(duration,Math.max(0,value))}
+  const stamp=(value:number)=>{const seconds=Math.floor(value);return `${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`}
+  const play=async()=>{setPlayError('');if(!p.video)return;if(!p.video.paused)p.video.pause();else try{await p.video.play()}catch{setPlayError('Playback could not start. Try again or select a compatible audio track.')}}
   useEffect(() => { if (p.video) { p.video.playbackRate=speed; p.video.style.objectFit=fit } }, [p.video,speed,fit])
   useEffect(() => { const changed=()=>{if(away && document.hidden) p.video?.pause()}; document.addEventListener('visibilitychange',changed); return()=>document.removeEventListener('visibilitychange',changed) },[away,p.video])
   useEffect(() => {
@@ -21,6 +31,9 @@ export default function VideoToolbar(p: Props) {
     <div className="video-option-panel" hidden={panel!=='subtitles'}><header>Subtitle options</header><VideoSubtitles video={p.video} sourceId={p.sourceId} path={p.path}/></div>
     <div className="video-option-panel" hidden={panel!=='audio'}><header>Audio options</header><VideoAudio video={p.video} sourceId={p.sourceId} path={p.path} onSelect={p.onAudio}/></div>
     <div className="video-option-panel player-preferences" hidden={panel!=='settings'}><header>Playback settings</header><label>Video fit<select aria-label="Video fit" value={fit} onChange={e=>setFit(e.target.value)}><option value="contain">Contain</option><option value="cover">Cover</option><option value="fill">Fill</option></select></label><label>Speed<select aria-label="Playback speed" value={speed} onChange={e=>setSpeed(Number(e.target.value))}>{[.5,.75,1,1.25,1.5,1.75,2].map(s=><option key={s} value={s}>{s===1?'Normal':`${s}×`}</option>)}</select></label><label><input type="checkbox" checked={away} onChange={e=>setAway(e.target.checked)}/> Pause when away</label><p>Quality: Original video. CDN selection, automatic intro/outro skipping and video transcoding are not available yet.</p><button onClick={()=>setPanel('audio')}>Audio options</button><button onClick={()=>setPanel('subtitles')}>Subtitle options</button></div>
-    <nav aria-label="Video options">{buttons.map(([id,label,Icon])=><button key={id} data-panel={id} title={label} aria-label={label} aria-expanded={panel===id} onClick={()=>setPanel(panel===id?'':id)}><Icon size={23}/></button>)}<button title="Cozy view" aria-label="Cozy view" aria-pressed={p.cozy} onClick={p.onCozy}><PanelRightClose size={23}/></button><button className="toolbar-fullscreen" title={p.fullscreen?'Exit fullscreen':'Fullscreen with subtitles'} aria-label={p.fullscreen?'Exit fullscreen':'Fullscreen with subtitles'} onClick={p.onFullscreen}>{p.fullscreen?<Minimize size={23}/>:<Maximize size={23}/>}</button></nav>
+    {playError && <p role="status">{playError}</p>}
+    <div className="video-timeline"><span>{stamp(time)}</span><input aria-label="Video position" type="range" min="0" max={duration||1} step="0.1" value={Math.min(time,duration)} disabled={!duration} onChange={e=>seek(Number(e.target.value))}/><span>{stamp(duration)}</span></div>
+    <div className="video-control-row"><nav aria-label="Playback controls"><button aria-label="Back 10 seconds" title="Back 10 seconds" onClick={()=>seek(time-10)}><RotateCcw size={23}/></button><button aria-label={playing?'Pause':'Play'} title={playing?'Pause':'Play'} onClick={()=>{void play()}}>{playing?<Pause size={29}/>:<Play size={29}/>}</button><button aria-label="Forward 10 seconds" title="Forward 10 seconds" onClick={()=>seek(time+10)}><RotateCw size={23}/></button><button aria-label={muted?'Unmute':'Mute'} onClick={()=>{if(p.video)p.video.muted=!p.video.muted}}>{muted?<VolumeX size={23}/>:<Volume2 size={23}/>}</button><input aria-label="Volume" type="range" min="0" max="1" step="0.05" value={muted?0:volume} onChange={e=>{if(p.video){p.video.volume=Number(e.target.value);p.video.muted=false}}}/></nav>
+    <nav aria-label="Video options">{buttons.map(([id,label,Icon])=><button key={id} data-panel={id} title={label} aria-label={label} aria-expanded={panel===id} onClick={()=>setPanel(panel===id?'':id)}><Icon size={23}/></button>)}<button title="Cozy view" aria-label="Cozy view" aria-pressed={p.cozy} onClick={p.onCozy}><PanelRightClose size={23}/></button><button className="toolbar-fullscreen" title={p.fullscreen?'Exit fullscreen':'Fullscreen with subtitles'} aria-label={p.fullscreen?'Exit fullscreen':'Fullscreen with subtitles'} onClick={p.onFullscreen}>{p.fullscreen?<Minimize size={23}/>:<Maximize size={23}/>}</button></nav></div>
   </div>
 }
