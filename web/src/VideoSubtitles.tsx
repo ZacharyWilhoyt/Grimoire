@@ -8,13 +8,11 @@ export default function VideoSubtitles({ video, sourceId, path }: Props) {
   const [listing, setListing] = useState<Listing | null>(null)
   const [selected, setSelected] = useState('')
   const [message, setMessage] = useState('')
-  const [offset, setOffset] = useState(0)
   const renderer = useRef<JASSUB | null>(null)
-  const offsetRef = useRef(0)
   const base = `/api/sources/${encodeURIComponent(sourceId)}`
   useEffect(() => {
     const controller = new AbortController()
-    setListing(null); setSelected(''); setMessage(''); setOffset(0)
+    setListing(null); setSelected(''); setMessage('')
     fetch(`${base}/subtitles?${new URLSearchParams({ path })}`, { signal: controller.signal })
       .then(async response => { if (!response.ok) throw new Error('Subtitle tracks could not be loaded.'); return await response.json() as Listing })
       .then(setListing).catch(error => { if (!controller.signal.aborted) setMessage(String(error.message)) })
@@ -34,7 +32,7 @@ export default function VideoSubtitles({ video, sourceId, path }: Props) {
     setMessage('Loading subtitles…')
     const load = async () => {
       const response = await fetch(`${base}/subtitle?${new URLSearchParams({ video: path, path: selected })}`, { signal: controller.signal })
-      if (!response.ok) throw new Error('This subtitle track could not be loaded or exceeds processing limits.')
+      if (!response.ok) { const data = await response.json().catch(() => null) as { error?: string } | null; throw new Error(data?.error ?? 'This subtitle track could not be loaded. Try selecting it again.') }
       const text = await response.text()
       if (controller.signal.aborted) return
       if (track.format === 'ass') {
@@ -51,7 +49,7 @@ export default function VideoSubtitles({ video, sourceId, path }: Props) {
           fonts.push(bytes)
         }
         if (controller.signal.aborted) return
-        instance = new Renderer({ video, subContent: text, fonts, timeOffset: -offsetRef.current, queryFonts: false, libassMemoryLimit: 64, libassGlyphLimit: 10000 })
+        instance = new Renderer({ video, subContent: text, fonts, timeOffset: 0, queryFonts: false, libassMemoryLimit: 64, libassGlyphLimit: 10000 })
         // Capture our overlay: a retried video may be detached before destroy(),
         // when the library can no longer locate its original parent.
         const sibling = video.nextElementSibling
@@ -79,19 +77,10 @@ export default function VideoSubtitles({ video, sourceId, path }: Props) {
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
   }, [video, selected, listing, base, path])
-  useEffect(() => {
-    offsetRef.current = offset
-    const instance = renderer.current
-    if (instance) {
-      instance.timeOffset = -offset
-      void instance.ready.then(() => { if (renderer.current === instance) return instance.resize(true) }).catch(() => {})
-    }
-  }, [offset])
   const ass = listing?.tracks.find(track => track.path === selected)?.format === 'ass'
   return <div className="video-subtitles">
-    <label>Subtitles <select aria-label="Subtitle track" value={selected} onChange={event => { setSelected(event.target.value); setOffset(0) }}><option value="">Off</option>{listing?.tracks.map(track => <option key={track.path} value={track.path}>{track.label}</option>)}</select></label>
+    <label>Subtitles <select aria-label="Subtitle track" value={selected} onChange={event => { setSelected(event.target.value) }}><option value="">Off</option>{listing?.tracks.map(track => <option key={track.path} value={track.path}>{track.label}</option>)}</select></label>
     {ass && <p>ASS uses libass with embedded fonts. Fonts missing from the file use the bundled fallback; online font lookup is disabled. <a href="/licenses/subtitle-renderer.txt" target="_blank" rel="noreferrer">Renderer credits</a>.</p>}
-    {ass && <label>Subtitle delay (seconds) <input aria-label="Subtitle delay in seconds" type="number" min={-60} max={60} step={0.1} value={offset} onChange={event => { const value = Number(event.target.value); if (Number.isFinite(value)) setOffset(Math.max(-60, Math.min(60, value))) }}/></label>}
     {(message || listing?.warning || listing?.truncated) && <p role="status">{message || listing?.warning || 'Only the first 32 subtitle tracks are shown.'}</p>}
   </div>
 }

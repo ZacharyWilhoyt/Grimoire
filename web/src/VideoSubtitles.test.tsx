@@ -31,7 +31,7 @@ it('keeps subtitles off until selected and preserves ASS script and font bytes f
     expect(stage.querySelector('.JASSUB')).toBeNull()
   } finally { await act(async () => root.unmount()); vi.unstubAllGlobals() }
 })
-it('preserves subtitle delay when retry replaces the video element', async () => {
+it('preserves the selected track at original timing when retry replaces the video element', async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
   vi.stubGlobal('fetch', vi.fn(async (url: string) => url.includes('/subtitles?')
     ? { ok: true, json: async () => ({ tracks: [{ path: 'embedded:2', label: 'Styled', format: 'ass' }], fonts: [], truncated: false, warning: null }) }
@@ -44,12 +44,22 @@ it('preserves subtitle delay when retry replaces the video element', async () =>
     await act(async () => root.render(<VideoSubtitles video={first} sourceId="source" path="clip.mkv"/>))
     const select = host.querySelector('select')!
     await act(async () => { select.value = 'embedded:2'; select.dispatchEvent(new Event('change', { bubbles: true })) })
-    const input = host.querySelector('input')!
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, '2')
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-    })
+    expect(host.querySelector('input')).toBeNull()
     await act(async () => root.render(<VideoSubtitles video={second} sourceId="source" path="clip.mkv"/>))
-    expect(renderer.options).toHaveBeenLastCalledWith(expect.objectContaining({ video: second, timeOffset: -2 }))
+    expect(renderer.options).toHaveBeenLastCalledWith(expect.objectContaining({ video: second, timeOffset: 0 }))
   } finally { await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals() }
+})
+it('shows the specific server failure and has no manual timing override',async()=>{
+ vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true)
+ vi.stubGlobal('fetch',vi.fn(async(url:string)=>url.includes('/subtitles?')
+ ?{ok:true,json:async()=>({tracks:[{path:'embedded:2',label:'Styled',format:'ass'}],fonts:[],truncated:false,warning:null})}
+ :{ok:false,json:async()=>({error:'Extracted media exceeds its 16 MiB output limit.'})}))
+ const host=document.createElement('div'),root=createRoot(host),video=document.createElement('video')
+ try{
+ await act(async()=>root.render(<VideoSubtitles video={video} sourceId="s" path="film.mkv"/>))
+ const select=host.querySelector('select')!
+ await act(async()=>{select.value='embedded:2';select.dispatchEvent(new Event('change',{bubbles:true}))})
+ expect(host.textContent).toContain('16 MiB output limit')
+ expect(host.querySelector('input')).toBeNull()
+ }finally{await act(async()=>root.unmount());vi.unstubAllGlobals()}
 })

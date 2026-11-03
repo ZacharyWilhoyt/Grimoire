@@ -312,19 +312,24 @@ pub async fn read(
     if !companion(&file, &caption) {
         return Err(denied());
     }
+    let ass = matches!(caption_extension(&query.path).as_str(), "ass" | "ssa");
+    let limit = crate::subtitles_mkv::script_limit(if ass { "ass" } else { "vtt" });
     let input = tokio::fs::File::open(caption).await.map_err(|_| denied())?;
     let mut bytes = Vec::new();
     input
-        .take(1024 * 1024 + 1)
+        .take(limit as u64 + 1)
         .read_to_end(&mut bytes)
         .await
         .map_err(|_| denied())?;
-    if bytes.len() > 1024 * 1024 {
-        return Err(crate::bad_request("Caption files must be at most 1 MiB."));
+    if bytes.len() > limit {
+        return Err(crate::bad_request(if ass {
+            "ASS/SSA scripts must be at most 16 MiB."
+        } else {
+            "SRT/WebVTT files must be at most 1 MiB."
+        }));
     }
     let content = std::str::from_utf8(&bytes)
         .map_err(|_| crate::bad_request("Caption files must use UTF-8."))?;
-    let ass = matches!(caption_extension(&query.path).as_str(), "ass" | "ssa");
     let output = if ass {
         validate_ass(content)?.to_owned()
     } else {
@@ -390,12 +395,14 @@ fn caption_extension(path: &str) -> String {
     path.rsplit('.').next().unwrap_or("").to_ascii_lowercase()
 }
 fn validate_ass(content: &str) -> Result<&str, AppError> {
-    if content.len() > 1024 * 1024
+    if content.len() > crate::subtitles_mkv::ASS_LIMIT
         || content.contains('\0')
         || !content.contains("[Script Info]")
         || !content.contains("[Events]")
     {
-        return Err(crate::bad_request("Invalid or oversized ASS/SSA script."));
+        return Err(crate::bad_request(
+            "Invalid ASS/SSA script or script exceeds the 16 MiB limit.",
+        ));
     }
     Ok(content)
 }
@@ -440,4 +447,19 @@ pub async fn read_font(
         bytes,
     )
         .into_response())
+}
+
+#[cfg(test)]
+mod ass_limits_tests {
+    #[test]
+    fn typesetting_heavy_ass_uses_its_own_bound() {
+        let script = format!("[Script Info]\n[Events]\n{}", "x".repeat(2 * 1024 * 1024));
+        assert!(super::validate_ass(&script).is_ok());
+        assert!(super::convert(&script).is_err());
+        let oversized = format!(
+            "[Script Info]\n[Events]\n{}",
+            "x".repeat(crate::subtitles_mkv::ASS_LIMIT)
+        );
+        assert!(super::validate_ass(&oversized).is_err());
+    }
 }

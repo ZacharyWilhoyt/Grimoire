@@ -3,6 +3,14 @@ use crate::{bad_request, AppError};
 use serde_json::Value;
 use std::{path::Path, process::Stdio, sync::LazyLock, time::Duration};
 use tokio::io::AsyncReadExt;
+pub const ASS_LIMIT: usize = 16 * 1024 * 1024;
+pub fn script_limit(format: &str) -> usize {
+    if format == "ass" {
+        ASS_LIMIT
+    } else {
+        1024 * 1024
+    }
+}
 static WAITERS: LazyLock<tokio::sync::Semaphore> = LazyLock::new(|| tokio::sync::Semaphore::new(8));
 static JOBS: LazyLock<tokio::sync::Semaphore> = LazyLock::new(|| tokio::sync::Semaphore::new(2));
 fn failed() -> AppError {
@@ -47,7 +55,10 @@ async fn run(
             .await
             .map_err(|_| failed())?;
         if bytes.len() > limit {
-            return Err(failed());
+            return Err(bad_request(format!(
+                "Extracted media exceeds its {} MiB output limit.",
+                limit / (1024 * 1024)
+            )));
         }
         if !child.wait().await.map_err(|_| failed())?.success() {
             return Err(failed());
@@ -57,9 +68,15 @@ async fn run(
     .await;
     match result {
         Ok(Ok(bytes)) => Ok(bytes),
-        _ => {
+        Ok(Err(error)) => {
             let _ = child.kill().await;
-            Err(failed())
+            Err(error)
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            Err(bad_request(
+                "Media extraction exceeded its 120-second processing limit.",
+            ))
         }
     }
 }
@@ -87,7 +104,18 @@ pub fn format(stream: &Value) -> Option<&'static str> {
 }
 pub fn font(stream: &Value) -> bool {
     stream["codec_type"] == "attachment"
-        && matches!(stream["codec_name"].as_str(), Some("ttf" | "otf"))
+        && (matches!(stream["codec_name"].as_str(), Some("ttf" | "otf"))
+            || matches!(
+                stream["tags"]["mimetype"].as_str(),
+                Some(
+                    "font/ttf"
+                        | "font/otf"
+                        | "application/x-truetype-font"
+                        | "application/vnd.ms-opentype"
+                        | "application/x-font-ttf"
+                        | "application/x-font-opentype"
+                )
+            ))
         && stream["extradata_size"]
             .as_u64()
             .is_some_and(|size| size > 0 && size <= 8 * 1024 * 1024)
@@ -99,7 +127,7 @@ pub async fn extract(
     format: &str,
 ) -> Result<Vec<u8>, AppError> {
     if font {
-        run(
+        let bytes = run(
             file,
             false,
             &[format!("-dump_attachment:{index}"), "pipe:1".into()],
@@ -114,7 +142,13 @@ pub async fn extract(
             ],
             8 * 1024 * 1024,
         )
-        .await
+        .await?;
+        if !matches!(bytes.get(..4), Some(b"\0\x01\0\0" | b"OTTO" | b"true")) {
+            return Err(bad_request(
+                "Embedded attachment is not a supported TrueType/OpenType font.",
+            ));
+        }
+        Ok(bytes)
     } else {
         run(
             file,
@@ -129,7 +163,7 @@ pub async fn extract(
                 format.into(),
                 "pipe:1".into(),
             ],
-            1024 * 1024,
+            script_limit(format),
         )
         .await
     }
@@ -140,6 +174,15 @@ mod tests {
     use super::*;
     #[test]
     fn codecs_and_font_limits_are_explicit() {
+        assert!(font(
+            &serde_json::json!({"codec_type":"attachment","extradata_size":100,"tags":{"mimetype":"font/ttf"}})
+        ));
+        assert!(!font(
+            &serde_json::json!({"codec_type":"attachment","extradata_size":100,"tags":{"mimetype":"image/png","filename":"font.ttf"}})
+        ));
+        assert_eq!(script_limit("ass"), 16 * 1024 * 1024);
+        assert_eq!(script_limit("vtt"), 1024 * 1024);
+
         assert_eq!(
             format(&serde_json::json!({"codec_type":"subtitle","codec_name":"ass"})),
             Some("ass")
@@ -159,7 +202,14 @@ mod tests {
             std::env::temp_dir().join(format!("grimoire-subtitles-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         let script = root.join("styled.ass");
-        std::fs::write(&script, include_bytes!("../tests/fixtures/styled.ass")).unwrap();
+        let mut content = include_str!("../tests/fixtures/styled.ass").to_string();
+        for _ in 0..1200 {
+            content += &format!(
+                "Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{}\n",
+                "x".repeat(1024)
+            );
+        }
+        std::fs::write(&script, content).unwrap();
         let font_path = Path::new("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf");
         let file = root.join("styled.mkv");
         let status = tokio::process::Command::new("ffmpeg")
@@ -180,7 +230,7 @@ mod tests {
             .arg(font_path)
             .args([
                 "-metadata:s:t:0",
-                "mimetype=application/x-truetype-font",
+                "mimetype=font/ttf",
                 "-metadata:s:t:0",
                 "filename=DejaVuSans.ttf",
                 "-y",
@@ -203,6 +253,7 @@ mod tests {
                 .unwrap_or_else(|_| panic!("extraction failed")),
         )
         .unwrap();
+        assert!(ass.len() > 1024 * 1024);
         assert!(ass.contains("\\pos(320,30)"));
         assert!(ass.contains("\\k100"));
         assert!(ass.contains("\\p1"));

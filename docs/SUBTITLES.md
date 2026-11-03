@@ -14,7 +14,7 @@ The video player starts with subtitles **Off**. Choose a track from **Subtitles*
   still requires the correct fonts in the file. Remote/local-system font lookup
   is disabled. Sidecar scripts can use script-embedded fonts or this fallback;
   arbitrary neighboring font directories are not read.
-- ASS delay is adjustable from -60 to +60 seconds (positive means later).
+- Subtitle scripts use their original timing; there is no manual delay control.
   Use **Fullscreen with subtitles** to include the canvas overlay. Native video
   fullscreen and picture-in-picture can omit it.
 
@@ -22,8 +22,8 @@ FFmpeg and FFprobe must be installed on the API host and available on PATH for
 embedded tracks. Sidecar files do not require them. Modern browsers need
 WebAssembly, workers and OffscreenCanvas; unsupported environments report a
 rendering failure. Cross-origin isolation is optional for JASSUB's single-thread
-fallback. This does not add video/audio transcoding: MKV codec/container playback
-still depends on the browser. Bitmap PGS/VobSub tracks are not implemented and
+fallback. See [video transcoding](TRANSCODING.md) for browser-compatible
+H.264/AAC playback. Bitmap PGS/VobSub tracks are not implemented and
 produce a warning rather than an incorrect text conversion.
 
 ## Boundaries and limits
@@ -40,7 +40,8 @@ protocols. Extraction reads the seekable original file; it does not silently sto
 after a prefix of a large movie. Two jobs may run per API process; requests are
 rate limited per account, each process has a 120-second deadline and bounded
 output. Limits: 128 streams, 32 displayed tracks, 16 fonts, 8 MiB per font,
-32 MiB total browser font data, 1 MiB subtitle scripts, 5,000 sidecar directory
+32 MiB total browser font data, 16 MiB ASS/SSA scripts, 1 MiB SRT/WebVTT
+scripts, 5,000 sidecar directory
 entries, 10,000 normalized WebVTT cues. Exceeding limits fails or warns explicitly.
 FFmpeg's internal allocations are not an OS memory sandbox; production processing
 of hostile media should run in a restricted worker/container with OS resource
@@ -49,7 +50,7 @@ require a scan when selecting a track.
 
 SRT/WebVTT are normalized to plain-text native cues; custom WebVTT styles and cue
 position settings are intentionally omitted. ASS is never passed through that
-converter. Selected tracks/delay apply to this player session. Closing/switching
+converter. Selected tracks apply to this player session. Closing/switching
 tracks cancels fetches, releases blob URLs, and destroys the libass worker.
 
 ## Verification
@@ -72,3 +73,11 @@ availability when redistributing renderer binaries.
 Video retries replace the media element; subtitle cleanup also removes its owned
 canvas overlay if the original video has already been detached. The selected
 track is reloaded against the new video element without leaving old overlays.
+
+Modern Matroska `font/ttf` and `font/otf` attachment MIME types are recognized
+even when FFprobe omits a font codec name. Extracted attachments must have a
+supported TrueType/OpenType header. The larger ASS limit accommodates vector
+drawings and extensive typesetting while retaining bounded output and renderer
+limits. API errors are shown in the subtitle panel rather than replaced by an
+ambiguous loading/limit message. Regression fixtures exercise scripts above
+1 MiB and modern font MIME tags; private source scripts are not committed.
