@@ -1,3 +1,4 @@
+import {PlayerPreferences} from './playerPreferences'
 import { useFullscreen } from './useFullscreen'
 import { useMediaProgress } from './useMediaProgress'
 import { displayTitle, type MetadataView } from './media'
@@ -9,13 +10,15 @@ import VideoToolbar from './VideoToolbar'
 import { ArrowLeft } from 'lucide-react'
 
 type Props = {
+  userId?: string
   sourceId: string
   sourceName: string
   file: { metadata?: MetadataView | null; name: string; relative_path: string }
   onClose: () => void
 }
 
-export default function VideoPlayer({ sourceId, sourceName, file, onClose }: Props) {
+export default function VideoPlayer(props:Props){return <PlayerPreferences key={props.userId} userId={props.userId}><Player {...props}/></PlayerPreferences>}
+function Player({ sourceId, sourceName, file, onClose }: Props) {
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const { media, progressError, retry, retryKey } = useMediaProgress<HTMLVideoElement>(sourceId, file.relative_path, audioUrl ?? '')
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null)
@@ -46,12 +49,12 @@ export default function VideoPlayer({ sourceId, sourceName, file, onClose }: Pro
   useEffect(()=>{if(!segmented)return;const id=url.split('/')[3];return()=>{void apiFetch(`/api/transcode/${encodeURIComponent(id)}`,{method:'DELETE',keepalive:true}).catch(()=>{})}},[url,segmented])
   const { fullscreen, toggle, error: fullscreenError } = useFullscreen(stage)
 
-  return <section className={`watch-page ${cozy ? 'watch-cozy' : ''}`} aria-label="Video watch page">
+  return <section className={`watch-page video-watch ${cozy ? 'watch-cozy' : ''}`} aria-label="Video watch page">
     <main className="watch-main">
-      <header className="watch-header"><button ref={closeButton} className="watch-back" aria-label="Close video player" onClick={onClose}><ArrowLeft size={23}/> Back</button><div><h1 id="video-title">{displayTitle(file)}</h1><span>{sourceName}</span></div></header>
+      {!cozy && <header className="watch-header"><button ref={closeButton} className="watch-back" aria-label="Close video player" onClick={onClose}><ArrowLeft size={23}/> Back</button><div><h1 id="video-title">{displayTitle(file)}</h1><span>{sourceName}</span></div></header>}
       <div className="video-stage watch-stage" ref={stage}>
         <video key={`${url}:${retryKey}`} ref={attachVideo} src={segmented ? undefined : url} playsInline preload="metadata" onLoadedData={() => setFailed(false)} onError={() => setFailed(true)} />
-        <VideoToolbar video={videoElement} sourceId={sourceId} path={file.relative_path} onAudio={setAudioUrl} cozy={cozy} onCozy={() => setCozy(value=>!value)} fullscreen={fullscreen} onFullscreen={() => { void toggle() }}/>
+        <VideoToolbar onClose={onClose} video={videoElement} sourceId={sourceId} path={file.relative_path} onAudio={setAudioUrl} cozy={cozy} onCozy={() => setCozy(value=>!value)} fullscreen={fullscreen} onFullscreen={() => { void toggle() }}/>
       </div>
       {streamError && <p role="alert" className="video-error">{streamError}</p>}
       {fullscreenError && <p className="video-error" role="status">{fullscreenError}</p>}

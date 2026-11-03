@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
+import {usePlayerPreferences} from './playerPreferences'
 import type JASSUB from 'jassub'
 
 type Track = { path: string; label: string; format: 'ass' | 'vtt' }
 type Listing = { tracks: Track[]; fonts: number[]; truncated: boolean; warning: string | null }
 type Props = { video: HTMLVideoElement | null; sourceId: string; path: string }
 export default function VideoSubtitles({ video, sourceId, path }: Props) {
+  const preferences=usePlayerPreferences()
   const [listing, setListing] = useState<Listing | null>(null)
   const [selected, setSelected] = useState('')
   const [message, setMessage] = useState('')
@@ -15,7 +17,7 @@ export default function VideoSubtitles({ video, sourceId, path }: Props) {
     setListing(null); setSelected(''); setMessage('')
     fetch(`${base}/subtitles?${new URLSearchParams({ path })}`, { signal: controller.signal })
       .then(async response => { if (!response.ok) throw new Error('Subtitle tracks could not be loaded.'); return await response.json() as Listing })
-      .then(setListing).catch(error => { if (!controller.signal.aborted) setMessage(String(error.message)) })
+      .then(data=>{if(controller.signal.aborted)return;setListing(data);const saved=preferences?.settings.subtitle;if(saved){const track=(saved.sourceId===sourceId&&saved.path===path?data.tracks.find(t=>t.path===saved.track&&t.label===saved.label&&t.format===saved.format):undefined)??data.tracks.find(t=>t.label===saved.label&&t.format===saved.format);if(track)setSelected(track.path)}}).catch(error => { if (!controller.signal.aborted) setMessage(String(error.message)) })
     return () => controller.abort()
   }, [base, path])
   useEffect(() => {
@@ -79,7 +81,7 @@ export default function VideoSubtitles({ video, sourceId, path }: Props) {
   }, [video, selected, listing, base, path])
   const ass = listing?.tracks.find(track => track.path === selected)?.format === 'ass'
   return <div className="video-subtitles">
-    <label>Subtitles <select aria-label="Subtitle track" value={selected} onChange={event => { setSelected(event.target.value) }}><option value="">Off</option>{listing?.tracks.map(track => <option key={track.path} value={track.path}>{track.label}</option>)}</select></label>
+    <label>Subtitles <select aria-label="Subtitle track" value={selected} onChange={event => { const value=event.target.value;setSelected(value);const track=listing?.tracks.find(t=>t.path===value);preferences?.update({subtitle:track?{label:track.label,format:track.format,sourceId,path,track:track.path}:null}) }}><option value="">Off</option>{listing?.tracks.map(track => <option key={track.path} value={track.path}>{track.label}{listing.tracks.filter(t=>t.label===track.label).length>1?` · ${track.path.replace('embedded:', 'Stream ')}`:''}</option>)}</select></label>
     {ass && <p>ASS uses libass with embedded fonts. Fonts missing from the file use the bundled fallback; online font lookup is disabled. <a href="/licenses/subtitle-renderer.txt" target="_blank" rel="noreferrer">Renderer credits</a>.</p>}
     {(message || listing?.warning || listing?.truncated) && <p role="status">{message || listing?.warning || 'Only the first 32 subtitle tracks are shown.'}</p>}
   </div>

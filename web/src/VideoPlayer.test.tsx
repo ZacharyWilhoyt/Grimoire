@@ -90,3 +90,18 @@ it('uses one custom playback bar with seeking, volume and media event synchroniz
     expect(host.querySelector('[aria-label="Unmute"]')).not.toBeNull()
   }finally{await act(async()=>root.unmount());vi.unstubAllGlobals()}
 })
+it('hides controls only during idle playback and reveals them on pointer activity',async()=>{
+ vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true);vi.useFakeTimers()
+ const host=document.createElement('div'),root=createRoot(host)
+ try{
+ await act(async()=>root.render(<VideoPlayer sourceId="s" sourceName="Test" file={{name:'Film',relative_path:'film.mkv'}} onClose={()=>{}}/>))
+ const video=host.querySelector('video')!,toolbar=host.querySelector('.video-toolbar')!,stage=host.querySelector('.watch-stage')!
+ Object.defineProperty(video,'paused',{configurable:true,value:false})
+ await act(async()=>video.dispatchEvent(new Event('play')))
+ await act(async()=>vi.advanceTimersByTime(2600));expect(toolbar.classList.contains('toolbar-hidden')).toBe(true)
+ await act(async()=>stage.dispatchEvent(new Event('pointermove')));expect(toolbar.classList.contains('toolbar-hidden')).toBe(false)
+ await act(async()=>host.querySelector<HTMLButtonElement>('[aria-label="Settings"]')!.click())
+ await act(async()=>vi.advanceTimersByTime(2600));expect(toolbar.classList.contains('toolbar-hidden')).toBe(false)
+ await act(async()=>host.querySelector<HTMLButtonElement>('[aria-label="Cozy view"]')!.click());expect(host.querySelector('.watch-header')).toBeNull();expect(host.querySelector('[aria-label="Close video player"]')).not.toBeNull()
+ }finally{await act(async()=>root.unmount());vi.useRealTimers();vi.unstubAllGlobals()}
+})

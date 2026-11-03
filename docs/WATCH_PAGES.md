@@ -100,3 +100,25 @@ space on the media disk. The default cache now uses the application data disk.
 Set an absolute cache directory for a service, ensure its account can write there,
 and allow enough actual free space and filesystem quota in addition to the
 configured cache budget. Originals and `.ignore` fixtures are never uploaded.
+
+## Player visibility and preferences
+
+Video controls hide after 2.5 seconds of idle playback in both ordinary and
+fullscreen mode. Pointer/keyboard activity reveals them. Pausing, an open options
+panel, and keyboard focus on controls keep them visible. Pointer focus left on
+a clicked button does not pin the bar open indefinitely.
+
+On desktop, the stage fills the main column beside related content. Cozy view
+fills the viewport without outer padding or a title header; Back moves into the
+control bar. Video uses its selected fit mode (Contain by default), so aspect
+ratio letterboxing can remain. Mobile ordinary view stacks related content below
+the video; cozy still fills the viewport.
+
+Transcoding enabled/direct mode, applied encoder and resolution, and subtitle
+track label/format are saved in browser local storage, scoped by account ID.
+They survive reloads and moving to another episode on the same browser, but do
+not synchronize between devices. Original stream indexes are not reused between
+files. A subtitle preference is restored only if a matching label/format exists;
+otherwise subtitles stay off. Choosing Off saves that preference. Unavailable
+saved encoders report an error so the viewer can choose Auto/CPU. Storage errors
+or blocked storage leave playback usable with session-only settings.

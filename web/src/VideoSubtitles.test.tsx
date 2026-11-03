@@ -2,6 +2,7 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { expect, it, vi } from 'vitest'
+import {PlayerPreferences} from './playerPreferences'
 import VideoSubtitles from './VideoSubtitles'
 const renderer = vi.hoisted(() => ({ options: vi.fn(), destroy: vi.fn(async () => {}), resize: vi.fn(async () => {}) }))
 vi.mock('jassub', () => ({ default: class {
@@ -62,4 +63,18 @@ it('shows the specific server failure and has no manual timing override',async()
  expect(host.textContent).toContain('16 MiB output limit')
  expect(host.querySelector('input')).toBeNull()
  }finally{await act(async()=>root.unmount());vi.unstubAllGlobals()}
+})
+
+it('restores the exact same-file track when multiple subtitle labels are identical',async()=>{
+ vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true);localStorage.clear()
+ vi.stubGlobal('fetch',vi.fn(async(url:string)=>url.includes('/subtitles?')
+ ?{ok:true,json:async()=>({tracks:[{path:'embedded:2',label:'English',format:'ass'},{path:'embedded:3',label:'English',format:'ass'}],fonts:[],truncated:false,warning:null})}
+ :{ok:true,text:async()=>'[Script Info]\n[Events]'}))
+ const host=document.createElement('div'),root=createRoot(host),video=document.createElement('video')
+ const render=(key:number)=>root.render(<PlayerPreferences key={key} userId="subtitle-test"><VideoSubtitles video={video} sourceId="s" path="film.mkv"/></PlayerPreferences>)
+ try{
+ await act(async()=>render(1));const select=host.querySelector('select')!
+ await act(async()=>{select.value='embedded:3';select.dispatchEvent(new Event('change',{bubbles:true}))})
+ await act(async()=>render(2));expect(host.querySelector('select')!.value).toBe('embedded:3')
+ }finally{await act(async()=>root.unmount());localStorage.clear();vi.unstubAllGlobals()}
 })
