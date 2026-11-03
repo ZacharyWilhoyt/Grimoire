@@ -19,6 +19,8 @@ pub struct ListQuery {
 pub struct ReadQuery {
     video: String,
     path: String,
+    #[serde(default)]
+    preview: bool,
 }
 #[derive(Serialize)]
 pub struct Track {
@@ -283,7 +285,16 @@ pub async fn read(
             .find(|stream| stream["index"].as_u64() == Some(index))
             .ok_or_else(denied)?;
         let format = crate::subtitles_mkv::format(stream).ok_or_else(denied)?;
-        let bytes = crate::subtitles_mkv::extract(&file, index, false, format).await?;
+        let bytes = if query.preview {
+            if format != "ass" {
+                return Err(crate::bad_request(
+                    "Preview is only available for embedded ASS tracks.",
+                ));
+            }
+            crate::subtitles_mkv::preview(&file, index).await?
+        } else {
+            crate::subtitles_mkv::extract(&file, index, false, format).await?
+        };
         let content = std::str::from_utf8(&bytes).map_err(|_| denied())?;
         let output = if format == "ass" {
             validate_ass(content)?.to_owned()

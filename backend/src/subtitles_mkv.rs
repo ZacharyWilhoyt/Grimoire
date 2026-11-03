@@ -80,7 +80,7 @@ async fn run(
         }
     }
 }
-pub async fn inspect(file: &Path) -> Result<Value, AppError> {
+async fn inspect_uncached(file: &Path) -> Result<Value, AppError> {
     let bytes = run(file, true, &[], &["-show_entries".into(), "format=duration:stream=index,codec_type,codec_name,extradata_size,channels,duration:stream_tags=language,title,filename,mimetype,DURATION:stream_disposition=default,forced".into(), "-of".into(), "json".into()], 256*1024).await?;
     let value: Value = serde_json::from_slice(&bytes).map_err(|_| failed())?;
     let streams = value["streams"].as_array().ok_or_else(failed)?;
@@ -88,6 +88,45 @@ pub async fn inspect(file: &Path) -> Result<Value, AppError> {
         return Err(failed());
     }
     Ok(value)
+}
+// Shared inspection results avoid probing the same MKV for every attached font.
+// The OnceCell also coalesces concurrent probes. Authorization remains at callers.
+pub async fn inspect(file: &Path) -> Result<Value, AppError> {
+    use std::{
+        collections::VecDeque,
+        sync::{Arc, Mutex, OnceLock},
+        time::Instant,
+    };
+    type Entry = (String, Instant, Arc<tokio::sync::OnceCell<Value>>);
+    static CACHE: OnceLock<Mutex<VecDeque<Entry>>> = OnceLock::new();
+    let metadata = tokio::fs::metadata(file).await.map_err(|_| failed())?;
+    let key = format!(
+        "{:?}:{}:{:?}",
+        file,
+        metadata.len(),
+        metadata.modified().ok()
+    );
+    let cell = {
+        let mut cache = CACHE
+            .get_or_init(|| Mutex::new(VecDeque::new()))
+            .lock()
+            .unwrap();
+        cache.retain(|(_, time, _)| time.elapsed() < Duration::from_secs(600));
+        if let Some((_, _, cell)) = cache.iter().find(|(id, _, _)| id == &key) {
+            cell.clone()
+        } else {
+            while cache.len() >= 32 {
+                cache.pop_front();
+            }
+            let cell = Arc::new(tokio::sync::OnceCell::new());
+            cache.push_back((key, Instant::now(), cell.clone()));
+            cell
+        }
+    };
+    Ok(cell
+        .get_or_try_init(|| inspect_uncached(file))
+        .await?
+        .clone())
 }
 pub async fn streams(file: &Path) -> Result<Vec<Value>, AppError> {
     Ok(inspect(file).await?["streams"].as_array().unwrap().clone())
@@ -125,6 +164,7 @@ async fn extract_uncached(
     index: u64,
     font: bool,
     format: &str,
+    preview: bool,
 ) -> Result<Vec<u8>, AppError> {
     if font {
         let bytes = run(
@@ -134,6 +174,8 @@ async fn extract_uncached(
             &[
                 "-map".into(),
                 "0:v:0?".into(),
+                "-c".into(),
+                "copy".into(),
                 "-t".into(),
                 "0".into(),
                 "-f".into(),
@@ -150,19 +192,28 @@ async fn extract_uncached(
         }
         Ok(bytes)
     } else {
+        let mut args = vec![
+            "-map".into(),
+            format!("0:{index}"),
+            "-c:s".into(),
+            if format == "ass" { "copy" } else { "webvtt" }.into(),
+            "-f".into(),
+            format.into(),
+            "pipe:1".into(),
+        ];
+        if preview {
+            args.splice(0..0, ["-t".into(), "120".into()]);
+        }
         run(
             file,
             false,
-            &[],
             &[
-                "-map".into(),
-                format!("0:{index}"),
-                "-c:s".into(),
-                if format == "ass" { "copy" } else { "webvtt" }.into(),
-                "-f".into(),
-                format.into(),
-                "pipe:1".into(),
+                "-discard:v".into(),
+                "all".into(),
+                "-discard:a".into(),
+                "all".into(),
             ],
+            &args,
             script_limit(format),
         )
         .await
@@ -209,6 +260,7 @@ mod tests {
                 "x".repeat(1024)
             );
         }
+        content += "Dialogue: 0,0:00:00.00,0:05:10.00,Default,,0,0,0,,Long running sign\nDialogue: 0,0:05:00.00,0:05:10.00,Default,,0,0,0,,Future scene marker\n";
         std::fs::write(&script, content).unwrap();
         let font_path = Path::new("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf");
         let file = root.join("styled.mkv");
@@ -258,6 +310,18 @@ mod tests {
         assert!(ass.contains("\\k100"));
         assert!(ass.contains("\\p1"));
         assert!(ass.contains("DejaVu Sans"));
+        let preview = String::from_utf8(
+            super::preview(&file, subtitle["index"].as_u64().unwrap())
+                .await
+                .unwrap_or_else(|_| panic!("preview extraction failed")),
+        )
+        .unwrap();
+        assert!(preview.contains("Long running sign"));
+        assert!(preview.contains("0:05:10.00"));
+        assert!(!preview.contains("Future scene marker"));
+        assert!(ass.contains("Future scene marker"));
+        assert!(preview.contains("\\pos(320,30)"));
+
         let attachment = streams.iter().find(|stream| font(stream)).unwrap();
         assert_eq!(
             extract(&file, attachment["index"].as_u64().unwrap(), true, "")
@@ -270,45 +334,67 @@ mod tests {
 }
 
 // Callers authorize every request, including cache hits.
+async fn cached_extract(
+    file: &Path,
+    index: u64,
+    font: bool,
+    format: &str,
+    preview: bool,
+) -> Result<Vec<u8>, AppError> {
+    use std::{
+        collections::VecDeque,
+        sync::{Arc, Mutex, OnceLock},
+        time::Instant,
+    };
+    type Entry = (String, Instant, Arc<tokio::sync::OnceCell<Vec<u8>>>);
+    static CACHE: OnceLock<Mutex<VecDeque<Entry>>> = OnceLock::new();
+    let metadata = tokio::fs::metadata(file).await.map_err(|_| failed())?;
+    let key = format!(
+        "{:?}:{}:{:?}:{index}:{font}:{format}:{preview}",
+        file,
+        metadata.len(),
+        metadata.modified().ok()
+    );
+    let cache = CACHE.get_or_init(|| Mutex::new(VecDeque::new()));
+    let cell = {
+        let mut entries = cache.lock().unwrap();
+        entries.retain(|(_, time, _)| time.elapsed() < Duration::from_secs(600));
+        if let Some((_, _, cell)) = entries.iter().find(|(id, _, _)| id == &key) {
+            cell.clone()
+        } else {
+            while entries.len() >= 32 {
+                entries.pop_front();
+            }
+            let cell = Arc::new(tokio::sync::OnceCell::new());
+            entries.push_back((key, Instant::now(), cell.clone()));
+            cell
+        }
+    };
+    let bytes = cell
+        .get_or_try_init(|| extract_uncached(file, index, font, format, preview))
+        .await?;
+    let output = bytes.clone();
+    let mut entries = cache.lock().unwrap();
+    while entries
+        .iter()
+        .filter_map(|(_, _, cell)| cell.get())
+        .map(Vec::len)
+        .sum::<usize>()
+        > 48 * 1024 * 1024
+    {
+        entries.pop_front();
+    }
+    Ok(output)
+}
+
 pub async fn extract(
     file: &Path,
     index: u64,
     font: bool,
     format: &str,
 ) -> Result<Vec<u8>, AppError> {
-    use std::{
-        collections::VecDeque,
-        sync::{Mutex, OnceLock},
-        time::{Duration, Instant},
-    };
-    type Entry = (String, Instant, Vec<u8>);
-    static CACHE: OnceLock<Mutex<VecDeque<Entry>>> = OnceLock::new();
-    let metadata = tokio::fs::metadata(file)
-        .await
-        .map_err(|_| bad_request("Media is unavailable."))?;
-    let key = format!(
-        "{:?}:{}:{:?}:{index}:{font}:{format}",
-        file,
-        metadata.len(),
-        metadata.modified().ok()
-    );
-    let cache = CACHE.get_or_init(|| Mutex::new(VecDeque::new()));
-    {
-        let mut entries = cache.lock().unwrap();
-        entries.retain(|(_, time, _)| time.elapsed() < Duration::from_secs(600));
-        if let Some((_, _, bytes)) = entries.iter().find(|(id, _, _)| id == &key) {
-            return Ok(bytes.clone());
-        }
-    }
-    let bytes = extract_uncached(file, index, font, format).await?;
-    let mut entries = cache.lock().unwrap();
-    while !entries.is_empty()
-        && (entries.len() >= 32
-            || entries.iter().map(|(_, _, v)| v.len()).sum::<usize>() + bytes.len()
-                > 48 * 1024 * 1024)
-    {
-        entries.pop_front();
-    }
-    entries.push_back((key, Instant::now(), bytes.clone()));
-    Ok(bytes)
+    cached_extract(file, index, font, format, false).await
+}
+pub async fn preview(file: &Path, index: u64) -> Result<Vec<u8>, AppError> {
+    cached_extract(file, index, false, "ass", true).await
 }

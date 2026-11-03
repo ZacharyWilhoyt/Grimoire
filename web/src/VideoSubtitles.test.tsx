@@ -4,9 +4,9 @@ import { createRoot } from 'react-dom/client'
 import { expect, it, vi } from 'vitest'
 import {PlayerPreferences} from './playerPreferences'
 import VideoSubtitles from './VideoSubtitles'
-const renderer = vi.hoisted(() => ({ options: vi.fn(), destroy: vi.fn(async () => {}), resize: vi.fn(async () => {}) }))
+const renderer = vi.hoisted(() => ({ options: vi.fn(), destroy: vi.fn(async () => {}), resize: vi.fn(async () => {}), setTrack: vi.fn(async()=>{}) }))
 vi.mock('jassub', () => ({ default: class {
-  ready = Promise.resolve(); timeOffset = 0; destroy = renderer.destroy; resize = renderer.resize
+  renderer = {setTrack: renderer.setTrack}; ready = Promise.resolve(); timeOffset = 0; destroy = renderer.destroy; resize = renderer.resize
   constructor(options: { video: HTMLVideoElement }) { renderer.options(options); const overlay = document.createElement('div'); overlay.className = 'JASSUB'; options.video.insertAdjacentElement('afterend', overlay) }
 } }))
 it('keeps subtitles off until selected and preserves ASS script and font bytes for libass', async () => {
@@ -77,4 +77,32 @@ it('restores the exact same-file track when multiple subtitle labels are identic
  await act(async()=>{select.click()})
  await act(async()=>render(2));expect(host.querySelector('button[aria-pressed=true]')!.textContent).toContain('Stream 3')
  }finally{await act(async()=>root.unmount());localStorage.clear();vi.unstubAllGlobals()}
+})
+
+it('starts from the preview before the full track arrives and updates on seek without reloading fonts',async()=>{
+ vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true)
+ const header='[Script Info]\n[Events]\nFormat: Layer, Start, End, Style, Text\n'
+ const early='Dialogue: 0,0:00:01.00,0:00:03.00,Default,Opening'
+ const late='Dialogue: 0,0:05:01.00,0:05:04.00,Default,{\\pos(20,30)\\k100}Later'
+ let finish!:(response:unknown)=>void
+ const full=new Promise(resolve=>{finish=resolve})
+ const fetch=vi.fn(async(url:string)=>url.includes('/subtitles?')
+ ?{ok:true,json:async()=>({tracks:[{path:'embedded:2',label:'Styled',format:'ass'}],fonts:[3],truncated:false,warning:null})}
+ :url.includes('/subtitle-font?')?{ok:true,arrayBuffer:async()=>new Uint8Array([1,2,3]).buffer}
+ :url.includes('preview=true')?{ok:true,text:async()=>header+early}:full)
+ vi.stubGlobal('fetch',fetch)
+ const host=document.createElement('div'),root=createRoot(host),video=document.createElement('video')
+ renderer.options.mockClear();renderer.setTrack.mockClear()
+ try{
+  await act(async()=>root.render(<VideoSubtitles video={video} sourceId="s" path="remote.mkv"/>))
+  await act(async()=>{[...host.querySelectorAll('button')].find(b=>b.textContent==='Styled')!.click()})
+  expect(renderer.options).toHaveBeenCalledWith(expect.objectContaining({subContent:header+early}))
+  expect(host.textContent).toContain('Finishing the complete track')
+  await act(async()=>finish({ok:true,text:async()=>header+early+'\n'+late}))
+  await act(async()=>{video.currentTime=301;video.dispatchEvent(new Event('seeking'))})
+  expect(renderer.setTrack).toHaveBeenLastCalledWith(header+late)
+  const second=document.createElement('video')
+  await act(async()=>root.render(<VideoSubtitles video={second} sourceId="s" path="remote.mkv"/>))
+  expect(fetch.mock.calls.filter(([url])=>url.includes('/subtitle-font?'))).toHaveLength(1)
+ }finally{await act(async()=>root.unmount());vi.unstubAllGlobals()}
 })

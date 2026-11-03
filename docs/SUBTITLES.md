@@ -86,8 +86,29 @@ Successful embedded script/font extractions are cached in process for ten minute
 with at most 32 entries and 48 MiB total. File path, size, modification time, stream,
 and format distinguish cache entries. Every HTTP request still checks current
 permissions. Two font downloads run concurrently, with the existing 32 MiB client
-font budget. ASS remains a complete script to preserve libass animation, layering,
-and overlapping events; first extraction still needs to scan the container.
+font budget. ASS headers/styles, original timestamps, and overlapping events are preserved.
+Embedded ASS initially requests `preview=true`, a copy-only extraction of the
+opening 120 seconds, then fetches the full track in the background. This avoids
+waiting for a complete large remote MKV scan before displaying the opening scenes.
+Seeking beyond the preview before extraction finishes can still require a wait;
+the panel reports that state and any background extraction failure.
+
+The client feeds libass rolling time windows: every 60-second interval includes
+events overlapping the preceding 30 and following 120 seconds. Long-running signs
+remain included for their full duration; no timing, drawing, karaoke, animation,
+style, or font data is simplified. Unknown event formats/timestamps fall back to
+the complete script. Seeks update the window without restarting font loading.
+The current track and fonts are retained only in the mounted player's memory,
+within the existing script/font limits. Track switches reuse fonts for that file.
+
+MKV inspection is cached for ten minutes (32 entries, each bounded to 256 KiB),
+and concurrent inspections/extractions of the same file/track share their work.
+Successful extraction caching remains limited to 48 MiB/32 entries. File identity
+keys include path, size, and modification time. Authentication, stream validation,
+and current source permission checks still happen for each HTTP request. Renderer
+module, preview, and font loading overlap; font extraction copies streams instead
+of decoding video. A complete first extraction still scans the container in the
+background and retains the existing processing/output limits.
 
 JASSUB 2.4.1 ships a source map for its WASM JavaScript loader that references an
 unpublished source file. Vite strips only that loader's broken source-map comment
