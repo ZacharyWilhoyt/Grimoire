@@ -36,7 +36,7 @@ it('exits container fullscreen using the same visible button', async () => {
   Object.defineProperty(document, 'exitFullscreen', { configurable: true, value: exit })
   try {
     await act(async () => root.render(<VideoPlayer sourceId="s" sourceName="Test" file={{name:'Film',relative_path:'film.mkv'}} onClose={() => {}}/>))
-    const button = () => host.querySelector<HTMLButtonElement>('.watch-fullscreen')!
+    const button = () => host.querySelector<HTMLButtonElement>('.toolbar-fullscreen')!
     expect(host.querySelector('.watch-stage')!.contains(button())).toBe(true)
     await act(async () => button().click())
     expect(button().getAttribute('aria-label')).toBe('Exit fullscreen')
@@ -47,4 +47,26 @@ it('exits container fullscreen using the same visible button', async () => {
     expect(host.querySelector('dialog')).toBeNull()
     expect(host.querySelector('textarea')!.disabled).toBe(true)
   } finally { await act(async () => root.unmount()); vi.unstubAllGlobals(); delete (HTMLElement.prototype as Partial<HTMLElement>).requestFullscreen }
+})
+it('offers in-player option panels and toggles cozy view without losing video', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+  const host=document.createElement('div'),root=createRoot(host)
+  try {
+    await act(async()=>root.render(<VideoPlayer sourceId="s" sourceName="Test" file={{name:'Film',relative_path:'film.mkv'}} onClose={()=>{}}/>))
+    const video=host.querySelector('video')!
+    const button=(label:string)=>host.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!
+    for(const label of ['Subtitle options','Audio options','Settings','Episodes preview']) {
+      await act(async()=>button(label).click())
+      expect(button(label).getAttribute('aria-expanded')).toBe('true')
+      expect(host.querySelector('.watch-stage')!.contains(button(label))).toBe(true)
+    }
+    await act(async()=>button('Cozy view').click())
+    expect(host.querySelector('.watch-cozy')).not.toBeNull()
+    expect(host.querySelector('video')).toBe(video)
+    await act(async()=>button('Settings').click())
+    const speed=host.querySelector<HTMLSelectElement>('[aria-label="Playback speed"]')!
+    await act(async()=>{speed.value='1.5';speed.dispatchEvent(new Event('change',{bubbles:true}))})
+    expect(video.playbackRate).toBe(1.5)
+    expect(host.querySelector('[aria-label="Video filters"]')).toBeNull()
+  } finally {await act(async()=>root.unmount());vi.unstubAllGlobals()}
 })

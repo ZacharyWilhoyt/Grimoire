@@ -141,7 +141,7 @@ pub async fn list(
                     }
                 }
             },
-            Err(_) => warning = Some("Embedded tracks could not be inspected. Check FFprobe installation and the Matroska file."),
+            Err(_) => warning = Some("Embedded tracks could not be inspected. The file may be unsupported, processing may be busy, or the API process may not be able to run FFprobe."),
         }
     }
     crate::media_root(&state, &identity.user, &source).await?;

@@ -6,7 +6,7 @@ use tokio::io::AsyncReadExt;
 static WAITERS: LazyLock<tokio::sync::Semaphore> = LazyLock::new(|| tokio::sync::Semaphore::new(8));
 static JOBS: LazyLock<tokio::sync::Semaphore> = LazyLock::new(|| tokio::sync::Semaphore::new(2));
 fn failed() -> AppError {
-    bad_request("Embedded subtitles could not be extracted. FFmpeg and FFprobe must be installed; the file may be unsupported or exceed extraction limits.")
+    bad_request("Media inspection/extraction failed. The file may be unsupported or exceed processing limits.")
 }
 async fn run(
     file: &Path,
@@ -37,7 +37,7 @@ async fn run(
         .stderr(Stdio::null())
         .stdout(Stdio::piped())
         .kill_on_drop(true);
-    let mut child = command.spawn().map_err(|_| failed())?;
+    let mut child = command.spawn().map_err(|_| bad_request("The API process could not start FFmpeg/FFprobe. Check its PATH, executable permissions and runtime libraries."))?;
     let result = tokio::time::timeout(Duration::from_secs(120), async {
         let stdout = child.stdout.take().ok_or_else(failed)?;
         let mut bytes = Vec::new();

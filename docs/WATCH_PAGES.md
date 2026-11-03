@@ -66,3 +66,20 @@ host/process crash can leave private `grimoire-video-*` temp directories for the
 operator to remove while that API process is stopped. Cache state is local to an
 API instance: multi-instance deployment will need shared rendition coordination
 or affinity. If a copy expires, choose **Prepare audio again**.
+
+## In-player options
+
+The video options bar sits inside the fullscreen stage. Its buttons open episode
+preview, subtitle, audio and settings panels; **Cozy view** hides the right sidebar.
+Audio and subtitle components remain mounted when their panels close, preserving
+selection and ASS rendering. Settings offer playback speed, contain/cover/fill,
+and pause when the document is hidden (without automatic resume). Native playback,
+volume and seek controls remain above the options bar. Filters and upscaling are
+not implemented. Original video quality is unchanged; CDN selection and automatic
+intro/outro skipping require future backend capabilities.
+
+Processing errors distinguish a failure to start the tool in the API environment
+from encoder errors, incompatible MP4 stream copying, temporary storage exhaustion,
+size limits and timeouts. A working terminal executable does not establish that
+the API service can launch it, and an encoder failure does not mean it is missing.
+Diagnostics never return raw FFmpeg stderr (which can contain private file paths).

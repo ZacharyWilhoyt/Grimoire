@@ -65,7 +65,7 @@ fn busy() -> AppError {
     )
 }
 fn failed() -> AppError {
-    bad_request("Audio could not be prepared. FFmpeg and FFprobe are required. The video must support MP4 stream copying and fit the temporary storage and processing limits.")
+    bad_request("Audio could not be prepared. The video must support MP4 stream copying and fit the temporary storage and processing limits.")
 }
 fn limit() -> u64 {
     std::env::var("GRIMOIRE_VIDEO_CACHE_MIB")
@@ -327,24 +327,38 @@ pub async fn prepare(
             .arg(&output)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let mut child = command.spawn().map_err(|_| failed())?;
+        let mut child = command.spawn().map_err(|_| bad_request("The API process could not start FFmpeg. Check its PATH, executable permissions and runtime libraries."))?;
+        let stderr = child.stderr.take().ok_or_else(failed)?;
+        let diagnostics = tokio::spawn(async move {
+            let mut stream = stderr;
+            let mut bytes = Vec::new();
+            let _ = (&mut stream).take(65536).read_to_end(&mut bytes).await;
+            let _ = tokio::io::copy(&mut stream, &mut tokio::io::sink()).await;
+            String::from_utf8_lossy(&bytes).to_string()
+        });
         match tokio::time::timeout(Duration::from_secs(300), child.wait()).await {
             Ok(Ok(status)) if status.success() => (),
+            Ok(Ok(_)) => {
+                let message = diagnostics.await.unwrap_or_default();
+                return Err(encoder_error(&message));
+            }
             _ => {
                 let _ = child.kill().await;
-                return Err(failed());
+                diagnostics.abort();
+                return Err(bad_request("Audio preparation exceeded the five-minute processing limit or the encoder could not finish."));
             }
         }
+        let _ = diagnostics.await;
         let bytes = std::fs::metadata(&output).map_err(|_| failed())?.len();
         if bytes == 0 || bytes >= budget.saturating_sub(1024 * 1024) {
-            return Err(failed());
+            return Err(bad_request("Audio copy exceeds the temporary video cache budget. Increase GRIMOIRE_VIDEO_CACHE_MIB on the API host or use a smaller file."));
         }
         // -fs can stop successfully mid-file. Reject incomplete copies rather than serving truncated media.
         let out_duration = output_duration(&output).await?;
         if (out_duration - duration).abs() > 1.0 {
-            return Err(failed());
+            return Err(bad_request("The audio copy is incomplete or its duration does not match the original. It may exceed the temporary storage limit."));
         }
         let checked = file(&work_state, &user, &source, &query.path).await?;
         if key(&checked, &source, selection.stream_index)? != fingerprint {
@@ -454,4 +468,38 @@ pub async fn read(
         parts,
         axum::body::Body::from_stream(stream),
     ))
+}
+
+fn encoder_error(stderr: &str) -> AppError {
+    let message = if stderr.contains("No space left") {
+        "The API host ran out of temporary disk space."
+    } else if stderr.contains("Permission denied") {
+        "FFmpeg could not read the source or write the temporary copy. Check API service permissions."
+    } else if stderr.contains("not currently supported in container")
+        || stderr.contains("Could not find tag for codec")
+    {
+        "This video codec cannot be copied into MP4. Video transcoding is required for this file; FFmpeg is installed."
+    } else if stderr.contains("Unrecognized option") || stderr.contains("Option not found") {
+        "The installed FFmpeg rejected a processing option. Check the API host FFmpeg version."
+    } else {
+        "FFmpeg started but could not prepare this file. The codec/container may not support MP4 copying, or processing limits were exceeded."
+    };
+    bad_request(message)
+}
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn encoder_errors_distinguish_installed_tools_and_do_not_expose_paths() {
+        assert!(
+            super::encoder_error("Could not find tag for codec /private/file")
+                .1
+                .contains("Video transcoding")
+        );
+        assert!(!super::encoder_error("failed /private/file")
+            .1
+            .contains("/private"));
+        assert!(super::encoder_error("No space left on device")
+            .1
+            .contains("disk space"));
+    }
 }
