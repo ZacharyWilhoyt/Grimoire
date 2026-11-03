@@ -3,6 +3,7 @@ use crate::{bad_request, AppError};
 use serde_json::Value;
 use std::{path::Path, process::Stdio, sync::LazyLock, time::Duration};
 use tokio::io::AsyncReadExt;
+static WAITERS: LazyLock<tokio::sync::Semaphore> = LazyLock::new(|| tokio::sync::Semaphore::new(8));
 static JOBS: LazyLock<tokio::sync::Semaphore> = LazyLock::new(|| tokio::sync::Semaphore::new(2));
 fn failed() -> AppError {
     bad_request("Embedded subtitles could not be extracted. FFmpeg and FFprobe must be installed; the file may be unsupported or exceed extraction limits.")
@@ -14,12 +15,17 @@ async fn run(
     after: &[String],
     limit: usize,
 ) -> Result<Vec<u8>, AppError> {
-    let _permit = JOBS.try_acquire().map_err(|_| {
+    let busy = || {
         crate::AppError(
             axum::http::StatusCode::TOO_MANY_REQUESTS,
-            "Subtitle processing is busy. Try again shortly.".into(),
+            "Media inspection is busy. Try again shortly.".into(),
         )
-    })?;
+    };
+    let _waiting = WAITERS.try_acquire().map_err(|_| busy())?;
+    let _permit = tokio::time::timeout(Duration::from_secs(2), JOBS.acquire())
+        .await
+        .map_err(|_| busy())?
+        .map_err(|_| busy())?;
     let mut command = tokio::process::Command::new(if probe { "ffprobe" } else { "ffmpeg" });
     command
         .args(["-v", "error"])
@@ -57,14 +63,17 @@ async fn run(
         }
     }
 }
-pub async fn streams(file: &Path) -> Result<Vec<Value>, AppError> {
-    let bytes = run(file, true, &[], &["-show_entries".into(), "stream=index,codec_type,codec_name,extradata_size:stream_tags=language,title,filename,mimetype:stream_disposition=default,forced".into(), "-of".into(), "json".into()], 256*1024).await?;
+pub async fn inspect(file: &Path) -> Result<Value, AppError> {
+    let bytes = run(file, true, &[], &["-show_entries".into(), "format=duration:stream=index,codec_type,codec_name,extradata_size,channels,duration:stream_tags=language,title,filename,mimetype,DURATION:stream_disposition=default,forced".into(), "-of".into(), "json".into()], 256*1024).await?;
     let value: Value = serde_json::from_slice(&bytes).map_err(|_| failed())?;
     let streams = value["streams"].as_array().ok_or_else(failed)?;
     if streams.len() > 128 {
         return Err(failed());
     }
-    Ok(streams.clone())
+    Ok(value)
+}
+pub async fn streams(file: &Path) -> Result<Vec<Value>, AppError> {
+    Ok(inspect(file).await?["streams"].as_array().unwrap().clone())
 }
 pub fn format(stream: &Value) -> Option<&'static str> {
     if stream["codec_type"] != "subtitle" {

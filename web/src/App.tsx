@@ -1,3 +1,4 @@
+import { linkRequest, mediaLink, type LinkContext } from './mediaLinks'
 import ConnectDirectory from './ConnectDirectory'
 import { loadCatalogPage, type PersonalPage } from './catalogLoader'
 import GroupEditor from './GroupEditor'
@@ -29,6 +30,9 @@ async function readApi<T>(url: string, signal?: AbortSignal): Promise<T> {
 }
 
 function Workspace({ user, logout }: { user: User; logout: () => void }) {
+  const [linkedSeries, setLinkedSeries] = useState<LinkContext | null>(null)
+  const [linkLoading, setLinkLoading] = useState(false)
+  const [linkError, setLinkError] = useState('')
   const [groupItem, setGroupItem] = useState<MediaItem | null>(null)
   const [metadataItem, setMetadataItem] = useState<MediaItem | null>(null)
   const [genre, setGenre] = useState('')
@@ -109,7 +113,7 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
   const setKind = (kind: string) => setFilter(kind === 'video' ? 'Video' : kind === 'music' ? 'Music' : kind === 'book' ? 'Books' : 'All')
   const navigate = (next: PageName) => {
     setPage(next); setSelectedSource(null); setQuery(''); setFilter('All'); setGenre(''); setSourceFilter(''); setSort(next === 'My library' ? 'saved' : 'title'); setMenuOpen(false); setActionError('')
-    window.location.hash = pageHashes[next]
+    window.history.pushState(null, '', `/${pageHashes[next]}`)
   }
   useEffect(() => {
     const changed = () => { const next = pageFromHash(window.location.hash); setPage(next); setSelectedSource(null); setQuery(''); setFilter('All'); setGenre(''); setSourceFilter(''); setSort(next === 'My library' ? 'saved' : 'title') }
@@ -168,20 +172,42 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
     setSaved(items => personal.saved_at === null ? items.filter(old => old.file_key !== item.file_key) : [updated, ...items.filter(old => old.file_key !== item.file_key)])
     if (personal.last_opened_at !== null) setRecent(items => [updated, ...items.filter(old => old.file_key !== item.file_key)])
   }
-  const openMedia = async (item: MediaItem, queue: MediaItem[]) => {
+  const openMedia = async (item: MediaItem, queue: MediaItem[], updateUrl = true, signal?: AbortSignal) => {
     setActionBusy(true); setActionError('')
     try {
-      const response = await apiFetch('/api/activity/open', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source_id: item.source_id, relative_path: item.relative_path }) })
+      const response = await apiFetch('/api/activity/open', { signal, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source_id: item.source_id, relative_path: item.relative_path }) })
       const data = await response.json()
       if (!response.ok) throw new Error(data.error ?? 'Could not open this media.')
+      if (signal?.aborted) return
       patchPersonal(item, data as PersonalState)
-      setReading(null); setVideo(null); setPlayback(null)
+      setReading(null); setVideo(null); setPlayback(null); setLinkedSeries(null)
+      if (updateUrl) window.history.pushState(null, '', mediaLink(item.source_id, item.relative_path))
       if (item.kind === 'book') setReading(item)
       else if (item.kind === 'video') setVideo(item)
       else { const tracks = queue.some(track => track.file_key === item.file_key) ? queue : [item]; setPlayback({ tracks, index: tracks.findIndex(track => track.file_key === item.file_key) }) }
-    } catch (error) { setActionError(error instanceof Error ? error.message : 'Could not open media.'); setPlayback(null) }
+    } catch (error) { if (signal?.aborted) return; setActionError(error instanceof Error ? error.message : 'Could not open media.'); setPlayback(null) }
     finally { setActionBusy(false) }
   }
+  useEffect(() => {
+    let controller = new AbortController()
+    const load = () => {
+      controller.abort(); controller = new AbortController()
+      const signal = controller.signal
+      const url = linkRequest(window.location.search)
+      setVideo(null); setReading(null); setPlayback(null); setLinkedSeries(null); setLinkError('')
+      if (!url) { setLinkLoading(false); return }
+      setLinkLoading(true)
+      void readApi<LinkContext>(url, signal).then(async context => {
+        if (signal.aborted) return
+        if (context.item) await openMedia(context.item, context.members, false, signal)
+        else setLinkedSeries(context)
+      }).catch(error => { if (!signal.aborted) setLinkError(error instanceof Error ? error.message : 'This link is unavailable.') }).finally(() => { if (!signal.aborted) setLinkLoading(false) })
+    }
+    load(); window.addEventListener('popstate', load)
+    return () => { controller.abort(); window.removeEventListener('popstate', load) }
+    // Resolve URLs only on entry/browser navigation. Ordinary item selection updates history directly.
+  }, [])
+  const closeWatch = () => { setVideo(null); setReading(null); setLinkedSeries(null); setLinkError(''); window.history.pushState(null, '', '/#discover') }
   const toggleSaved = async (item: MediaItem) => {
     setActionBusy(true); setActionError('')
     try {
@@ -236,6 +262,10 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
     { label: 'For you' as PageName, icon: Sparkles }, { label: 'Discover' as PageName, icon: Compass }, { label: 'My library' as PageName, icon: Library },
   ]
 
+  if (linkLoading || linkError) return <section className="watch-page"><main className="watch-main"><button className="watch-back" onClick={closeWatch}>Back to library</button><p role={linkError ? 'alert' : 'status'}>{linkError || 'Opening media link…'}</p></main></section>
+  if (reading) return <BookReader key={`${reading.source_id}:${reading.relative_path}`} sourceId={reading.source_id} sourceName={reading.source_name} file={reading} onClose={closeWatch}/>
+  if (linkedSeries) return <section className="series-page"><header className="watch-header"><button className="watch-back" onClick={closeWatch}>Back to library</button><h1>{linkedSeries.label ?? 'Series'}</h1></header>{actionError && <p role="alert">{actionError}</p>}<MediaCollection items={linkedSeries.members} groupBy="none" busy={actionBusy} onOpen={(item, queue) => { void openMedia(item, queue) }} onSave={item => { void toggleSaved(item) }} onMetadata={setMetadataItem} onGroupMetadata={setGroupItem}/>{metadataItem && <MetadataEditor item={metadataItem} onClose={() => setMetadataItem(null)} onUpdated={() => setSourceRefresh(value => value + 1)}/>}</section>
+  if (video) return <VideoPlayer key={`${video.source_id}:${video.relative_path}`} sourceId={video.source_id} sourceName={video.source_name} file={video} onClose={closeWatch}/>
   return <div className="app-shell">
     <aside className={`sidebar ${menuOpen ? 'open' : ''}`}>
       <a className="brand" href="#for-you" onClick={event => { event.preventDefault(); navigate('For you') }}><img className="brand-logo" src="/logo.svg" alt="" aria-hidden="true" width="38" height="38" /><span>grimoire<span className="brand-dot">.</span></span></a>
@@ -275,8 +305,6 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
     {settingsOpen && <AccountSettings onClose={() => setSettingsOpen(false)} />}
     {groupItem && <GroupEditor key={groupItem.metadata?.group?.id} item={groupItem} onClose={() => setGroupItem(null)} onUpdated={() => setSourceRefresh(value => value + 1)}/>}
     {metadataItem && <MetadataEditor key={metadataItem.file_key} item={metadataItem} onClose={() => setMetadataItem(null)} onUpdated={() => setSourceRefresh(value => value + 1)}/>}
-    {reading && <BookReader sourceId={reading.source_id} sourceName={reading.source_name} file={reading} onClose={() => setReading(null)} />}
-    {video && <VideoPlayer sourceId={video.source_id} sourceName={video.source_name} file={video} onClose={() => setVideo(null)} />}
     {playback && <MusicPlayer tracks={playback.tracks} index={playback.index} busy={actionBusy} onIndex={index => { void openMedia(playback.tracks[index], playback.tracks) }} onClose={() => setPlayback(null)}/>}
     {connectOpen && user.is_admin && <ConnectDirectory path={directoryPath} error={connectError} busy={connecting} onPath={setDirectoryPath} onClose={() => setConnectOpen(false)} onSubmit={connectDirectory}/>}
 

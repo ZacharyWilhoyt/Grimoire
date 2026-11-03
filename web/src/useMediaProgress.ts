@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ProgressSession } from './progress'
-export function useMediaProgress<T extends HTMLMediaElement>(sourceId: string, path: string) {
+export function useMediaProgress<T extends HTMLMediaElement>(sourceId: string, path: string, resourceKey = '') {
   const media = useRef<T | null>(null)
   const [error, setError] = useState('')
   const [retryKey, setRetryKey] = useState(0)
+  const previousFlush = useRef<Promise<void>>(Promise.resolve())
   const retrySettings = useRef<{ volume: number; muted: boolean; playbackRate: number } | null>(null)
   const retry = useCallback(() => {
     const element = media.current
@@ -40,12 +41,13 @@ export function useMediaProgress<T extends HTMLMediaElement>(sourceId: string, p
     element.addEventListener('ended', save)
     document.addEventListener('visibilitychange', hidden)
     window.addEventListener('pagehide', save)
-    void session.load().then(progress => { if (active) { savedPosition = progress?.position ?? 0; loaded = true; restore() } })
+    void previousFlush.current.then(() => active ? session.load() : null).then(progress => { if (active) { savedPosition = progress?.position ?? 0; loaded = true; restore() } })
     return () => {
-      save(); active = false
+      save(); previousFlush.current = session.flush(); active = false
+      retrySettings.current = { volume: element.volume, muted: element.muted, playbackRate: element.playbackRate }
       element.removeEventListener('seeking', earlyInteraction); element.removeEventListener('loadedmetadata', restore); element.removeEventListener('timeupdate', tick); element.removeEventListener('pause', paused); element.removeEventListener('seeked', save); element.removeEventListener('ended', save)
       document.removeEventListener('visibilitychange', hidden); window.removeEventListener('pagehide', save)
     }
-  }, [sourceId, path, retryKey])
+  }, [sourceId, path, retryKey, resourceKey])
   return { media, progressError: error, retry, retryKey }
 }

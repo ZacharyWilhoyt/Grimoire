@@ -22,6 +22,7 @@ fn state(pool: PgPool) -> AppState {
         hashing: Arc::new(tokio::sync::Semaphore::new(4)),
         catalog_scans: Arc::new(tokio::sync::Semaphore::new(2)),
         metadata: Arc::new(metadata::Runtime::new()),
+        video_audio: Arc::new(crate::video_audio::Runtime::new()),
     }
 }
 async fn request(
@@ -2638,6 +2639,53 @@ async fn group_artwork_and_tags_inherit_without_crossing_ownership_or_revocation
     )
     .await;
     let group = first["group"]["id"].as_str().unwrap();
+    let series_link = format!("/api/media/link?source_id={source}&group={group}");
+    let item_link = format!("/api/media/link?source_id={source}&path=one.mp3");
+    for url in [&series_link, &item_link] {
+        assert_eq!(
+            request(&state, Method::GET, url, None, None, None, None)
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            request(&state, Method::GET, url, Some(&viewer), None, None, None)
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+    let linked = body(
+        request(
+            &state,
+            Method::GET,
+            &series_link,
+            Some(&owner),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert!(linked["item"].is_null());
+    assert_eq!(linked["members"].as_array().unwrap().len(), 2);
+    assert_eq!(linked["label"], "Artist — Album");
+    let linked = body(
+        request(
+            &state,
+            Method::GET,
+            &item_link,
+            Some(&owner),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(linked["item"]["relative_path"], "one.mp3");
+    assert_eq!(linked["members"].as_array().unwrap().len(), 2);
     let endpoint = format!("/api/sources/{source}/groups/{group}");
     let edit = format!("{endpoint}/genres");
     let image = format!("{endpoint}/artwork?path=one.mp3");
@@ -3870,4 +3918,213 @@ async fn session_activity_is_private_bounded_and_filters_expired_sessions(pool: 
         body(request(&app_state, Method::GET, url, Some(&other), None, None, None).await).await;
     assert_eq!(independent.as_array().unwrap().len(), 1);
     assert_eq!(independent[0]["is_current"], true);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL and FFmpeg/FFprobe; run with --ignored"]
+async fn mkv_audio_selection_transcodes_and_rechecks_permissions(pool: PgPool) {
+    let state = state(pool.clone());
+    let (owner, csrf, owner_user) = register_user(&state, "audio_owner").await;
+    let (viewer, viewer_csrf, viewer_user) = register_user(&state, "audio_viewer").await;
+    let root = shared_media_fixture();
+    let original = root.join("multi.mkv");
+    let status = tokio::process::Command::new("ffmpeg")
+        .args([
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black:s=320x180:d=2",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=2",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=880:duration=2",
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            "-map",
+            "2:a",
+            "-c:v",
+            "libx264",
+            "-threads",
+            "1",
+            "-c:a",
+            "ac3",
+            "-metadata:s:a:0",
+            "language=eng",
+            "-metadata:s:a:1",
+            "language=jpn",
+            "-y",
+        ])
+        .arg(&original)
+        .status()
+        .await
+        .unwrap();
+    assert!(status.success());
+    let unchanged = std::fs::read(&original).unwrap();
+    let source = Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO sources(id,owner_id,name,path) VALUES ($1,$2,'Audio',$3)")
+        .bind(&source)
+        .bind(Uuid::parse_str(owner_user["id"].as_str().unwrap()).unwrap())
+        .bind(root.to_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let viewer_id = Uuid::parse_str(viewer_user["id"].as_str().unwrap()).unwrap();
+    sqlx::query(
+        "INSERT INTO source_permissions(source_id,user_id,can_discover) VALUES ($1,$2,true)",
+    )
+    .bind(&source)
+    .bind(viewer_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let list = format!("/api/sources/{source}/audio-tracks?path=multi.mkv");
+    let prepare = format!("/api/sources/{source}/video-audio?path=multi.mkv");
+    assert_eq!(
+        request(&state, Method::GET, &list, Some(&viewer), None, None, None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            &prepare,
+            Some(&viewer),
+            Some(&viewer_csrf),
+            Some(ORIGIN),
+            Some(json!({"stream_index":2}))
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            &prepare,
+            Some(&owner),
+            None,
+            Some(ORIGIN),
+            Some(json!({"stream_index":2}))
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    let listed =
+        body(request(&state, Method::GET, &list, Some(&owner), None, None, None).await).await;
+    assert_eq!(listed.as_array().unwrap().len(), 2);
+    assert_eq!(listed[1]["label"], "jpn");
+    assert_eq!(listed[1]["codec"], "ac3");
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            &prepare,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(json!({"stream_index":0}))
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let response = request(
+        &state,
+        Method::POST,
+        &prepare,
+        Some(&owner),
+        Some(&csrf),
+        Some(ORIGIN),
+        Some(json!({"stream_index":2})),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let prepared = body(response).await;
+    let read = format!(
+        "/api/sources/{source}/video-audio/{}?path=multi.mkv",
+        prepared["id"].as_str().unwrap()
+    );
+    assert_eq!(
+        request(&state, Method::GET, &read, Some(&viewer), None, None, None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    sqlx::query("UPDATE source_permissions SET can_access_media=true WHERE source_id=$1")
+        .bind(&source)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let response = request(&state, Method::GET, &read, Some(&viewer), None, None, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["cache-control"], "private, no-store");
+    let mp4 = root.join("converted.mp4");
+    std::fs::write(
+        &mp4,
+        to_bytes(response.into_body(), 1024 * 1024).await.unwrap(),
+    )
+    .unwrap();
+    let probe = tokio::process::Command::new("ffprobe")
+        .args(["-v", "error", "-show_streams", "-of", "json"])
+        .arg(&mp4)
+        .output()
+        .await
+        .unwrap();
+    let probe: Value = serde_json::from_slice(&probe.stdout).unwrap();
+    let streams = probe["streams"].as_array().unwrap();
+    assert_eq!(streams.len(), 2);
+    assert_eq!(streams[0]["codec_name"], "h264");
+    assert_eq!(streams[1]["codec_name"], "aac");
+    // Decode selected track and count upward zero crossings: 880Hz, not the first 440Hz track.
+    let pcm = tokio::process::Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(&mp4)
+        .args([
+            "-map", "0:a:0", "-ac", "1", "-ar", "8000", "-f", "s16le", "pipe:1",
+        ])
+        .output()
+        .await
+        .unwrap();
+    let samples: Vec<i16> = pcm
+        .stdout
+        .chunks_exact(2)
+        .map(|s| i16::from_le_bytes([s[0], s[1]]))
+        .collect();
+    let crossings = samples.windows(2).filter(|s| s[0] <= 0 && s[1] > 0).count();
+    assert!(
+        (1600..1900).contains(&crossings),
+        "wrong track frequency: {crossings}"
+    );
+    sqlx::query("DELETE FROM source_permissions WHERE source_id=$1")
+        .bind(&source)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        request(&state, Method::GET, &read, Some(&viewer), None, None, None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(std::fs::read(&original).unwrap(), unchanged);
+    std::fs::write(&original, b"replaced").unwrap();
+    assert_eq!(
+        request(&state, Method::GET, &read, Some(&owner), None, None, None)
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    std::fs::remove_dir_all(root).unwrap();
 }

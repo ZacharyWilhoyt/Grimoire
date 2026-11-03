@@ -22,7 +22,7 @@ struct MediaSource {
     name: String,
     path: String,
 }
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct Item {
     pub progress: Option<crate::progress::Summary>,
     pub file_key: String,
@@ -422,4 +422,91 @@ pub async fn continue_media(
     Query(page): Query<Page>,
 ) -> Result<Json<PersonalPage>, AppError> {
     personal_page(state, identity.user.id, page.offset, 2).await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinkQuery {
+    source_id: String,
+    path: Option<String>,
+    group: Option<String>,
+}
+#[derive(Serialize)]
+pub struct LinkContext {
+    item: Option<Item>,
+    members: Vec<Item>,
+    label: Option<String>,
+}
+// URLs identify resources, never grant access. Resolve the logged-in viewer's live catalog.
+pub async fn linked(
+    State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<auth::Identity>,
+    Query(query): Query<LinkQuery>,
+) -> Result<Json<LinkContext>, AppError> {
+    if query.source_id.len() > 128
+        || query.path.as_ref().is_some_and(|v| v.len() > 4096)
+        || query.group.as_ref().is_some_and(|v| v.len() != 64)
+        || query.path.is_some() == query.group.is_some()
+    {
+        return Err(crate::bad_request("Invalid media link."));
+    }
+    let mut items = source_items(&state, &identity.user, &query.source_id).await?;
+    let selected = query.path.as_ref().and_then(|path| {
+        items
+            .iter()
+            .position(|item| item.file.relative_path == *path)
+    });
+    if query.path.is_some() && selected.is_none() {
+        return Err(AppError(
+            StatusCode::NOT_FOUND,
+            "Media is unavailable or access has not been granted.".into(),
+        ));
+    }
+    let item = selected.map(|index| items.remove(index));
+    let group = query.group.or_else(|| {
+        item.as_ref()?
+            .metadata
+            .as_ref()?
+            .group
+            .as_ref()
+            .map(|group| group.id.clone())
+    });
+    items.retain(|item| {
+        group.as_ref().is_some_and(|group| {
+            item.metadata
+                .as_ref()
+                .and_then(|m| m.group.as_ref())
+                .is_some_and(|g| &g.id == group)
+        })
+    });
+    if let Some(ref item) = item {
+        items.push(item.clone());
+    }
+    if items.is_empty() {
+        return Err(AppError(
+            StatusCode::NOT_FOUND,
+            "Series is unavailable or access has not been granted.".into(),
+        ));
+    }
+    items.sort_by(|a, b| {
+        let order = |item: &Item| {
+            let fields = item.metadata.as_ref().map(|m| &m.fields);
+            (
+                fields.and_then(|f| f.season).unwrap_or(0),
+                fields.and_then(|f| f.episode).unwrap_or(0),
+            )
+        };
+        order(a)
+            .cmp(&order(b))
+            .then_with(|| natord::compare(&a.file.relative_path, &b.file.relative_path))
+    });
+    let label = items
+        .first()
+        .and_then(|i| i.metadata.as_ref()?.group.as_ref().map(|g| g.label.clone()));
+    media_root(&state, &identity.user, &query.source_id).await?;
+    Ok(Json(LinkContext {
+        item,
+        members: items,
+        label,
+    }))
 }

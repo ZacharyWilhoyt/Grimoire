@@ -1123,6 +1123,7 @@ mod scan_tests {
             hashing: Arc::new(Semaphore::new(1)),
             catalog_scans: Arc::new(Semaphore::new(1)),
             metadata: runtime,
+            video_audio: Arc::new(crate::video_audio::Runtime::new()),
         };
         let worker =
             tokio::spawn(async move { run_scan(&state, &owner, &source, id, false).await.is_ok() });

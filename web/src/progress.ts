@@ -8,6 +8,7 @@ export class ProgressSession {
   private failed = false
   private pending: Position | null = null
   private writing = false
+  private drained: Promise<void> = Promise.resolve()
   constructor(private sourceId: string, private path: string, private onError: (message: string) => void, private fetcher = apiFetch) {}
   async load(): Promise<Progress | null> {
     try {
@@ -21,8 +22,9 @@ export class ProgressSession {
   save(position: Position) {
     if (!this.ready || this.failed) return
     this.pending = position
-    if (!this.writing) void this.drain()
+    if (!this.writing) this.drained = this.drain()
   }
+  flush() { return this.drained }
   private async drain() {
     this.writing = true
     try {

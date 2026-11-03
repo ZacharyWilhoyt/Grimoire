@@ -15,6 +15,7 @@ mod permissions;
 mod progress;
 mod subtitles;
 mod subtitles_mkv;
+mod video_audio;
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -38,6 +39,7 @@ struct AppState {
     hashing: Arc<tokio::sync::Semaphore>,
     catalog_scans: Arc<tokio::sync::Semaphore>,
     metadata: Arc<metadata::Runtime>,
+    video_audio: Arc<video_audio::Runtime>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -65,7 +67,7 @@ struct AddSourceRequest {
     path: String,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct MediaFile {
     name: String,
     relative_path: String,
@@ -522,6 +524,19 @@ async fn not_found() -> (StatusCode, Json<ApiError>) {
 fn app(state: AppState) -> Router {
     use axum::{extract::DefaultBodyLimit, middleware};
     let protected = Router::new()
+        .route("/api/media/link", get(catalog::linked))
+        .route(
+            "/api/sources/{source_id}/audio-tracks",
+            get(video_audio::list),
+        )
+        .route(
+            "/api/sources/{source_id}/video-audio",
+            axum::routing::post(video_audio::prepare),
+        )
+        .route(
+            "/api/sources/{source_id}/video-audio/{rendition}",
+            get(video_audio::read),
+        )
         .route("/api/sources/{source_id}/subtitles", get(subtitles::list))
         .route("/api/sources/{source_id}/subtitle", get(subtitles::read))
         .route(
@@ -711,6 +726,7 @@ async fn main() {
         hashing: Arc::new(tokio::sync::Semaphore::new(4)),
         catalog_scans: Arc::new(tokio::sync::Semaphore::new(2)),
         metadata: Arc::new(metadata::Runtime::new()),
+        video_audio: Arc::new(crate::video_audio::Runtime::new()),
     };
     let port = std::env::var("GRIMOIRE_PORT")
         .unwrap_or_else(|_| "3000".into())

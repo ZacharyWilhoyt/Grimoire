@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client'
 import { expect, it, vi } from 'vitest'
 import { useMediaProgress } from './useMediaProgress'
 const session = vi.hoisted(() => ({ load: vi.fn(), save: vi.fn() }))
-vi.mock('./progress', () => ({ ProgressSession: class { load = session.load; save = session.save } }))
+vi.mock('./progress', () => ({ ProgressSession: class { load = session.load; save = session.save; flush = () => Promise.resolve() } }))
 function Player() { const { media, retry, retryKey } = useMediaProgress<HTMLVideoElement>('source', 'video.mp4'); return <><video key={retryKey} ref={media}/><button onClick={retry}>Retry</button></> }
 for (const manualPause of [false, true]) it(`restores saved time and ${manualPause ? 'honors an early pause' : 'starts playback normally'}`, async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)

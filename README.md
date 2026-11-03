@@ -492,7 +492,7 @@ replaced concurrently with symlinks while requests are being resolved.
 
 Select a connected source and press **Watch** beside a video file. The video
 player provides browser controls for play/pause, seeking, volume, and fullscreen.
-Close the player with its close button or Escape. Starting video stops music,
+Use **Back** to leave the watch page; Escape exits fullscreen. Starting video stops music,
 and starting music closes video, so only one media item plays at a time.
 
 Video uses `GET /api/sources/{id}/video?path=...` with the same source checks,
@@ -501,9 +501,10 @@ This endpoint accepts only recognized video extensions. Files stream directly;
 container and codec support depend on the browser. Companion subtitle files and
 embedded MKV text tracks are available through the subtitle selector. ASS uses
 libass with embedded font support; use **Fullscreen with subtitles** for overlays.
-See [subtitle setup and limits](docs/SUBTITLES.md). Transcoding, bitmap captions
-and a dedicated audio-track selector remain future work, so a listed file may
-need conversion before a browser can play it. Restart the Rust API after updating.
+See [watch pages, shareable links and MKV audio selection](docs/WATCH_PAGES.md)
+and [subtitle setup and limits](docs/SUBTITLES.md). MKV audio selection prepares a temporary seekable AAC compatibility copy. Video
+transcoding and bitmap captions remain future work, so unsupported video codecs
+may still require conversion. Restart the Rust API after updating.
 
 ### EPUB and CBZ reading
 

@@ -1,9 +1,12 @@
-import { useModalDialog } from './useModalDialog'
+import { useFullscreen } from './useFullscreen'
 import { useMediaProgress } from './useMediaProgress'
 import { displayTitle, type MetadataView } from './media'
 import { useCallback, useRef, useState } from 'react'
+import MetadataCredits from './MetadataCredits'
+import WatchSidebar from './WatchSidebar'
+import VideoAudio from './VideoAudio'
 import VideoSubtitles from './VideoSubtitles'
-import { X } from 'lucide-react'
+import { ArrowLeft, Maximize, Minimize } from 'lucide-react'
 
 type Props = {
   sourceId: string
@@ -13,25 +16,30 @@ type Props = {
 }
 
 export default function VideoPlayer({ sourceId, sourceName, file, onClose }: Props) {
-  const { media, progressError, retry, retryKey } = useMediaProgress<HTMLVideoElement>(sourceId, file.relative_path)
+  const [audioUrl, setAudioUrl] = useState<string | null>(null)
+  const { media, progressError, retry, retryKey } = useMediaProgress<HTMLVideoElement>(sourceId, file.relative_path, audioUrl ?? '')
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null)
   const attachVideo = useCallback((element: HTMLVideoElement | null) => { media.current = element; setVideoElement(element) }, [media])
   const stage = useRef<HTMLDivElement>(null)
   const [failed, setFailed] = useState(false)
   const closeButton = useRef<HTMLButtonElement>(null)
-  const url = `/api/sources/${encodeURIComponent(sourceId)}/video?${new URLSearchParams({ path: file.relative_path })}`
+  const url = audioUrl ?? `/api/sources/${encodeURIComponent(sourceId)}/video?${new URLSearchParams({ path: file.relative_path })}`
 
-  const dialog = useModalDialog(closeButton)
+  const { fullscreen, toggle, error: fullscreenError } = useFullscreen(stage)
 
-  return <dialog ref={dialog} className="video-backdrop" aria-labelledby="video-title" onCancel={event => { event.preventDefault(); onClose() }} onClick={event => { if (event.target === event.currentTarget) onClose() }}>
-    <section className="video-dialog" aria-labelledby="video-title">
-      <header className="video-header"><div><h2 id="video-title">{displayTitle(file)}</h2><span>{sourceName}</span></div><button ref={closeButton} aria-label="Close video player" onClick={onClose}><X size={21}/></button></header>
-      <div className="video-stage" ref={stage}><video key={`${url}:${retryKey}`} ref={attachVideo} src={url} controls playsInline preload="metadata" onLoadedData={() => setFailed(false)} onError={() => setFailed(true)} /></div>
-      <VideoSubtitles key={url} video={videoElement} sourceId={sourceId} path={file.relative_path}/>
-      <button className="video-fullscreen" onClick={() => { void stage.current?.requestFullscreen().catch(() => {}) }}>Fullscreen with subtitles</button>
+  return <section className="watch-page" aria-label="Video watch page">
+    <main className="watch-main">
+      <header className="watch-header"><button ref={closeButton} className="watch-back" aria-label="Close video player" onClick={onClose}><ArrowLeft size={23}/> Back</button><div><h1 id="video-title">{displayTitle(file)}</h1><span>{sourceName}</span></div></header>
+      <div className="video-stage watch-stage" ref={stage}>
+        <video key={`${url}:${retryKey}`} ref={attachVideo} src={url} controls controlsList="nofullscreen" playsInline preload="metadata" onLoadedData={() => setFailed(false)} onError={() => setFailed(true)} />
+        <button className="watch-fullscreen" aria-label={fullscreen ? 'Exit fullscreen' : 'Fullscreen with subtitles'} title={fullscreen ? 'Exit fullscreen' : 'Fullscreen with subtitles'} onClick={() => { void toggle() }}>{fullscreen ? <Minimize size={22}/> : <Maximize size={22}/>}</button>
+      </div>
+      <div className="watch-settings"><VideoAudio sourceId={sourceId} path={file.relative_path} video={videoElement} onSelect={setAudioUrl}/><VideoSubtitles video={videoElement} sourceId={sourceId} path={file.relative_path}/></div>
+      {fullscreenError && <p className="video-error" role="status">{fullscreenError}</p>}
       {progressError && <p className="video-error" role="status">{progressError}</p>}
-      {failed && <p className="video-error" role="alert">This video could not be played. Check that the source is available. Your browser may not support its container or codecs; conversion is not available yet. <button className="track-play" onClick={() => { setFailed(false); retry() }}>Retry video</button></p>}
-      <p className="video-hint">Use Fullscreen with subtitles to keep styled subtitles visible. Native video fullscreen and picture-in-picture may omit ASS overlays.</p>
-    </section>
-  </dialog>
+      {failed && <p className="video-error" role="alert">This video could not be played. Check that the source is available and the video codec is supported. <button className="track-play" onClick={() => { setFailed(false); retry() }}>Retry video</button></p>}
+      <MetadataCredits credits={file.metadata?.credits ?? []}/>
+    </main>
+    <WatchSidebar sourceId={sourceId} path={file.relative_path}/>
+  </section>
 }

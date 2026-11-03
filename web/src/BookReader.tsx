@@ -1,16 +1,16 @@
-import { useModalDialog } from './useModalDialog'
+import MetadataCredits from './MetadataCredits'
+import WatchSidebar from './WatchSidebar'
 import { epubChapters, type Chapter } from './epubChapters'
 import { ProgressSession } from './progress'
 import { displayTitle, type MetadataView } from './media'
 import { useEffect, useRef, useState } from 'react'
 import { sanitizeChapter, chapterDocument, type ReadingTheme } from './epubContent'
-import { ChevronLeft, ChevronRight, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ArrowLeft } from 'lucide-react'
 import { archivePath, isImage, openArchive, parseXml, type BookArchive } from './bookArchive'
 
 type Props = { sourceId: string; sourceName: string; file: { metadata?: MetadataView | null; name: string; relative_path: string; extension: string }; onClose: () => void }
 
 export default function BookReader({ sourceId, sourceName, file, onClose }: Props) {
-  const dialog = useModalDialog()
   const progress = useRef<ProgressSession | null>(null)
   const [progressReady, setProgressReady] = useState(false)
   const [progressError, setProgressError] = useState('')
@@ -100,14 +100,16 @@ export default function BookReader({ sourceId, sourceName, file, onClose }: Prop
   }, [index, renderedIndex, chapters, progressReady, loading, error])
 
   const srcDocument = chapterDocument(content, fontSize, theme)
-  return <dialog ref={dialog} className="video-backdrop" aria-labelledby="reader-title" onCancel={event => { event.preventDefault(); onClose() }}>
-    <section className="book-dialog">
-      <header className="video-header"><div><h2 id="reader-title">{displayTitle(file)}</h2><span>{sourceName} · {comic ? 'CBZ' : 'EPUB'}</span></div><button aria-label="Close reader" onClick={onClose}><X size={21}/></button></header>
+  return <section className="watch-page book-watch" aria-label="Book reading page">
+    <main className="watch-main">
+      <header className="watch-header"><button className="watch-back" aria-label="Close reader" onClick={onClose}><ArrowLeft size={23}/> Back</button><div><h1 id="reader-title">{displayTitle(file)}</h1><span>{sourceName} · {comic ? 'CBZ' : 'EPUB'}</span></div></header>
       <div className="reader-toolbar"><button disabled={index === 0 || loading} onClick={() => setIndex(index - 1)} aria-label="Previous"><ChevronLeft size={18}/></button><label>{comic ? 'Page' : 'Chapter'} <select aria-label={comic ? 'Page' : 'Chapter'} value={index} disabled={!chapters.length || loading} onChange={event => setIndex(Number(event.target.value))}>{chapters.map((chapter, i) => <option key={chapter.path} value={i}>{comic ? i + 1 : chapter.label}</option>)}</select> / {chapters.length}</label><button disabled={index >= chapters.length - 1 || loading} onClick={() => setIndex(index + 1)} aria-label="Next"><ChevronRight size={18}/></button>{comic && <label>Page width <input aria-label="Page width" type="range" min="50" max="200" step="10" value={zoom} onChange={event => setZoom(Number(event.target.value))}/>{zoom}%</label>}{!comic && <><label>Text size <input aria-label="Text size" type="range" min="14" max="30" value={fontSize} onChange={event => setFontSize(Number(event.target.value))}/></label><label>Theme <select aria-label="Reading theme" value={theme} onChange={event => setTheme(event.target.value === 'night' ? 'night' : 'paper')}><option value="paper">Paper</option><option value="night">Night</option></select></label></>}</div>
       {loading && <p className="source-message" role="status">Opening book content…</p>}
       {progressError && <p className="video-error" role="status">{progressError}</p>}
       {error && <p className="video-error" role="alert">{error}</p>}
       {!loading && !error && (comic ? <div className="comic-page" key={index}><img style={{ width: `${zoom}%`, maxWidth: 'none' }} src={image} alt={`Page ${index + 1}`} onLoad={() => setRenderedIndex(index)} onError={() => setError('This page image is damaged or unsupported by your browser.')}/></div> : <iframe key={index} title={`Book chapter ${index + 1}`} className="epub-page" sandbox="" referrerPolicy="no-referrer" srcDoc={srcDocument}/>)}
-    </section>
-  </dialog>
+      <MetadataCredits credits={file.metadata?.credits ?? []}/>
+    </main>
+    <WatchSidebar sourceId={sourceId} path={file.relative_path}/>
+  </section>
 }

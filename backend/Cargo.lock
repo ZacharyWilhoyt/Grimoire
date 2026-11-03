@@ -677,6 +677,7 @@ dependencies = [
  "axum-extra",
  "chacha20poly1305",
  "dotenvy",
+ "futures-util",
  "hex",
  "image",
  "natord",
