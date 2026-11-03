@@ -145,10 +145,14 @@ speed, Shift+N next episode, C subtitle options, and T cozy view.
 
 ## Reading layouts and profiles
 
-The reader keeps its margin controls fixed while only the content viewport scrolls.
-Double click content (or use the margin toggle) for cozy view. Left/right edge clicks
+The reader keeps page navigation in the top header while only the content viewport
+scrolls. A cog in the upper-right content margin opens reading settings; Escape,
+Close, or clicking outside dismisses it. Zoom is controlled by Shift + wheel,
+anchored to the content point under the cursor, including inside EPUB chapters.
+Double click content (or use the header toggle) for cozy view. Left/right edge clicks
 navigate even when a page fills the viewport; Manga defaults to right-to-left, with
-an explicit reading-direction setting. Shift + wheel zooms from 25–400%; drag to pan.
+an explicit reading-direction setting. Shift + wheel zooms from 25–400%; drag to pan. The header navigation reveals on
+hover or keyboard focus in cozy view.
 
 CBZ supports original size, fit width, fit height, and fit both, plus single page,
 double page, and long strip. Double-page layout pairs two confirmed portrait images;
@@ -175,3 +179,6 @@ music is playing when a book opens, it pauses while a prompt at the bottom of re
 content asks whether to continue listening. Choosing Continue preserves the existing
 audio element and queue; Stop closes it. Continuing the music queue leaves the reader
 open. A compact prompt is shown on narrow displays.
+
+UI margins, padding, and gaps are reduced by 10% throughout the stylesheet.
+Structural sidebar alignment offsets, media dimensions, and font sizes are preserved.

@@ -3,8 +3,8 @@ import WatchSidebar from './WatchSidebar'
 import {epubChapters,type Chapter} from './epubChapters'
 import {ProgressSession} from './progress'
 import {displayTitle,type MetadataView,type MediaItem} from './media'
-import {useCallback,useEffect,useRef,useState} from 'react'
-import {ArrowLeft,ChevronLeft,ChevronRight,PanelRightClose} from 'lucide-react'
+import {useCallback,useEffect,useLayoutEffect,useRef,useState} from 'react'
+import {ArrowLeft,ChevronLeft,ChevronRight,PanelRightClose,Settings,X} from 'lucide-react'
 import {isImage,openArchive,parseXml,type BookArchive} from './bookArchive'
 import {readSettings,isSpread,spreadMembers,type ReaderKind} from './readerSettings'
 import ReaderPage from './ReaderPage'
@@ -22,6 +22,16 @@ export default function BookReader({userId,sourceId,sourceName,file,onClose,onNe
  const marginTimer=useRef<ReturnType<typeof setTimeout>|undefined>(undefined)
  useEffect(()=>()=>clearTimeout(marginTimer.current),[])
  const drag=useRef<{x:number;y:number;left:number;top:number;moved:boolean}|null>(null),suppressClick=useRef(false)
+ const [settingsOpen,setSettingsOpen]=useState(false)
+ const settingsButton=useRef<HTMLButtonElement>(null),settingsPanel=useRef<HTMLDivElement>(null)
+ const zoomAnchor=useRef<{element:HTMLElement;x:number;y:number;clientX:number;clientY:number}|null>(null)
+ useEffect(()=>{
+   if(!settingsOpen)return
+   const key=(event:KeyboardEvent)=>{if(event.key==='Escape'){setSettingsOpen(false);settingsButton.current?.focus()}}
+   const outside=(event:PointerEvent)=>{if(event.target instanceof Node&&!settingsPanel.current?.contains(event.target)&&!settingsButton.current?.contains(event.target))setSettingsOpen(false)}
+   document.addEventListener('keydown',key);document.addEventListener('pointerdown',outside)
+   return()=>{document.removeEventListener('keydown',key);document.removeEventListener('pointerdown',outside)}
+ },[settingsOpen])
  const strip=!comic||settings.layout==='strip'
  useEffect(()=>{try{localStorage.setItem(`${storage}:${kind}`,JSON.stringify(settings));localStorage.setItem(`${storage}:kind:${sourceId}:${file.relative_path}`,kind);localStorage.setItem(`${storage}:last:${comic?'cbz':'epub'}`,kind)}catch{/* Storage is optional. */}},[storage,kind,settings,sourceId,file.relative_path])
   useEffect(() => {
@@ -98,27 +108,42 @@ export default function BookReader({userId,sourceId,sourceName,file,onClose,onNe
  useEffect(()=>{if(strip&&!loading)requestAnimationFrame(()=>viewport.current?.querySelector(`[data-page="${index}"]`)?.scrollIntoView?.({block:'start'}))},[loading,strip])
  useEffect(()=>{
    const view=viewport.current;if(!view)return
-   const wheel=(event:WheelEvent)=>{if(event.shiftKey){event.preventDefault();setSettings(old=>({...old,zoom:Math.max(25,Math.min(400,old.zoom+(event.deltaY<0?10:-10)))}))}}
+   const wheel=(event:WheelEvent)=>{
+     if(!event.shiftKey)return
+     event.preventDefault()
+     const element=[...view.querySelectorAll<HTMLElement>('.reader-page img,.reader-page iframe')].find(element=>{const rect=element.getBoundingClientRect();return event.clientX>=rect.left&&event.clientX<=rect.right&&event.clientY>=rect.top&&event.clientY<=rect.bottom})??view.querySelector<HTMLElement>('.reader-surface')
+     if(element){const rect=element.getBoundingClientRect();zoomAnchor.current={element,x:rect.width?(event.clientX-rect.left)/rect.width:0,y:rect.height?(event.clientY-rect.top)/rect.height:0,clientX:event.clientX,clientY:event.clientY}}
+     setSettings(old=>({...old,zoom:Math.max(25,Math.min(400,old.zoom+(event.deltaY<0?10:-10)))}))
+   }
    view.addEventListener('wheel',wheel,{passive:false});return()=>view.removeEventListener('wheel',wheel)
  },[])
+ useLayoutEffect(()=>{
+   const anchor=zoomAnchor.current,view=viewport.current
+   zoomAnchor.current=null
+   if(!anchor||!view||!anchor.element.isConnected)return
+   const rect=anchor.element.getBoundingClientRect()
+   view.scrollLeft+=rect.left+rect.width*anchor.x-anchor.clientX
+   view.scrollTop+=rect.top+rect.height*anchor.y-anchor.clientY
+ },[settings.zoom])
  const toggleCozy=useCallback(()=>{clearTimeout(marginTimer.current);setCozy(value=>!value)},[])
  return <section className={`watch-page book-watch reader-revamp ${cozy?'watch-cozy':''}`} aria-label="Book reading page">
  <main className="watch-main">
- <header className="watch-header"><button className="watch-back" aria-label="Close reader" onClick={onClose}><ArrowLeft/> Back</button><div><h1>{displayTitle(file)}</h1><span>{sourceName}</span></div></header>
- <div className="reader-layout">
- <aside className="reader-margin">
+ <header className="watch-header"><button className="watch-back" aria-label="Close reader" onClick={onClose}><ArrowLeft/> Back</button><div className="reader-heading"><h1>{displayTitle(file)}</h1><span>{sourceName}</span></div>
+ <nav className="reader-navigation" aria-label="Page navigation">
  <button aria-label="Previous" disabled={loading||index===0} onClick={previous}><ChevronLeft/></button>
  <label>{comic?'Page':'Chapter'}<select aria-label={comic?'Page':'Chapter'} value={index} disabled={loading} onChange={e=>go(Number(e.target.value))}>{chapters.map((chapter,i)=><option key={chapter.path} value={i}>{comic?i+1:chapter.label}</option>)}</select> / {chapters.length}</label>
  <button aria-label="Next" disabled={loading||index>=chapters.length-1&&!next} onClick={()=>strip&&index<chapters.length-1?go(index+1):advance()}><ChevronRight/></button>
- <details className="reader-settings"><summary>Reading settings</summary>
+ </nav><button className="reader-cozy-toggle" aria-label="Cozy reading view" aria-pressed={cozy} onClick={toggleCozy}><PanelRightClose/></button></header>
+ <div className="reader-layout">
+ <button ref={settingsButton} className="reader-settings-toggle" aria-label="Reading settings" aria-expanded={settingsOpen} aria-controls="reading-settings" onClick={()=>setSettingsOpen(value=>!value)}><Settings size={21}/></button>
+ {settingsOpen&&<div ref={settingsPanel} className="reader-settings-panel" id="reading-settings" role="region" aria-label="Reading settings panel"><header>Reading settings<button aria-label="Close reading settings" onClick={()=>{setSettingsOpen(false);settingsButton.current?.focus()}}><X size={18}/></button></header>
  <label>Content type<select aria-label="Content type" value={kind} onChange={e=>{const value=e.target.value as ReaderKind;setKind(value);setSettings(readSettings(storage,value))}}>{['Novel','Comic','Manga','Manhua'].map(value=><option key={value}>{value}</option>)}</select></label>
  {comic&&<><label>Fit<select aria-label="Page fit" value={settings.fit} onChange={e=>setSettings({...settings,fit:e.target.value as typeof settings.fit})}><option value="original">Original size</option><option value="width">Fit width</option><option value="height">Fit height</option><option value="both">Fit both</option></select></label><label>Layout<select aria-label="Page layout" value={settings.layout} onChange={e=>setSettings({...settings,layout:e.target.value as typeof settings.layout})}><option value="single">Single page</option><option value="double">Double page</option><option value="strip">Long strip</option></select></label><label>Reading direction<select aria-label="Reading direction" value={settings.direction} onChange={e=>setSettings({...settings,direction:e.target.value as 'ltr'|'rtl'})}><option value="ltr">Left to right</option><option value="rtl">Right to left</option></select></label></>}
- <label>Zoom<input aria-label="Reader zoom" type="range" min={25} max={400} step={5} value={settings.zoom} onChange={e=>setSettings({...settings,zoom:Number(e.target.value)})}/>{settings.zoom}%</label>
+
  {!comic&&<><label>Text size<input aria-label="Text size" type="range" min={14} max={30} value={settings.fontSize} onChange={e=>setSettings({...settings,fontSize:Number(e.target.value)})}/></label><label>Theme<select aria-label="Reading theme" value={settings.theme} onChange={e=>setSettings({...settings,theme:e.target.value as 'paper'|'night'})}><option value="paper">Paper</option><option value="night">Night</option></select></label></>}
  <MetadataCredits credits={file.metadata?.credits??[]}/>
  <p>Double click content for cozy view. Shift + scroll to zoom; drag to pan.</p>
- </details><button aria-label="Cozy reading view" aria-pressed={cozy} onClick={toggleCozy}><PanelRightClose/></button>
- </aside>
+ </div>}
  <div ref={viewport} className={`reader-viewport fit-${settings.fit} ${strip?'reader-strip':'reader-paged'}`} tabIndex={0} aria-label="Reading content"
  onDoubleClick={toggleCozy}
  onPointerDown={e=>{if(e.button!==0||e.target instanceof Element&&e.target.closest('button,a'))return;drag.current={x:e.clientX,y:e.clientY,left:e.currentTarget.scrollLeft,top:e.currentTarget.scrollTop,moved:false}}}

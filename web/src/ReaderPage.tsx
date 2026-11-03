@@ -54,7 +54,7 @@ export default function ReaderPage({archive,path,index,comic,settings,onReady,on
    const wheel=(event:WheelEvent)=>{
      if(!view)return
      event.preventDefault()
-     if(event.shiftKey)view.dispatchEvent(new WheelEvent('wheel',{deltaY:event.deltaY,shiftKey:true,bubbles:true,cancelable:true}))
+     if(event.shiftKey){const rect=frame.getBoundingClientRect();const scale=frame.clientWidth?rect.width/frame.clientWidth:1;view.dispatchEvent(new WheelEvent('wheel',{deltaY:event.deltaY,clientX:event.clientX*scale+rect.left,clientY:event.clientY*scale+rect.top,shiftKey:true,bubbles:true,cancelable:true}))}
      else {view.scrollTop+=event.deltaY;view.scrollLeft+=event.deltaX}
    }
    const pointer=(event:PointerEvent)=>{

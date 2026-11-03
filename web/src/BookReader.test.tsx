@@ -57,6 +57,7 @@ it('shows EPUB navigation titles while preserving chapter progress locators', as
     expect(host.querySelector('select')?.textContent).toContain('An actual chapter title')
     expect(host.querySelector('iframe')?.getAttribute('sandbox')).toBe('allow-same-origin')
     expect(session.save).toHaveBeenLastCalledWith({ position: 0, total: 1, locator: 'OPS/one.xhtml' })
+    await act(async()=>host.querySelector<HTMLButtonElement>('[aria-label="Reading settings"]')!.click())
     const theme = host.querySelector<HTMLSelectElement>('select[aria-label="Reading theme"]')!
     expect(theme.value).toBe('paper')
     session.save.mockClear()
@@ -78,6 +79,9 @@ it('toggles cozy view without replacing content and separates profile preference
   await act(async()=>host.querySelector('.reader-viewport')!.dispatchEvent(new MouseEvent('dblclick',{bubbles:true})))
   expect(host.querySelector('.watch-cozy')).not.toBeNull()
   expect(host.querySelector('img')).toBe(image)
+  await act(async()=>host.querySelector<HTMLButtonElement>('[aria-label="Reading settings"]')!.click())
+  expect(host.querySelector('.reader-margin')).toBeNull()
+  expect(host.querySelector('[aria-label="Reader zoom"]')).toBeNull()
   const fit=host.querySelector<HTMLSelectElement>('[aria-label="Page fit"]')!
   await act(async()=>{fit.value='width';fit.dispatchEvent(new Event('change',{bubbles:true}))})
   const type=host.querySelector<HTMLSelectElement>('[aria-label="Content type"]')!
@@ -103,4 +107,23 @@ it('continues to the next authorized series entry at the end',async()=>{
   await act(async()=>button().click())
   expect(advance).toHaveBeenCalledExactlyOnceWith(next)
  }finally{await act(async()=>root.unmount());fetch.mockRestore();vi.unstubAllGlobals()}
+})
+
+it('keeps the content point under the cursor fixed when zooming',async()=>{
+ vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true)
+ localStorage.clear()
+ URL.createObjectURL=vi.fn(()=>'blob:test');URL.revokeObjectURL=vi.fn()
+ const host=document.createElement('div'),root=createRoot(host)
+ document.body.append(host)
+ try{
+  await act(async()=>root.render(<BookReader sourceId="s" sourceName="Test" file={{name:'Comic',relative_path:'comic.cbz',extension:'cbz'}} onClose={()=>{}}/>))
+  const view=host.querySelector<HTMLElement>('.reader-viewport')!,image=host.querySelector('img')!
+  image.getBoundingClientRect=()=>{const zoom=Number((host.querySelector<HTMLElement>('.reader-surface')!).style.zoom);return {left:100,top:50,width:200*zoom,height:300*zoom,right:100+200*zoom,bottom:50+300*zoom,x:100,y:50,toJSON:()=>({})}}
+  await act(async()=>view.dispatchEvent(new WheelEvent('wheel',{bubbles:true,cancelable:true,shiftKey:true,deltaY:-100,clientX:150,clientY:100})))
+  expect(Number(host.querySelector<HTMLElement>('.reader-surface')!.style.zoom)).toBeCloseTo(1.1)
+  expect(view.scrollLeft).toBeCloseTo(5)
+  expect(view.scrollTop).toBeCloseTo(5)
+  expect(host.querySelector('[aria-label="Page navigation"]')?.closest('header')).not.toBeNull()
+  expect(host.querySelector('.reader-margin')).toBeNull()
+ }finally{await act(async()=>root.unmount());host.remove();localStorage.clear();vi.unstubAllGlobals()}
 })
