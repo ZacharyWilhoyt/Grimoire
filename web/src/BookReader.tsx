@@ -10,8 +10,8 @@ import {readSettings,isSpread,spreadMembers,type ReaderKind} from './readerSetti
 import ReaderPage from './ReaderPage'
 import {apiFetch} from './api'
 import type {LinkContext} from './mediaLinks'
-type Props={userId?:string;sourceId:string;sourceName:string;file:{metadata?:MetadataView|null;name:string;relative_path:string;extension:string};onClose:()=>void;onNext?:(item:MediaItem)=>void;musicPrompt?:React.ReactNode}
-export default function BookReader({userId,sourceId,sourceName,file,onClose,onNext,musicPrompt}:Props){
+type Props={userId?:string;sourceId:string;sourceName:string;file:{metadata?:MetadataView|null;name:string;relative_path:string;extension:string};onClose:()=>void;onNext?:(item:MediaItem)=>void}
+export default function BookReader({userId,sourceId,sourceName,file,onClose,onNext}:Props){
  const comic=file.extension.toLowerCase()==='cbz'
  const storage=`grimoire:reader:v1:${userId??'local'}`
  const [kind,setKind]=useState<ReaderKind>(()=>{try{const v=localStorage.getItem(`${storage}:kind:${sourceId}:${file.relative_path}`)??localStorage.getItem(`${storage}:last:${comic?'cbz':'epub'}`);return ['Novel','Comic','Manga','Manhua'].includes(v??'')?v as ReaderKind:comic?'Comic':'Novel'}catch{return comic?'Comic':'Novel'}})
@@ -155,6 +155,6 @@ export default function BookReader({userId,sourceId,sourceName,file,onClose,onNe
  {loading&&<p role="status">Opening book content…</p>}{error&&<p role="alert">{error}</p>}{progressError&&<p role="status">{progressError}</p>}
  {archive&&!loading&&!error&&<div className="reader-surface" style={{zoom:settings.zoom/100,direction:!strip&&settings.direction==='rtl'?'rtl':'ltr'}}>{(strip?chapters.map((_,i)=>i):members).map(page=><ReaderPage key={chapters[page].path} archive={archive} path={chapters[page].path} index={page} comic={comic} settings={settings} onReady={pageReady} onVisible={strip?visible:undefined} onCozy={toggleCozy} lazy={strip&&page!==index}/>)}</div>}
  </div></div></main>
- {!cozy&&<div className="reader-related"><WatchSidebar sourceId={sourceId} path={file.relative_path}/>{musicPrompt}</div>}
+ {!cozy&&<div className="reader-related"><WatchSidebar sourceId={sourceId} path={file.relative_path}/></div>}
  </section>
 }

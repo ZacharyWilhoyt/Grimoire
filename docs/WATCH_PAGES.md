@@ -174,11 +174,7 @@ profile for their format. Manhua defaults to fit-width long
 strip, Manga to right-to-left. Settings do not synchronize between devices.
 
 At the end of a volume, Next or scrolling to the end of long strip opens the next
-entry from the permission-filtered series. No access is granted by adjacency. If
-music is playing when a book opens, it pauses while a prompt at the bottom of related
-content asks whether to continue listening. Choosing Continue preserves the existing
-audio element and queue; Stop closes it. Continuing the music queue leaves the reader
-open. A compact prompt is shown on narrow displays.
+entry from the permission-filtered series. No access is granted by adjacency. Opening a book stops the music player and closes its queue.
 
 UI margins, padding, and gaps are reduced by 10% throughout the stylesheet.
 Structural sidebar alignment offsets, media dimensions, and font sizes are preserved.

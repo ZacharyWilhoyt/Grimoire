@@ -45,8 +45,6 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
   const [reading, setReading] = useState<MediaItem | null>(null)
   const [video, setVideo] = useState<MediaItem | null>(null)
   const [miniVideo, setMiniVideo] = useState(false)
-  const [readingMusic, setReadingMusic] = useState<boolean | null>(null)
-  const [musicPlaying, setMusicPlaying] = useState(false)
   const [playback, setPlayback] = useState<{ tracks: MediaItem[]; index: number } | null>(null)
   const [filter, setFilter] = useState<MediaKind>('All')
   const [query, setQuery] = useState('')
@@ -188,8 +186,7 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
       if (!response.ok) throw new Error(data.error ?? 'Could not open this media.')
       if (signal?.aborted) return
       patchPersonal(item, data as PersonalState)
-      setReading(null); setVideo(null); if (item.kind !== 'book') setPlayback(null); setLinkedSeries(null)
-      if (item.kind === 'book' && !reading) setReadingMusic(musicPlaying ? null : false)
+      setReading(null); setVideo(null); setPlayback(null); setLinkedSeries(null)
       if (updateUrl) window.history.pushState(null, '', mediaLink(item.source_id, item.relative_path))
       if (item.kind === 'book') setReading(item)
       else if (item.kind === 'video') { setMiniVideo(false); setVideo(item) }
@@ -271,9 +268,10 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
     { label: 'For you' as PageName, icon: Sparkles }, { label: 'Discover' as PageName, icon: Compass }, { label: 'My library' as PageName, icon: Library },
   ]
 
-  const musicPlayer = playback && <MusicPlayer key="music" onPlayingChange={setMusicPlaying} paused={reading ? readingMusic !== true : undefined} tracks={playback.tracks} index={playback.index} busy={actionBusy} onIndex={index => { if (reading) setPlayback(current=>current?{...current,index}:null); else void openMedia(playback.tracks[index], playback.tracks) }} onClose={() => setPlayback(null)}/>
+  const musicPlayer = playback && <MusicPlayer key="music" tracks={playback.tracks} index={playback.index} busy={actionBusy} onIndex={index => { void openMedia(playback.tracks[index], playback.tracks) }} onClose={() => setPlayback(null)}/>
   if (linkLoading || linkError) return <section className="watch-page"><main className="watch-main"><button className="watch-back" onClick={closeWatch}>Back to library</button><p role={linkError ? 'alert' : 'status'}>{linkError || 'Opening media link…'}</p></main></section>
-  if (reading) return <>{musicPlayer}<BookReader userId={user.id} key={`${reading.source_id}:${reading.relative_path}`} sourceId={reading.source_id} sourceName={reading.source_name} file={reading} onClose={closeWatch} onNext={item=>{void openMedia(item,[item])}} musicPrompt={playback && readingMusic === null ? <section className="reader-music-prompt"><p>Continue listening to music while reading?</p><button onClick={()=>setReadingMusic(true)}>Continue listening</button><button onClick={()=>{setReadingMusic(false);setPlayback(null)}}>Stop music</button></section> : undefined}/></>
+  if (reading) return <BookReader userId={user.id} key={`${reading.source_id}:${reading.relative_path}`} sourceId={reading.source_id} sourceName={reading.source_name} file={reading} onClose={closeWatch} onNext={item=>{void openMedia(item,[item])}}/>
+
 
   if (linkedSeries) return <section className="series-page"><header className="watch-header"><button className="watch-back" onClick={closeWatch}>Back to library</button><h1>{linkedSeries.label ?? 'Series'}</h1></header>{actionError && <p role="alert">{actionError}</p>}<MediaCollection items={linkedSeries.members} groupBy="none" busy={actionBusy} onOpen={(item, queue) => { void openMedia(item, queue) }} onSave={item => { void toggleSaved(item) }} onMetadata={setMetadataItem} onGroupMetadata={setGroupItem}/>{metadataItem && <MetadataEditor item={metadataItem} onClose={() => setMetadataItem(null)} onUpdated={() => setSourceRefresh(value => value + 1)}/>}</section>
   return <>{musicPlayer}{video && <VideoPlayer userId={user.id} key={`${video.source_id}:${video.relative_path}`} sourceId={video.source_id} sourceName={video.source_name} file={video} mini={miniVideo} onRestore={() => { setMiniVideo(false); window.history.pushState(null, '', mediaLink(video.source_id, video.relative_path)) }} onDismiss={() => setVideo(null)} onNext={item => { void openMedia(item, [item]) }} onClose={() => { setMiniVideo(true); window.history.pushState(null, '', '/#discover') }}/>}
