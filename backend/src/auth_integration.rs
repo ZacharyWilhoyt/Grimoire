@@ -4344,6 +4344,16 @@ async fn transcode_sessions_segments_and_revocation_are_scoped(pool: PgPool) {
         .parse::<f64>()
         .unwrap();
     assert!((7.3..7.6).contains(&start), "timestamp offset: {start}");
+    let audio_start = streams[1]["start_time"]
+        .as_str()
+        .unwrap()
+        .parse::<f64>()
+        .unwrap();
+    assert!(
+        (0.20..0.35).contains(&(start - audio_start)),
+        "AAC preroll must precede video: {audio_start} vs {start}"
+    );
+
     // Even a source owner cannot reuse another account's prepared playback session.
     sqlx::query("INSERT INTO source_permissions(source_id,user_id,can_discover,can_access_media) VALUES($1,$2,true,true)").bind(&source).bind(Uuid::parse_str(viewer_user["id"].as_str().unwrap()).unwrap()).execute(&pool).await.unwrap();
     assert_eq!(

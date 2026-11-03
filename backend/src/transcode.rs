@@ -16,7 +16,8 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::io::AsyncReadExt;
-const SECONDS: f64 = 6.;
+// 282 AAC frames at 48 kHz: avoid rounding audio at each segment boundary.
+const SECONDS: f64 = 6.016;
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum Encoder {
@@ -466,6 +467,13 @@ async fn encode(
     encoder: Encoder,
 ) -> Result<Vec<u8>, AppError> {
     let offset = index as f64 * SECONDS;
+    // Warm the AAC encoder with twelve frames of overlapping audio. HLS discards
+    // the overlap by timestamp rather than playing fresh encoder priming at the cut.
+    let preroll = if s.audio.is_some() && index > 0 {
+        0.256
+    } else {
+        0.0
+    };
     let mut command = tokio::process::Command::new("ffmpeg");
     command.args([
         "-v",
@@ -482,7 +490,7 @@ async fn encode(
     command
         .args([
             "-ss",
-            &offset.to_string(),
+            &(offset - preroll).to_string(),
             "-protocol_whitelist",
             "file,pipe",
             "-f",
@@ -492,7 +500,7 @@ async fn encode(
         .arg(path)
         .args([
             "-t",
-            &(s.duration - offset).min(SECONDS).to_string(),
+            &((s.duration - offset).min(SECONDS) + preroll).to_string(),
             "-map",
             "0:v:0",
         ]);
@@ -512,7 +520,21 @@ async fn encode(
     } else {
         command.arg("-an");
     }
-    command.args(encoder_args(encoder, s.height)).args([
+    let mut args = encoder_args(encoder, s.height);
+    if let Some(position) = args.iter().position(|arg| arg == "-r") {
+        args.drain(position..position + 2);
+    }
+    args[1] = format!("fps=30,{}", args[1]);
+    if preroll > 0.0 {
+        // Keep video timestamps on the advertised boundary while retaining audio preroll.
+        args[1] = format!(
+            "fps=30,trim=start={preroll},{}",
+            args[1].trim_start_matches("fps=30,")
+        );
+    }
+    command.args(args).args([
+        "-fps_mode",
+        "passthrough",
         "-sn",
         "-dn",
         "-map_metadata",
@@ -520,7 +542,7 @@ async fn encode(
         "-map_chapters",
         "-1",
         "-output_ts_offset",
-        &offset.to_string(),
+        &(offset - preroll).to_string(),
         "-mpegts_flags",
         "+resend_headers",
         "-f",

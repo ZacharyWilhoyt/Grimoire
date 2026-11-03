@@ -108,3 +108,13 @@ development host. NVENC/AMF were unavailable there, so real encoding on those
 backends still needs validation on hosts with compatible hardware/drivers.
 The private media fixture remains ignored and is never part of tests committed
 to the repository.
+
+### Segment continuity
+
+The browser buffers up to 36 seconds ahead (60-second upper limit). Segment duration
+is 6.016 seconds, exactly 282 AAC frames at 48 kHz. After the first segment, encoding
+includes 256 ms of preceding audio to warm the AAC encoder; video retains its own
+segment boundary and HLS removes overlapping audio by timestamp. Video frame-rate
+conversion occurs before trimming, with timestamp passthrough to avoid duplicated
+frames shifting the cut. These changes reduce buffer stalls and fresh-encoder audio
+artifacts; real hardware/browser listening remains useful for codec-specific issues.

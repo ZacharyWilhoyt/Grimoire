@@ -106,3 +106,40 @@ it('hides controls only during idle playback and reveals them on pointer activit
  await act(async()=>host.querySelector<HTMLButtonElement>('[aria-label="Cozy view"]')!.click());expect(host.querySelector('.watch-header')).toBeNull();expect(host.querySelector('[aria-label="Close video player"]')).not.toBeNull()
  }finally{await act(async()=>root.unmount());vi.useRealTimers();vi.unstubAllGlobals()}
 })
+
+it('keeps the video element mounted when minimized and exposes mini-player actions', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+  const host = document.createElement('div'), root = createRoot(host)
+  const restore = vi.fn(), dismiss = vi.fn(), close = vi.fn()
+  const props = {sourceId:'s',sourceName:'Test',file:{name:'Film',relative_path:'film.mkv'},onClose:close,onRestore:restore,onDismiss:dismiss}
+  try {
+    await act(async()=>root.render(<VideoPlayer {...props}/>))
+    const video = host.querySelector('video')
+    await act(async()=>root.render(<VideoPlayer {...props} mini/>))
+    expect(host.querySelector('video')).toBe(video)
+    expect(host.querySelector('.video-mini')).not.toBeNull()
+    await act(async()=>host.querySelector<HTMLButtonElement>('[aria-label="Restore video player"]')!.click())
+    await act(async()=>host.querySelector<HTMLButtonElement>('[aria-label="Stop video"]')!.click())
+    expect(restore).toHaveBeenCalledOnce()
+    expect(dismiss).toHaveBeenCalledOnce()
+    expect(host.querySelector('progress')).not.toBeNull()
+  } finally {await act(async()=>root.unmount());vi.unstubAllGlobals()}
+})
+
+it('offers next episode and advances when playback ends', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+  const api = await import('./api')
+  const next = {file_key:'next',source_id:'s',relative_path:'two.mkv',name:'Two',kind:'video'}
+  const fetch = vi.spyOn(api,'apiFetch').mockResolvedValue(new Response(JSON.stringify({members:[{relative_path:'one.mkv'},next]}),{status:200}))
+  const host=document.createElement('div'),root=createRoot(host),advance=vi.fn()
+  try {
+    await act(async()=>root.render(<VideoPlayer sourceId="s" sourceName="Test" file={{name:'One',relative_path:'one.mkv'}} onClose={()=>{}} onNext={advance}/>))
+    const button=host.querySelector<HTMLButtonElement>('[aria-label="Next episode"]')
+    expect(button).not.toBeNull()
+    await act(async()=>button!.click())
+    expect(advance).toHaveBeenLastCalledWith(next)
+    advance.mockClear()
+    await act(async()=>host.querySelector('video')!.dispatchEvent(new Event('ended')))
+    expect(advance).toHaveBeenCalledExactlyOnceWith(next)
+  } finally {await act(async()=>root.unmount());fetch.mockRestore();vi.unstubAllGlobals()}
+})

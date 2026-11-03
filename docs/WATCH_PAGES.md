@@ -120,3 +120,16 @@ not synchronize between devices. Original stream indexes are not reused between
 files. A subtitle preference is restored only if a matching label/format exists;
 otherwise subtitles stay off. Choosing Off saves that preference. Encoder policy is stored server-side per source and cannot be overridden by viewer preferences. Storage errors
 or blocked storage leave playback usable with session-only settings.
+
+## Episode navigation and mini-player
+
+Video playback offers **Next episode** when the permission-filtered series context
+has a following member, and advances to that member when playback ends. Ordering
+uses the existing series/season/episode metadata. Browser autoplay restrictions can
+still require pressing Play on the next item.
+
+Back from the video page minimizes playback into the bottom-right corner while
+browsing the library. The same media element and subtitle renderer stay mounted.
+The mini-player has restore (top left), stop (top right), play/pause (center), and
+progress along the bottom. Starting music, opening another media item, signing out,
+or losing source access closes the old video; it does not survive a page reload.

@@ -39,17 +39,22 @@ export default function VideoSubtitles({ video, sourceId, path }: Props) {
       if (controller.signal.aborted) return
       if (track.format === 'ass') {
         const { default: Renderer } = await import('jassub')
-        const fonts: Uint8Array[] = []
-        // Sequential fetching bounds server work and total attachment memory.
+        const fonts: Uint8Array[] = new Array(listing.fonts.length)
+        // Two workers overlap attachment I/O while bounding server work and memory.
         let size = 0
-        for (const index of listing.fonts) {
-          const font = await fetch(`${base}/subtitle-font?${new URLSearchParams({ video: path, index: String(index) })}`, { signal: controller.signal })
-          if (!font.ok) throw new Error('An embedded subtitle font could not be loaded. Rendering was stopped to avoid incorrect typography.')
-          const bytes = new Uint8Array(await font.arrayBuffer())
-          size += bytes.length
-          if (size > 32 * 1024 * 1024) throw new Error('Embedded fonts exceed the 32 MiB rendering limit.')
-          fonts.push(bytes)
+        let cursor = 0
+        const worker = async () => {
+          while (cursor < listing.fonts.length) {
+            const slot = cursor++, index = listing.fonts[slot]
+            const font = await fetch(`${base}/subtitle-font?${new URLSearchParams({ video: path, index: String(index) })}`, { signal: controller.signal })
+            if (!font.ok) throw new Error('An embedded subtitle font could not be loaded. Rendering was stopped to avoid incorrect typography.')
+            const bytes = new Uint8Array(await font.arrayBuffer())
+            size += bytes.length
+            if (size > 32 * 1024 * 1024) throw new Error('Embedded fonts exceed the 32 MiB rendering limit.')
+            fonts[slot] = bytes
+          }
         }
+        await Promise.all([worker(), worker()])
         if (controller.signal.aborted) return
         instance = new Renderer({ video, subContent: text, fonts, timeOffset: 0, queryFonts: false, libassMemoryLimit: 64, libassGlyphLimit: 10000 })
         // Capture our overlay: a retried video may be detached before destroy(),

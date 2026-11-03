@@ -120,7 +120,7 @@ pub fn font(stream: &Value) -> bool {
             .as_u64()
             .is_some_and(|size| size > 0 && size <= 8 * 1024 * 1024)
 }
-pub async fn extract(
+async fn extract_uncached(
     file: &Path,
     index: u64,
     font: bool,
@@ -267,4 +267,48 @@ mod tests {
         );
         std::fs::remove_dir_all(root).unwrap();
     }
+}
+
+// Callers authorize every request, including cache hits.
+pub async fn extract(
+    file: &Path,
+    index: u64,
+    font: bool,
+    format: &str,
+) -> Result<Vec<u8>, AppError> {
+    use std::{
+        collections::VecDeque,
+        sync::{Mutex, OnceLock},
+        time::{Duration, Instant},
+    };
+    type Entry = (String, Instant, Vec<u8>);
+    static CACHE: OnceLock<Mutex<VecDeque<Entry>>> = OnceLock::new();
+    let metadata = tokio::fs::metadata(file)
+        .await
+        .map_err(|_| bad_request("Media is unavailable."))?;
+    let key = format!(
+        "{:?}:{}:{:?}:{index}:{font}:{format}",
+        file,
+        metadata.len(),
+        metadata.modified().ok()
+    );
+    let cache = CACHE.get_or_init(|| Mutex::new(VecDeque::new()));
+    {
+        let mut entries = cache.lock().unwrap();
+        entries.retain(|(_, time, _)| time.elapsed() < Duration::from_secs(600));
+        if let Some((_, _, bytes)) = entries.iter().find(|(id, _, _)| id == &key) {
+            return Ok(bytes.clone());
+        }
+    }
+    let bytes = extract_uncached(file, index, font, format).await?;
+    let mut entries = cache.lock().unwrap();
+    while !entries.is_empty()
+        && (entries.len() >= 32
+            || entries.iter().map(|(_, _, v)| v.len()).sum::<usize>() + bytes.len()
+                > 48 * 1024 * 1024)
+    {
+        entries.pop_front();
+    }
+    entries.push_back((key, Instant::now(), bytes.clone()));
+    Ok(bytes)
 }

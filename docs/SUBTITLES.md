@@ -81,3 +81,10 @@ drawings and extensive typesetting while retaining bounded output and renderer
 limits. API errors are shown in the subtitle panel rather than replaced by an
 ambiguous loading/limit message. Regression fixtures exercise scripts above
 1 MiB and modern font MIME tags; private source scripts are not committed.
+
+Successful embedded script/font extractions are cached in process for ten minutes,
+with at most 32 entries and 48 MiB total. File path, size, modification time, stream,
+and format distinguish cache entries. Every HTTP request still checks current
+permissions. Two font downloads run concurrently, with the existing 32 MiB client
+font budget. ASS remains a complete script to preserve libass animation, layering,
+and overlapping events; first extraction still needs to scan the container.

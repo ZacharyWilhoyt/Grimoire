@@ -44,6 +44,7 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [reading, setReading] = useState<MediaItem | null>(null)
   const [video, setVideo] = useState<MediaItem | null>(null)
+  const [miniVideo, setMiniVideo] = useState(false)
   const [playback, setPlayback] = useState<{ tracks: MediaItem[]; index: number } | null>(null)
   const [filter, setFilter] = useState<MediaKind>('All')
   const [query, setQuery] = useState('')
@@ -188,7 +189,7 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
       setReading(null); setVideo(null); setPlayback(null); setLinkedSeries(null)
       if (updateUrl) window.history.pushState(null, '', mediaLink(item.source_id, item.relative_path))
       if (item.kind === 'book') setReading(item)
-      else if (item.kind === 'video') setVideo(item)
+      else if (item.kind === 'video') { setMiniVideo(false); setVideo(item) }
       else { const tracks = queue.some(track => track.file_key === item.file_key) ? queue : [item]; setPlayback({ tracks, index: tracks.findIndex(track => track.file_key === item.file_key) }) }
     } catch (error) { if (signal?.aborted) return; setActionError(error instanceof Error ? error.message : 'Could not open media.'); setPlayback(null) }
     finally { setActionBusy(false) }
@@ -270,8 +271,8 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
   if (linkLoading || linkError) return <section className="watch-page"><main className="watch-main"><button className="watch-back" onClick={closeWatch}>Back to library</button><p role={linkError ? 'alert' : 'status'}>{linkError || 'Opening media link…'}</p></main></section>
   if (reading) return <BookReader key={`${reading.source_id}:${reading.relative_path}`} sourceId={reading.source_id} sourceName={reading.source_name} file={reading} onClose={closeWatch}/>
   if (linkedSeries) return <section className="series-page"><header className="watch-header"><button className="watch-back" onClick={closeWatch}>Back to library</button><h1>{linkedSeries.label ?? 'Series'}</h1></header>{actionError && <p role="alert">{actionError}</p>}<MediaCollection items={linkedSeries.members} groupBy="none" busy={actionBusy} onOpen={(item, queue) => { void openMedia(item, queue) }} onSave={item => { void toggleSaved(item) }} onMetadata={setMetadataItem} onGroupMetadata={setGroupItem}/>{metadataItem && <MetadataEditor item={metadataItem} onClose={() => setMetadataItem(null)} onUpdated={() => setSourceRefresh(value => value + 1)}/>}</section>
-  if (video) return <VideoPlayer userId={user.id} key={`${video.source_id}:${video.relative_path}`} sourceId={video.source_id} sourceName={video.source_name} file={video} onClose={closeWatch}/>
-  return <div className="app-shell">
+  return <>{video && <VideoPlayer userId={user.id} key={`${video.source_id}:${video.relative_path}`} sourceId={video.source_id} sourceName={video.source_name} file={video} mini={miniVideo} onRestore={() => { setMiniVideo(false); window.history.pushState(null, '', mediaLink(video.source_id, video.relative_path)) }} onDismiss={() => setVideo(null)} onNext={item => { void openMedia(item, [item]) }} onClose={() => { setMiniVideo(true); window.history.pushState(null, '', '/#discover') }}/>}
+  <div className="app-shell" style={video && !miniVideo ? {display:'none'} : undefined}>
     <aside className={`sidebar ${menuOpen ? 'open' : ''}`}>
       <a className="brand" href="#for-you" onClick={event => { event.preventDefault(); navigate('For you') }}><img className="brand-logo" src="/logo.svg" alt="" aria-hidden="true" width="38" height="38" /><span>grimoire<span className="brand-dot">.</span></span></a>
       <div className="profile"><div className="avatar">{user.username[0].toUpperCase()}</div><div className="profile-copy"><strong>{user.username}</strong><span>{user.is_admin ? 'Administrator' : 'Personal account'}</span></div><ChevronDown size={15} /></div>
@@ -313,7 +314,7 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
     {playback && <MusicPlayer tracks={playback.tracks} index={playback.index} busy={actionBusy} onIndex={index => { void openMedia(playback.tracks[index], playback.tracks) }} onClose={() => setPlayback(null)}/>}
     {connectOpen && user.is_admin && <ConnectDirectory path={directoryPath} error={connectError} busy={connecting} onPath={setDirectoryPath} onClose={() => setConnectOpen(false)} onSubmit={connectDirectory}/>}
 
-  </div>
+  </div></>
 }
 
 export default function App() {
