@@ -26,6 +26,7 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct Config {
     pub origin: String,
+    pub additional_origins: Vec<String>,
     pub insecure_local: bool,
     pub dummy_hash: String,
 }
@@ -41,9 +42,34 @@ impl Config {
         let origin = std::env::var("GRIMOIRE_APP_ORIGIN")
             .map_err(|_| "Set GRIMOIRE_APP_ORIGIN to the frontend origin.")?;
         let insecure_local = std::env::var("GRIMOIRE_DEV_INSECURE_HTTP").as_deref() == Ok("true");
-        Self::parse(origin, insecure_local, dummy_hash)
+        let allow_lan = std::env::var("GRIMOIRE_DEV_ALLOW_LAN_HTTP").as_deref() == Ok("true");
+        let mut config = Self::parse_with_lan(origin, insecure_local, allow_lan, dummy_hash)?;
+        let additional =
+            std::env::var("GRIMOIRE_ADDITIONAL_APP_ORIGINS").unwrap_or_else(|_| "[]".into());
+        let origins: Vec<String> = serde_json::from_str(&additional).map_err(|_| {
+            "GRIMOIRE_ADDITIONAL_APP_ORIGINS must be a JSON array of exact origins."
+        })?;
+        if origins.len() > 16 {
+            return Err("At most 16 additional origins are supported.".into());
+        }
+        for origin in origins {
+            Self::parse_with_lan(origin.clone(), insecure_local, allow_lan, String::new())?;
+            if !config.additional_origins.contains(&origin) {
+                config.additional_origins.push(origin);
+            }
+        }
+        Ok(config)
     }
+    #[cfg(test)]
     fn parse(origin: String, insecure_local: bool, dummy_hash: String) -> Result<Self, String> {
+        Self::parse_with_lan(origin, insecure_local, false, dummy_hash)
+    }
+    fn parse_with_lan(
+        origin: String,
+        insecure_local: bool,
+        allow_lan: bool,
+        dummy_hash: String,
+    ) -> Result<Self, String> {
         // An origin has no path, query, credentials, or fragment.
         let uri: axum::http::Uri = origin.parse().map_err(|_| "Invalid application origin.")?;
         let scheme = uri.scheme_str().ok_or("Origin must include a scheme.")?;
@@ -58,10 +84,29 @@ impl Config {
             );
         }
         if insecure_local {
-            if scheme != "http" || !matches!(authority.host(), "localhost" | "127.0.0.1" | "[::1]")
-            {
+            let host = authority.host().trim_matches(['[', ']']);
+            let loopback = host == "localhost"
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback());
+            let private_lan = host.parse::<std::net::IpAddr>().is_ok_and(|ip| match ip {
+                std::net::IpAddr::V4(ip) => ip.is_private(),
+                std::net::IpAddr::V6(ip) => ip.is_unique_local(),
+            });
+            let mdns = host.ends_with(".local")
+                && host.len() <= 253
+                && host.split('.').all(|label| {
+                    !label.is_empty()
+                        && label.len() <= 63
+                        && !label.starts_with('-')
+                        && !label.ends_with('-')
+                        && label
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                });
+            if scheme != "http" || !(loopback || allow_lan && (private_lan || mdns)) {
                 return Err(
-                    "Insecure HTTP is allowed only for explicit loopback development origins."
+                    "HTTP requires a loopback origin, or a private LAN IP/.local hostname with GRIMOIRE_DEV_ALLOW_LAN_HTTP=true."
                         .into(),
                 );
             }
@@ -72,6 +117,7 @@ impl Config {
         }
         Ok(Self {
             origin,
+            additional_origins: Vec::new(),
             insecure_local,
             dummy_hash,
         })
@@ -228,7 +274,19 @@ pub async fn origin_and_limits(
         *request.method(),
         Method::GET | Method::HEAD | Method::OPTIONS
     ) {
-        require_origin(request.headers(), &state.config.origin)?;
+        let expected = request
+            .headers()
+            .get("origin")
+            .and_then(|v| v.to_str().ok())
+            .filter(|origin| {
+                state
+                    .config
+                    .additional_origins
+                    .iter()
+                    .any(|allowed| allowed == origin)
+            })
+            .unwrap_or(&state.config.origin);
+        require_origin(request.headers(), expected)?;
     }
     if matches!(
         request.uri().path(),
@@ -510,6 +568,7 @@ mod tests {
             .is_err());
         let config = Config {
             origin: "https://grimoire.test".into(),
+            additional_origins: Vec::new(),
             insecure_local: false,
             dummy_hash: hash,
         };
@@ -532,6 +591,29 @@ mod tests {
             "http://localhost:5173?query=1",
         ] {
             assert!(Config::parse(origin.into(), true, String::new()).is_err());
+        }
+    }
+
+    #[test]
+    fn private_lan_http_requires_explicit_opt_in() {
+        let parse = |origin: &str, insecure, lan| {
+            Config::parse_with_lan(origin.into(), insecure, lan, String::new())
+        };
+        assert!(parse("http://192.168.1.50:5173", true, false).is_err());
+        assert!(parse("http://192.168.1.50:5173", false, true).is_err());
+        assert!(parse("http://192.168.1.50:5173", true, true).is_ok());
+        assert!(parse("http://[fd00::50]:5173", true, true).is_ok());
+        assert!(parse("http://mechamaru.local:5173", true, true).is_ok());
+        assert!(parse("http://mechamaru.local:5173", true, false).is_err());
+        assert!(parse("http://bad..local:5173", true, true).is_err());
+        for origin in [
+            "http://8.8.8.8:5173",
+            "http://example.com:5173",
+            "http://192.168.1.50:5173/path",
+            "http://user@192.168.1.50:5173",
+            "http://192.168.1.50:5173/",
+        ] {
+            assert!(parse(origin, true, true).is_err(), "{origin}");
         }
     }
 

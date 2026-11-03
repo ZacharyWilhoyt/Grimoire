@@ -1116,6 +1116,7 @@ mod scan_tests {
         let state = AppState {
             db: pool.clone(),
             config: Arc::new(auth::Config {
+                additional_origins: Vec::new(),
                 origin: "http://localhost:5173".into(),
                 insecure_local: true,
                 dummy_hash: "unused".into(),

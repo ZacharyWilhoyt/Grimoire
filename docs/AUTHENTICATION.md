@@ -213,3 +213,30 @@ sessions, including for administrators. It filters expired/idle sessions and
 returns only `created_at`, `last_seen` (epoch seconds) and `is_current`. No raw
 session tokens, hashes, CSRF values, or other accounts' session data are returned.
 The response is private/no-store. This feature adds no device or IP tracking.
+
+## Testing from another device on your private LAN
+
+The browser's complete origin (scheme, host/IP, and port) must be explicitly allowed.
+For example, if the Grimoire computer's LAN address is `192.168.1.50` and you open
+`http://192.168.1.50:5173` on a phone, keep the localhost settings in `backend/.env`
+and add:
+
+```dotenv
+GRIMOIRE_ADDITIONAL_APP_ORIGINS='["http://192.168.1.50:5173","http://mechamaru.local:5173"]'
+GRIMOIRE_DEV_ALLOW_LAN_HTTP=true
+```
+
+This also requires the existing `GRIMOIRE_DEV_INSECURE_HTTP=true` development flag.
+Restart the API, and run Vite with `npm run dev -- --host 0.0.0.0` from `web/`.
+Only exact listed origins pass the Origin check; do not use a trailing slash or
+`0.0.0.0` in the browser URL. Each hostname/IP has separate cookies, so sign in again
+when changing between localhost and the LAN IP. Same-origin `/api` proxying and
+CSRF tokens remain required. Up to 16 additional origins are supported.
+
+The LAN HTTP exception accepts private IPv4, unique-local IPv6 literals, and explicitly listed `.local`
+mDNS hostnames. It does not accept public IPs or other DNS names. HTTP exposes credentials and
+session traffic to the network, so use it only for trusted development testing.
+For internet access, use an HTTPS reverse proxy, set `GRIMOIRE_APP_ORIGIN` to the
+exact public HTTPS origin, and remove both HTTP development flags. Additional
+HTTPS origins can be explicitly listed without enabling either development flag.
+Never infer allowed origins from untrusted Host or forwarded headers.

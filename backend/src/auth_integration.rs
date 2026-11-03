@@ -14,6 +14,7 @@ fn state(pool: PgPool) -> AppState {
     AppState {
         db: pool,
         config: Arc::new(auth::Config {
+            additional_origins: Vec::new(),
             origin: ORIGIN.into(),
             insecure_local: true,
             dummy_hash: auth::hash_password("a dummy password used for tests")
@@ -4580,4 +4581,66 @@ async fn group_membership_copies_identity_preserves_item_fields_and_requires_own
     .unwrap();
     assert_eq!(audit, 1);
     fs::remove_dir_all(root).unwrap();
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn additional_origins_are_explicit_and_do_not_bypass_csrf(pool: PgPool) {
+    let mut state = state(pool);
+    const LAN: &str = "http://mechamaru.local:5173";
+    Arc::make_mut(&mut state.config)
+        .additional_origins
+        .push(LAN.into());
+    for origin in [
+        None,
+        Some("http://192.168.1.51:5173"),
+        Some("http://192.168.1.50:9999"),
+        Some("https://attacker.test"),
+    ] {
+        assert_eq!(
+            request(
+                &state,
+                Method::POST,
+                "/api/auth/login",
+                None,
+                None,
+                origin,
+                Some(json!({"username":"nobody","password":"wrong password"}))
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+    for origin in [ORIGIN, LAN] {
+        assert_eq!(
+            request(
+                &state,
+                Method::POST,
+                "/api/auth/login",
+                None,
+                None,
+                Some(origin),
+                Some(json!({"username":"nobody","password":"wrong password"}))
+            )
+            .await
+            .status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    let (cookie, _, _) = register_user(&state, "origin_test_user").await;
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            "/api/auth/logout",
+            Some(&cookie),
+            None,
+            Some(LAN),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
 }
