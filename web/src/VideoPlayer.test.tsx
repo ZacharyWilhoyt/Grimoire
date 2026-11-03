@@ -143,3 +143,38 @@ it('offers next episode and advances when playback ends', async () => {
     expect(advance).toHaveBeenCalledExactlyOnceWith(next)
   } finally {await act(async()=>root.unmount());fetch.mockRestore();vi.unstubAllGlobals()}
 })
+
+it('supports video shortcuts while ignoring editable fields',async()=>{
+ vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true)
+ const host=document.createElement('div'),root=createRoot(host)
+ document.body.append(host)
+ try{
+  await act(async()=>root.render(<VideoPlayer sourceId="s" sourceName="Test" file={{name:'Film',relative_path:'film.mkv'}} onClose={()=>{}}/>))
+  const video=host.querySelector('video')!
+  Object.defineProperty(video,'duration',{configurable:true,value:100})
+  await act(async()=>video.dispatchEvent(new Event('durationchange')))
+  await act(async()=>document.dispatchEvent(new KeyboardEvent('keydown',{key:'l',bubbles:true})))
+  expect(video.currentTime).toBe(10)
+  await act(async()=>document.dispatchEvent(new KeyboardEvent('keydown',{key:'5',bubbles:true})))
+  expect(video.currentTime).toBe(50)
+  await act(async()=>document.dispatchEvent(new KeyboardEvent('keydown',{key:'m',bubbles:true})))
+  expect(video.muted).toBe(true)
+  const input=document.createElement('input');host.append(input)
+  await act(async()=>input.dispatchEvent(new KeyboardEvent('keydown',{key:'l',bubbles:true})))
+  expect(video.currentTime).toBe(50)
+ }finally{await act(async()=>root.unmount());host.remove();vi.unstubAllGlobals()}
+})
+
+it('fades mini-player controls 2.5 seconds after interaction',async()=>{
+ vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true);vi.useFakeTimers()
+ const host=document.createElement('div'),root=createRoot(host)
+ try{
+  await act(async()=>root.render(<VideoPlayer sourceId="s" sourceName="Test" file={{name:'Film',relative_path:'film.mkv'}} onClose={()=>{}} mini/>))
+  const controls=host.querySelector('.mini-controls')!
+  expect(controls.classList.contains('mini-visible')).toBe(false)
+  await act(async()=>controls.dispatchEvent(new Event('pointermove',{bubbles:true})))
+  expect(controls.classList.contains('mini-visible')).toBe(true)
+  await act(async()=>vi.advanceTimersByTime(2500))
+  expect(controls.classList.contains('mini-visible')).toBe(false)
+ }finally{await act(async()=>root.unmount());vi.useRealTimers();vi.unstubAllGlobals()}
+})

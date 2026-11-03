@@ -133,3 +133,45 @@ browsing the library. The same media element and subtitle renderer stay mounted.
 The mini-player has restore (top left), stop (top right), play/pause (center), and
 progress along the bottom. Starting music, opening another media item, signing out,
 or losing source access closes the old video; it does not survive a page reload.
+
+## Keyboard shortcuts and mini-player controls
+
+Mini-player buttons appear on pointer/focus activity and fade after 2.5 seconds
+of inactivity; the progress bar remains visible and keyboard focus remains usable.
+Video shortcuts ignore text fields and selects: F fullscreen, K/Space play/pause,
+J/L seek ten seconds, Left/Right seek five seconds, Up/Down adjust volume, M mute,
+0–9 seek to a percentage, comma/period step a frame while paused, < / > change
+speed, Shift+N next episode, C subtitle options, and T cozy view.
+
+## Reading layouts and profiles
+
+The reader keeps its margin controls fixed while only the content viewport scrolls.
+Double click content (or use the margin toggle) for cozy view. Left/right edge clicks
+navigate even when a page fills the viewport; Manga defaults to right-to-left, with
+an explicit reading-direction setting. Shift + wheel zooms from 25–400%; drag to pan.
+
+CBZ supports original size, fit width, fit height, and fit both, plus single page,
+double page, and long strip. Double-page layout pairs two confirmed portrait images;
+images wider than 1.2 times their height are treated as full spreads and shown alone.
+This is a dimension heuristic, not semantic detection of artwork gutters. Single page
+is available for ambiguous scans. Long strip loads resources near the viewport and
+releases rendered resources farther away while retaining placeholder heights.
+
+EPUB always uses scrolling chapters with adjustable font size/theme. Chapters retain
+sanitization, a restrictive CSP, and an iframe sandbox that forbids scripts. The sandbox
+allows same-origin access solely for parent-controlled sizing and input forwarding;
+book scripts remain blocked by both sandbox and CSP. Chapter iframes expand to their
+content height so scrolling belongs to the reader viewport.
+
+Novel, Comic, Manga, and Manhua are user-selectable profiles. Fit, layout, zoom,
+font size, theme, and direction are saved per account/profile in browser storage;
+each book's chosen profile is saved separately, and new books use the last selected
+profile for their format. Manhua defaults to fit-width long
+strip, Manga to right-to-left. Settings do not synchronize between devices.
+
+At the end of a volume, Next or scrolling to the end of long strip opens the next
+entry from the permission-filtered series. No access is granted by adjacency. If
+music is playing when a book opens, it pauses while a prompt at the bottom of related
+content asks whether to continue listening. Choosing Continue preserves the existing
+audio element and queue; Stop closes it. Continuing the music queue leaves the reader
+open. A compact prompt is shown on narrow displays.

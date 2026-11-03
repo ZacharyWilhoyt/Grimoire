@@ -1,34 +1,31 @@
 import MetadataCredits from './MetadataCredits'
 import WatchSidebar from './WatchSidebar'
-import { epubChapters, type Chapter } from './epubChapters'
-import { ProgressSession } from './progress'
-import { displayTitle, type MetadataView } from './media'
-import { useEffect, useRef, useState } from 'react'
-import { sanitizeChapter, chapterDocument, type ReadingTheme } from './epubContent'
-import { ChevronLeft, ChevronRight, ArrowLeft } from 'lucide-react'
-import { archivePath, isImage, openArchive, parseXml, type BookArchive } from './bookArchive'
-
-type Props = { sourceId: string; sourceName: string; file: { metadata?: MetadataView | null; name: string; relative_path: string; extension: string }; onClose: () => void }
-
-export default function BookReader({ sourceId, sourceName, file, onClose }: Props) {
-  const progress = useRef<ProgressSession | null>(null)
-  const [progressReady, setProgressReady] = useState(false)
-  const [progressError, setProgressError] = useState('')
-  const [archive, setArchive] = useState<BookArchive | null>(null)
-  const [chapters, setChapters] = useState<Chapter[]>([])
-  const [renderedIndex, setRenderedIndex] = useState(-1)
-  const [index, setIndex] = useState(0)
-  const [zoom, setZoom] = useState(100)
-  const [fontSize, setFontSize] = useState(19)
-  const [theme, setTheme] = useState<ReadingTheme>('paper')
-  const [content, setContent] = useState('')
-  const [image, setImage] = useState('')
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(true)
-  const comic = file.extension.toLowerCase() === 'cbz'
-
+import {epubChapters,type Chapter} from './epubChapters'
+import {ProgressSession} from './progress'
+import {displayTitle,type MetadataView,type MediaItem} from './media'
+import {useCallback,useEffect,useRef,useState} from 'react'
+import {ArrowLeft,ChevronLeft,ChevronRight,PanelRightClose} from 'lucide-react'
+import {isImage,openArchive,parseXml,type BookArchive} from './bookArchive'
+import {readSettings,isSpread,spreadMembers,type ReaderKind} from './readerSettings'
+import ReaderPage from './ReaderPage'
+import {apiFetch} from './api'
+import type {LinkContext} from './mediaLinks'
+type Props={userId?:string;sourceId:string;sourceName:string;file:{metadata?:MetadataView|null;name:string;relative_path:string;extension:string};onClose:()=>void;onNext?:(item:MediaItem)=>void;musicPrompt?:React.ReactNode}
+export default function BookReader({userId,sourceId,sourceName,file,onClose,onNext,musicPrompt}:Props){
+ const comic=file.extension.toLowerCase()==='cbz'
+ const storage=`grimoire:reader:v1:${userId??'local'}`
+ const [kind,setKind]=useState<ReaderKind>(()=>{try{const v=localStorage.getItem(`${storage}:kind:${sourceId}:${file.relative_path}`)??localStorage.getItem(`${storage}:last:${comic?'cbz':'epub'}`);return ['Novel','Comic','Manga','Manhua'].includes(v??'')?v as ReaderKind:comic?'Comic':'Novel'}catch{return comic?'Comic':'Novel'}})
+ const [settings,setSettings]=useState(()=>readSettings(storage,kind))
+ const [cozy,setCozy]=useState(false),[archive,setArchive]=useState<BookArchive|null>(null),[chapters,setChapters]=useState<Chapter[]>([]),[index,setIndex]=useState(0),[loading,setLoading]=useState(true),[error,setError]=useState(''),[progressError,setProgressError]=useState('')
+ const [wide,setWide]=useState<Record<number,boolean>>({}),[next,setNext]=useState<MediaItem|null>(null)
+ const progress=useRef<ProgressSession|null>(null),viewport=useRef<HTMLDivElement>(null),ready=useRef(new Set<number>()),advanceLock=useRef(false)
+ const marginTimer=useRef<ReturnType<typeof setTimeout>|undefined>(undefined)
+ useEffect(()=>()=>clearTimeout(marginTimer.current),[])
+ const drag=useRef<{x:number;y:number;left:number;top:number;moved:boolean}|null>(null),suppressClick=useRef(false)
+ const strip=!comic||settings.layout==='strip'
+ useEffect(()=>{try{localStorage.setItem(`${storage}:${kind}`,JSON.stringify(settings));localStorage.setItem(`${storage}:kind:${sourceId}:${file.relative_path}`,kind);localStorage.setItem(`${storage}:last:${comic?'cbz':'epub'}`,kind)}catch{/* Storage is optional. */}},[storage,kind,settings,sourceId,file.relative_path])
   useEffect(() => {
-    setProgressReady(false); setProgressError(''); setArchive(null); setChapters([]); setLoading(true); setRenderedIndex(-1)
+    setProgressError(''); setArchive(null); setChapters([]); setLoading(true)
     const controller = new AbortController()
     let opened: BookArchive | undefined
     const load = async () => {
@@ -52,64 +49,87 @@ export default function BookReader({ sourceId, sourceName, file, onClose }: Prop
       if (!controller.signal.aborted) {
         const located = saved?.locator ? pages.findIndex(page => page.path === saved.locator) : -1
         setIndex(located >= 0 ? located : Math.min(Math.max(0, Math.floor(saved?.position ?? 0)), pages.length - 1))
-        setArchive(opened); setChapters(pages); setProgressReady(true)
+        setArchive(opened); setChapters(pages); setLoading(false)
       }
     }
     load().catch(error => { if (!controller.signal.aborted) { setError(error instanceof Error ? error.message : 'Could not open this book.'); setLoading(false) } })
     return () => { controller.abort(); void opened?.close().catch(() => {}) }
   }, [sourceId, file.relative_path, comic])
-
-  useEffect(() => {
-    if (!archive || !chapters[index]) return
-    let cancelled = false
-    const urls: string[] = []
-    const objectUrl = (blob: Blob) => { const url = URL.createObjectURL(blob); urls.push(url); return url }
-    setLoading(true); setRenderedIndex(-1); setError(''); setImage(''); setContent('')
-    const load = async () => {
-      const chapter = chapters[index]
-      const blob = await archive.read(chapter.path)
-      if (cancelled) return
-      if (comic) { setImage(objectUrl(blob)); return }
-      const xml = parseXml(await blob.text())
-      const body = xml.querySelector('body')
-      if (!body) throw new Error('This chapter has no readable content.')
-      const fragment = sanitizeChapter(new XMLSerializer().serializeToString(body))
-      for (const image of fragment.querySelectorAll('img')) {
-        const reference = image.getAttribute('src')
-        image.removeAttribute('src')
-        if (!reference) continue
-        try {
-          const path = archivePath(chapter.path, reference)
-          if (isImage(path) && archive.entries.has(path)) {
-            const imageBlob = await archive.read(path)
-            if (cancelled) return
-            image.src = objectUrl(imageBlob)
-          }
-        } catch { /* Omit external or missing images. */ }
-      }
-      for (const link of fragment.querySelectorAll('a')) link.removeAttribute('href')
-      const wrapper = document.createElement('div'); wrapper.append(fragment)
-      if (!cancelled) { setContent(wrapper.innerHTML); setRenderedIndex(index) }
-    }
-    load().catch(error => { if (!cancelled) setError(error instanceof Error ? error.message : 'Could not read this page.') }).finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true; urls.forEach(URL.revokeObjectURL) }
-  }, [archive, chapters, index, comic])
-
-  useEffect(() => {
-    if (progressReady && renderedIndex === index && !loading && !error && chapters[index]) progress.current?.save({ position: index, total: chapters.length, locator: chapters[index].path })
-  }, [index, renderedIndex, chapters, progressReady, loading, error])
-
-  const srcDocument = chapterDocument(content, fontSize, theme)
-  return <section className="watch-page book-watch" aria-label="Book reading page">
-    <main className="watch-main">
-      <header className="watch-header"><button className="watch-back" aria-label="Close reader" onClick={onClose}><ArrowLeft size={23}/> Back</button><div><h1 id="reader-title">{displayTitle(file)}</h1><span>{sourceName} · {comic ? 'CBZ' : 'EPUB'}</span></div></header>
-      <div className="reader-toolbar"><button disabled={index === 0 || loading} onClick={() => setIndex(index - 1)} aria-label="Previous"><ChevronLeft size={18}/></button><label>{comic ? 'Page' : 'Chapter'} <select aria-label={comic ? 'Page' : 'Chapter'} value={index} disabled={!chapters.length || loading} onChange={event => setIndex(Number(event.target.value))}>{chapters.map((chapter, i) => <option key={chapter.path} value={i}>{comic ? i + 1 : chapter.label}</option>)}</select> / {chapters.length}</label><button disabled={index >= chapters.length - 1 || loading} onClick={() => setIndex(index + 1)} aria-label="Next"><ChevronRight size={18}/></button>{comic && <label>Page width <input aria-label="Page width" type="range" min="50" max="200" step="10" value={zoom} onChange={event => setZoom(Number(event.target.value))}/>{zoom}%</label>}{!comic && <><label>Text size <input aria-label="Text size" type="range" min="14" max="30" value={fontSize} onChange={event => setFontSize(Number(event.target.value))}/></label><label>Theme <select aria-label="Reading theme" value={theme} onChange={event => setTheme(event.target.value === 'night' ? 'night' : 'paper')}><option value="paper">Paper</option><option value="night">Night</option></select></label></>}</div>
-      {loading && <p className="source-message" role="status">Opening book content…</p>}
-      {progressError && <p className="video-error" role="status">{progressError}</p>}
-      {error && <p className="video-error" role="alert">{error}</p>}
-      {!loading && !error && (comic ? <div className="comic-page" key={index}><img style={{ width: `${zoom}%`, maxWidth: 'none' }} src={image} alt={`Page ${index + 1}`} onLoad={() => setRenderedIndex(index)} onError={() => setError('This page image is damaged or unsupported by your browser.')}/></div> : <iframe key={index} title={`Book chapter ${index + 1}`} className="epub-page" sandbox="" referrerPolicy="no-referrer" srcDoc={srcDocument}/>)}
-      <MetadataCredits credits={file.metadata?.credits ?? []}/>
-    </main>
-    <WatchSidebar sourceId={sourceId} path={file.relative_path}/>
-  </section>
+ useEffect(()=>{
+   const abort=new AbortController()
+   void apiFetch(`/api/media/link?${new URLSearchParams({source_id:sourceId,path:file.relative_path})}`,{signal:abort.signal}).then(async response=>{
+     if(!response.ok)return
+     const context=await response.json() as LinkContext
+     const current=context.members.findIndex(item=>item.relative_path===file.relative_path)
+     if(!abort.signal.aborted)setNext(current>=0?context.members[current+1]??null:null)
+   }).catch(()=>{})
+   return()=>abort.abort()
+ },[sourceId,file.relative_path])
+ const save=useCallback((page:number)=>{if(ready.current.has(page)&&chapters[page])progress.current?.save({position:page,total:chapters.length,locator:chapters[page].path})},[chapters])
+ const pageReady=useCallback((page:number,width:number,height:number)=>{
+   ready.current.add(page)
+   if(comic)setWide(old=>old[page]===isSpread(width,height)?old:{...old,[page]:isSpread(width,height)})
+   if(page===index)save(page)
+ },[comic,index,save])
+ const visible=useCallback((page:number)=>{setIndex(page);save(page)},[save])
+ const members=spreadMembers(index,chapters.length,wide,settings.layout)
+ // Decode only the next candidate to decide whether two portrait pages can pair.
+ useEffect(()=>{
+   if(!archive||!comic||settings.layout!=='double'||!chapters[index+1]||wide[index+1]!==undefined)return
+   let cancelled=false,url:string|undefined
+   void archive.read(chapters[index+1].path).then(blob=>{
+     if(cancelled)return
+     url=URL.createObjectURL(blob);const image=new Image()
+     image.onload=()=>{if(!cancelled)setWide(old=>({...old,[index+1]:isSpread(image.naturalWidth,image.naturalHeight)}));if(url)URL.revokeObjectURL(url)}
+     image.onerror=()=>{if(url)URL.revokeObjectURL(url)};image.src=url
+   }).catch(()=>{})
+   return()=>{cancelled=true;if(url)URL.revokeObjectURL(url)}
+ },[archive,chapters,index,comic,settings.layout,wide])
+ const advance=()=>{
+   if(index+members.length<chapters.length){setIndex(index+members.length);if(viewport.current)viewport.current.scrollTop=0}
+   else if(next&&onNext&&!advanceLock.current){advanceLock.current=true;onNext(next)}
+ }
+ const previous=()=>{
+   let previous=index-1
+   if(settings.layout==='double'&&previous>0&&wide[previous]===false&&wide[previous-1]===false)previous--
+   setIndex(Math.max(0,previous));if(viewport.current)viewport.current.scrollTop=0
+ }
+ const go=(page:number)=>{setIndex(page);if(strip)viewport.current?.querySelector(`[data-page="${page}"]`)?.scrollIntoView({block:'start'});else if(viewport.current)viewport.current.scrollTop=0}
+ useEffect(()=>{if(strip&&!loading)requestAnimationFrame(()=>viewport.current?.querySelector(`[data-page="${index}"]`)?.scrollIntoView?.({block:'start'}))},[loading,strip])
+ useEffect(()=>{
+   const view=viewport.current;if(!view)return
+   const wheel=(event:WheelEvent)=>{if(event.shiftKey){event.preventDefault();setSettings(old=>({...old,zoom:Math.max(25,Math.min(400,old.zoom+(event.deltaY<0?10:-10)))}))}}
+   view.addEventListener('wheel',wheel,{passive:false});return()=>view.removeEventListener('wheel',wheel)
+ },[])
+ const toggleCozy=useCallback(()=>{clearTimeout(marginTimer.current);setCozy(value=>!value)},[])
+ return <section className={`watch-page book-watch reader-revamp ${cozy?'watch-cozy':''}`} aria-label="Book reading page">
+ <main className="watch-main">
+ <header className="watch-header"><button className="watch-back" aria-label="Close reader" onClick={onClose}><ArrowLeft/> Back</button><div><h1>{displayTitle(file)}</h1><span>{sourceName}</span></div></header>
+ <div className="reader-layout">
+ <aside className="reader-margin">
+ <button aria-label="Previous" disabled={loading||index===0} onClick={previous}><ChevronLeft/></button>
+ <label>{comic?'Page':'Chapter'}<select aria-label={comic?'Page':'Chapter'} value={index} disabled={loading} onChange={e=>go(Number(e.target.value))}>{chapters.map((chapter,i)=><option key={chapter.path} value={i}>{comic?i+1:chapter.label}</option>)}</select> / {chapters.length}</label>
+ <button aria-label="Next" disabled={loading||index>=chapters.length-1&&!next} onClick={()=>strip&&index<chapters.length-1?go(index+1):advance()}><ChevronRight/></button>
+ <details className="reader-settings"><summary>Reading settings</summary>
+ <label>Content type<select aria-label="Content type" value={kind} onChange={e=>{const value=e.target.value as ReaderKind;setKind(value);setSettings(readSettings(storage,value))}}>{['Novel','Comic','Manga','Manhua'].map(value=><option key={value}>{value}</option>)}</select></label>
+ {comic&&<><label>Fit<select aria-label="Page fit" value={settings.fit} onChange={e=>setSettings({...settings,fit:e.target.value as typeof settings.fit})}><option value="original">Original size</option><option value="width">Fit width</option><option value="height">Fit height</option><option value="both">Fit both</option></select></label><label>Layout<select aria-label="Page layout" value={settings.layout} onChange={e=>setSettings({...settings,layout:e.target.value as typeof settings.layout})}><option value="single">Single page</option><option value="double">Double page</option><option value="strip">Long strip</option></select></label><label>Reading direction<select aria-label="Reading direction" value={settings.direction} onChange={e=>setSettings({...settings,direction:e.target.value as 'ltr'|'rtl'})}><option value="ltr">Left to right</option><option value="rtl">Right to left</option></select></label></>}
+ <label>Zoom<input aria-label="Reader zoom" type="range" min={25} max={400} step={5} value={settings.zoom} onChange={e=>setSettings({...settings,zoom:Number(e.target.value)})}/>{settings.zoom}%</label>
+ {!comic&&<><label>Text size<input aria-label="Text size" type="range" min={14} max={30} value={settings.fontSize} onChange={e=>setSettings({...settings,fontSize:Number(e.target.value)})}/></label><label>Theme<select aria-label="Reading theme" value={settings.theme} onChange={e=>setSettings({...settings,theme:e.target.value as 'paper'|'night'})}><option value="paper">Paper</option><option value="night">Night</option></select></label></>}
+ <MetadataCredits credits={file.metadata?.credits??[]}/>
+ <p>Double click content for cozy view. Shift + scroll to zoom; drag to pan.</p>
+ </details><button aria-label="Cozy reading view" aria-pressed={cozy} onClick={toggleCozy}><PanelRightClose/></button>
+ </aside>
+ <div ref={viewport} className={`reader-viewport fit-${settings.fit} ${strip?'reader-strip':'reader-paged'}`} tabIndex={0} aria-label="Reading content"
+ onDoubleClick={toggleCozy}
+ onPointerDown={e=>{if(e.button!==0||e.target instanceof Element&&e.target.closest('button,a'))return;drag.current={x:e.clientX,y:e.clientY,left:e.currentTarget.scrollLeft,top:e.currentTarget.scrollTop,moved:false}}}
+ onPointerMove={e=>{const start=drag.current;if(!start)return;if(Math.abs(e.clientX-start.x)+Math.abs(e.clientY-start.y)>5){start.moved=true;if(e.isTrusted)e.currentTarget.setPointerCapture?.(e.pointerId);e.currentTarget.scrollLeft=start.left-(e.clientX-start.x);e.currentTarget.scrollTop=start.top-(e.clientY-start.y)}}}
+ onPointerUp={()=>{suppressClick.current=drag.current?.moved??false;drag.current=null}}
+ onPointerCancel={()=>{drag.current=null}}
+ onClick={e=>{if(suppressClick.current){suppressClick.current=false;return}if(e.target instanceof Element&&e.target.closest('button,a'))return;const rect=e.currentTarget.getBoundingClientRect(),x=e.clientX-rect.left,margin=Math.max(40,rect.width*.12);if(x<margin||x>rect.width-margin){clearTimeout(marginTimer.current);const forward=(x>rect.width-margin)===(settings.direction==='ltr');marginTimer.current=setTimeout(()=>{if(strip){if(forward&&index<chapters.length-1)go(index+1);else if(forward)advance();else go(Math.max(0,index-1))}else if(forward)advance();else previous()},220)}}}
+ onScroll={e=>{const v=e.currentTarget;if(strip&&v.scrollTop>20&&v.scrollTop+v.clientHeight>=v.scrollHeight-3&&ready.current.has(chapters.length-1)&&next&&!advanceLock.current){advanceLock.current=true;onNext?.(next)}}}>
+ {loading&&<p role="status">Opening book content…</p>}{error&&<p role="alert">{error}</p>}{progressError&&<p role="status">{progressError}</p>}
+ {archive&&!loading&&!error&&<div className="reader-surface" style={{zoom:settings.zoom/100,direction:!strip&&settings.direction==='rtl'?'rtl':'ltr'}}>{(strip?chapters.map((_,i)=>i):members).map(page=><ReaderPage key={chapters[page].path} archive={archive} path={chapters[page].path} index={page} comic={comic} settings={settings} onReady={pageReady} onVisible={strip?visible:undefined} onCozy={toggleCozy} lazy={strip&&page!==index}/>)}</div>}
+ </div></div></main>
+ {!cozy&&<div className="reader-related"><WatchSidebar sourceId={sourceId} path={file.relative_path}/>{musicPrompt}</div>}
+ </section>
 }

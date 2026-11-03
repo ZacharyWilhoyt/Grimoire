@@ -42,6 +42,31 @@ export default function VideoToolbar(p: Props) {
     document.addEventListener('keydown',key,true);document.addEventListener('pointerdown',outside)
     return()=>{document.removeEventListener('keydown',key,true);document.removeEventListener('pointerdown',outside)}
   },[panel])
+  useEffect(() => {
+    const key = (event: KeyboardEvent) => {
+      const target = event.target
+      if (event.altKey || event.ctrlKey || event.metaKey || target instanceof Element && target.closest('input,select,textarea,[contenteditable="true"],[role="dialog"]')) return
+      if (event.key === ' ' && target instanceof Element && target.closest('button,a')) return
+      const video = p.video
+      if (!video) return
+      const k = event.key.toLowerCase()
+      if (!['f','k',' ','j','l','m','arrowleft','arrowright','arrowup','arrowdown',',','.','c','t','<','>','n','0','1','2','3','4','5','6','7','8','9'].includes(k)) return
+      event.preventDefault()
+      if (k === 'f') p.onFullscreen()
+      else if (k === 'k' || k === ' ') void play()
+      else if (k === 'm') video.muted = !video.muted
+      else if (k === 'c') setPanel(value => value === 'subtitles' ? '' : 'subtitles')
+      else if (k === 't') p.onCozy()
+      else if (k === 'n' && event.shiftKey) p.onNext?.()
+      else if (k === 'arrowup' || k === 'arrowdown') {video.volume = Math.max(0,Math.min(1,video.volume + (k==='arrowup'?.05:-.05)));video.muted=false}
+      else if (k === '<' || k === '>') setSpeed(value=>Math.max(.25,Math.min(2,value+(k==='>'?.25:-.25))))
+      else if ((k === ',' || k === '.') && video.paused) seek(video.currentTime+(k==='.'?1/30:-1/30))
+      else if (/^[0-9]$/.test(k)) seek(duration*Number(k)/10)
+      else if (['j','l','arrowleft','arrowright'].includes(k)) seek(video.currentTime+(['j','arrowleft'].includes(k)?-1:1)*(['j','l'].includes(k)?10:5))
+    }
+    document.addEventListener('keydown',key)
+    return () => document.removeEventListener('keydown',key)
+  },[p.video,p.onFullscreen,p.onNext,p.onCozy,duration])
   const buttons = [['episodes','Episodes preview',ListVideo],['subtitles','Subtitle options',Captions],['audio','Audio options',AudioLines],['settings','Settings',Settings]] as const
   return <div className={`video-toolbar ${visible?'':'toolbar-hidden'}`} ref={root}>
     <div className="video-option-panel" hidden={panel!=='episodes'}><header>Episodes preview<button aria-label="Close episodes preview" onClick={()=>setPanel('')}><X size={18}/></button></header><WatchSidebar sourceId={p.sourceId} path={p.path} preview/></div>

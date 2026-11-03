@@ -75,14 +75,23 @@ function Player({ sourceId, sourceName, file, onClose, mini, onRestore, onDismis
     ;['play','pause','timeupdate'].forEach(e=>videoElement.addEventListener(e,update))
     return () => {videoElement.removeEventListener('ended',ended);['play','pause','timeupdate'].forEach(e=>videoElement.removeEventListener(e,update))}
   },[videoElement,next,onNext])
+  const [miniVisible, setMiniVisible] = useState(false)
+  const miniTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const revealMini = () => {
+    setMiniVisible(true); clearTimeout(miniTimer.current)
+    miniTimer.current = setTimeout(() => {
+      setMiniVisible(false)
+    },2500)
+  }
+  useEffect(() => () => clearTimeout(miniTimer.current),[])
   const minimize = () => {if(document.fullscreenElement) void document.exitFullscreen().catch(()=>{});onClose()}
   return <section className={`watch-page video-watch ${cozy ? 'watch-cozy' : ''} ${mini ? 'video-mini' : ''}`} aria-label="Video watch page">
     <main className="watch-main">
       {!cozy && <header className="watch-header"><button ref={closeButton} className="watch-back" aria-label="Close video player" onClick={minimize}><ArrowLeft size={23}/> Back</button><div><h1 id="video-title">{displayTitle(file)}</h1><span>{sourceName}</span></div></header>}
       <div className="video-stage watch-stage" ref={stage}>
         <video key={`${url}:${retryKey}`} ref={attachVideo} src={undefined} playsInline preload="metadata" onLoadedData={() => setFailed(false)} onError={() => setFailed(true)} />
-        <VideoToolbar onNext={next && onNext ? () => onNext(next) : undefined} onClose={minimize} video={videoElement} sourceId={sourceId} path={file.relative_path} onAudio={setAudioUrl} cozy={cozy} onCozy={() => setCozy(value=>!value)} fullscreen={fullscreen} onFullscreen={() => { void toggle() }}/>
-        {mini && <div className="mini-controls"><button className="mini-restore" aria-label="Restore video player" onClick={onRestore}><Maximize2/></button><button className="mini-close" aria-label="Stop video" onClick={onDismiss}><X/></button><button className="mini-play" aria-label={playing?'Pause video':'Play video'} onClick={()=>{if(videoElement?.paused) void videoElement.play().catch(()=>{});else videoElement?.pause()}}>{playing?<Pause/>:<Play/>}</button><progress aria-label="Video progress" max={1} value={position}/></div>}
+        <VideoToolbar onNext={next && onNext ? () => onNext(next) : undefined} onClose={minimize} video={videoElement} sourceId={sourceId} path={file.relative_path} onAudio={setAudioUrl} cozy={cozy} onCozy={() => setCozy(value=>!value)} fullscreen={fullscreen} onFullscreen={() => { if(mini)onRestore?.(); void toggle() }}/>
+        {mini && <div className={`mini-controls ${miniVisible ? 'mini-visible' : ''}`} onPointerMove={revealMini} onPointerDown={revealMini} onFocus={revealMini} onBlur={revealMini} onPointerLeave={()=>{clearTimeout(miniTimer.current);miniTimer.current=setTimeout(()=>setMiniVisible(false),2500)}}><button className="mini-restore" aria-label="Restore video player" onClick={onRestore}><Maximize2/></button><button className="mini-close" aria-label="Stop video" onClick={onDismiss}><X/></button><button className="mini-play" aria-label={playing?'Pause video':'Play video'} onClick={()=>{if(videoElement?.paused) void videoElement.play().catch(()=>{});else videoElement?.pause()}}>{playing?<Pause/>:<Play/>}</button><progress aria-label="Video progress" max={1} value={position}/></div>}
       </div>
       {!audioUrl && <p className="video-error" role="status">Preparing transcoded playback. Open Settings to retry or change quality.</p>}
       {streamError && <p role="alert" className="video-error">{streamError}</p>}
