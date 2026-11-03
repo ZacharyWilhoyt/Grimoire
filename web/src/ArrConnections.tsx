@@ -2,7 +2,16 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { apiFetch } from './api'
 export type ArrConnection = { id: string; name: string; kind: 'sonarr' | 'radarr' | 'lidarr'; base_url: string; remote_root: string; source_subpath: string; enabled: boolean; has_api_key: boolean; usable: boolean }
 type Settings = { configured: boolean; online: boolean; connections: ArrConnection[] }
-const blank = () => ({ id: crypto.randomUUID() as string, name: '', kind: 'sonarr' as ArrConnection['kind'], base_url: '', remote_root: '', source_subpath: '', enabled: true, api_key: '' })
+// randomUUID requires a secure context; getRandomValues also works on LAN HTTP.
+function connectionId() {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+  const bytes = crypto.getRandomValues(new Uint8Array(16))
+  bytes[6] = (bytes[6] & 0x0f) | 0x40
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+const blank = () => ({ id: connectionId(), name: '', kind: 'sonarr' as ArrConnection['kind'], base_url: '', remote_root: '', source_subpath: '', enabled: true, api_key: '' })
 async function call<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await apiFetch(url, options)
   if (response.status === 204) return undefined as T
