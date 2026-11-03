@@ -250,15 +250,22 @@ pub async fn prepare(
             let root = if let Some(root) = &cache.root {
                 root.clone()
             } else {
-                let directory =
-                    std::env::temp_dir().join(format!("grimoire-video-{}", uuid::Uuid::new_v4()));
+                let base = std::env::var_os("GRIMOIRE_VIDEO_CACHE_DIR")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| {
+                        std::env::var_os("GRIMOIRE_DATA_DIR")
+                            .map(PathBuf::from)
+                            .unwrap_or_else(|| PathBuf::from("data"))
+                            .join("video-cache")
+                    });
+                let directory = base.join(format!("grimoire-video-{}", uuid::Uuid::new_v4()));
                 let mut builder = std::fs::DirBuilder::new();
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::DirBuilderExt;
                     builder.mode(0o700);
                 }
-                builder.create(&directory).map_err(|_| failed())?;
+                builder.recursive(true).create(&directory).map_err(|_| bad_request("Could not create the video cache directory. Check GRIMOIRE_VIDEO_CACHE_DIR and API service write permissions."))?;
                 let root = Arc::new(Root(directory));
                 cache.root = Some(root.clone());
                 root
@@ -471,8 +478,8 @@ pub async fn read(
 }
 
 fn encoder_error(stderr: &str) -> AppError {
-    let message = if stderr.contains("No space left") {
-        "The API host ran out of temporary disk space."
+    let message = if stderr.contains("No space left") || stderr.contains("Disk quota exceeded") {
+        "The video cache ran out of disk space or exceeded a filesystem quota. Set GRIMOIRE_VIDEO_CACHE_DIR to a disk with enough space, and check its quota."
     } else if stderr.contains("Permission denied") {
         "FFmpeg could not read the source or write the temporary copy. Check API service permissions."
     } else if stderr.contains("not currently supported in container")
@@ -511,7 +518,7 @@ mod tests {
         assert!(!super::encoder_error("failed /private/file")
             .1
             .contains("/private"));
-        assert!(super::encoder_error("No space left on device")
+        assert!(super::encoder_error("Disk quota exceeded")
             .1
             .contains("disk space"));
     }

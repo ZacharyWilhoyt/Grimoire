@@ -11,3 +11,8 @@
 *.pgdump
 __pycache__/
 .grimoire-backup.*
+
+# Local private media fixtures; never commit their contents.
+**/.ignore/
+
+/data/video-cache/

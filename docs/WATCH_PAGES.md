@@ -54,7 +54,8 @@ Demuxers and subprocess protocols are restricted; arbitrary remote URLs are not
 accepted. A completed output's duration is checked to reject size-limited,
 incomplete outputs.
 
-Copies live in a randomly named private directory under the system temp directory
+Copies live in a randomly named private directory under `GRIMOIRE_VIDEO_CACHE_DIR`
+(default: `GRIMOIRE_DATA_DIR/video-cache`, or `data/video-cache`)
 (0700 directory, 0600 files on Unix), never in the source directory. Up to four
 completed copies are cached per process with least-recently-used eviction.
 `GRIMOIRE_VIDEO_CACHE_MIB` sets the total cache budget (64–65536 MiB; default
@@ -63,7 +64,7 @@ fails busy if insufficient space remains. FFmpeg output is size-limited; allow
 filesystem headroom for muxer overhead. Preparation also fails on filesystem
 exhaustion. Copies disappear on eviction or graceful process teardown; an abrupt
 host/process crash can leave private `grimoire-video-*` temp directories for the
-operator to remove while that API process is stopped. Cache state is local to an
+operator to remove from the cache directory while that API process is stopped. Cache state is local to an
 API instance: multi-instance deployment will need shared rendition coordination
 or affinity. If a copy expires, choose **Prepare audio again**.
 
@@ -88,3 +89,9 @@ rewind/play/forward/mute/volume on the left, options/cozy/fullscreen on the righ
 The native browser control bar is disabled. Controls follow media events when
 playback is started, paused, ended or its source changes. Keyboard-accessible
 buttons and range inputs provide seeking and volume adjustment.
+
+Large MKV remuxes can exceed a memory-backed `/tmp` quota despite having enough
+space on the media disk. The default cache now uses the application data disk.
+Set an absolute cache directory for a service, ensure its account can write there,
+and allow enough actual free space and filesystem quota in addition to the
+configured cache budget. Originals and `.ignore` fixtures are never uploaded.
