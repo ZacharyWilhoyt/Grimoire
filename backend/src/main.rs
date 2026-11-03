@@ -526,6 +526,10 @@ async fn not_found() -> (StatusCode, Json<ApiError>) {
 fn app(state: AppState) -> Router {
     use axum::{extract::DefaultBodyLimit, middleware};
     let protected = Router::new()
+        .route(
+            "/api/sources/{source_id}/metadata/group-membership",
+            axum::routing::post(metadata::groups::join).layer(DefaultBodyLimit::max(16 * 1024)),
+        )
         .route("/api/transcode/capabilities", get(transcode::status))
         .route("/api/transcode/qualities", get(transcode::qualities))
         .route(

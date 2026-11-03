@@ -4403,3 +4403,171 @@ async fn transcode_sessions_segments_and_revocation_are_scoped(pool: PgPool) {
     }
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL; run with --ignored"]
+async fn group_membership_copies_identity_preserves_item_fields_and_requires_ownership(
+    pool: PgPool,
+) {
+    let state = state(pool.clone());
+    let (owner, csrf, user) = register_user(&state, "join_owner").await;
+    let (viewer, viewer_csrf, viewer_user) = register_user(&state, "join_viewer").await;
+    let root = shared_media_fixture();
+    fs::write(root.join("target.mp3"), b"target").unwrap();
+    fs::write(root.join("loose.mp3"), b"unchanged source").unwrap();
+    let source = Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO sources(id,owner_id,name,path) VALUES($1,$2,'Groups',$3)")
+        .bind(&source)
+        .bind(Uuid::parse_str(user["id"].as_str().unwrap()).unwrap())
+        .bind(root.to_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    for (path, data) in [
+        (
+            "target.mp3",
+            json!({"title":"Target song","creator":"Artist","collection":"Album","year":2020,"genres":["jazz"],"track":1}),
+        ),
+        (
+            "loose.mp3",
+            json!({"title":"Keep my title","creator":"Other artist","collection":"Old album","track":7,"disc":2,"description":"Individual notes","genres":["rock"]}),
+        ),
+    ] {
+        sqlx::query("INSERT INTO media_metadata(file_key,source_id,relative_path,local_data) VALUES($1,$2,$3,$4)").bind(catalog::file_key(&source,path)).bind(&source).bind(path).bind(data.to_string()).execute(&pool).await.unwrap();
+    }
+    let detail = format!("/api/sources/{source}/metadata?path=target.mp3");
+    let target =
+        body(request(&state, Method::GET, &detail, Some(&owner), None, None, None).await).await;
+    let url = format!("/api/sources/{source}/metadata/group-membership");
+    let art = "a".repeat(64);
+    sqlx::query("INSERT INTO metadata_artwork(id,jpeg) VALUES($1,$2)")
+        .bind(&art)
+        .bind(b"test poster".to_vec())
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO media_groups(id,source_id,genres,artwork) VALUES($1,$2,$3,$4)")
+        .bind(target["group"]["id"].as_str().unwrap())
+        .bind(&source)
+        .bind(json!(["ambient"]).to_string())
+        .bind(&art)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let payload = json!({"path":"loose.mp3","target_path":"target.mp3","expected_group_id":target["group"]["id"]});
+    sqlx::query("INSERT INTO source_permissions(source_id,user_id,can_discover,can_access_media) VALUES($1,$2,true,true)").bind(&source).bind(Uuid::parse_str(viewer_user["id"].as_str().unwrap()).unwrap()).execute(&pool).await.unwrap();
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            &url,
+            Some(&viewer),
+            Some(&viewer_csrf),
+            Some(ORIGIN),
+            Some(payload.clone())
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            &url,
+            Some(&owner),
+            None,
+            Some(ORIGIN),
+            Some(payload.clone())
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    let mut stale = payload.clone();
+    stale["expected_group_id"] = json!("stale");
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            &url,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(stale)
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    let result = request(
+        &state,
+        Method::POST,
+        &url,
+        Some(&owner),
+        Some(&csrf),
+        Some(ORIGIN),
+        Some(payload.clone()),
+    )
+    .await;
+    assert_eq!(result.status(), StatusCode::OK);
+    let result = body(result).await;
+    assert_eq!(result["group"]["id"], target["group"]["id"]);
+    assert_eq!(result["fields"]["creator"], "Artist");
+    assert_eq!(result["fields"]["collection"], "Album");
+    assert_eq!(result["fields"]["genres"], json!(["ambient"]));
+    assert_eq!(result["group"]["has_custom_artwork"], true);
+    assert!(result["artwork_url"]
+        .as_str()
+        .unwrap()
+        .contains(target["group"]["id"].as_str().unwrap()));
+    assert_eq!(result["fields"]["title"], "Keep my title");
+    assert_eq!(result["fields"]["track"], 7);
+    assert_eq!(result["fields"]["disc"], 2);
+    assert_eq!(result["fields"]["description"], "Individual notes");
+    assert_eq!(
+        fs::read(root.join("loose.mp3")).unwrap(),
+        b"unchanged source"
+    );
+    let mut wrong = payload.clone();
+    wrong["path"] = json!("clip.mp4");
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            &url,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(wrong)
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let mut traversal = payload;
+    traversal["path"] = json!("../loose.mp3");
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            &url,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(traversal)
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    let audit: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM metadata_audit WHERE source_id=$1 AND action='group_joined'",
+    )
+    .bind(&source)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(audit, 1);
+    fs::remove_dir_all(root).unwrap();
+}

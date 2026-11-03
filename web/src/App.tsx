@@ -10,7 +10,7 @@ import SourceMetadataTools from './SourceMetadataTools'
 import MetadataFilters from './MetadataFilters'
 import CatalogViews from './CatalogViews'
 import MediaCollection from './MediaCollection'
-import { filterMedia, pageFromHash, pageHashes, type MediaItem, type PersonalState, type PageName, type Sort, type GroupBy } from './media'
+import { filterMedia, pageFromHash, pageHashes, type MediaItem, type MetadataView, type PersonalState, type PageName, type Sort, type GroupBy } from './media'
 import SourcePermissions, { policyLabel, type AcquisitionPolicy } from './SourcePermissions'
 import AccountSettings from './AccountSettings'
 import Authentication, { type User } from './Authentication'
@@ -74,6 +74,10 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
   const [connectError, setConnectError] = useState('')
   const [connecting, setConnecting] = useState(false)
 
+  useEffect(()=>{
+    const changed=(event:Event)=>{const {file_key,metadata}=(event as CustomEvent<{file_key:string;metadata:MetadataView}>).detail;const patch=(items:MediaItem[])=>items.map(item=>item.file_key===file_key?{...item,metadata}:item);setCatalog(patch);setSaved(patch);setContinuing(patch);setRecent(patch);setSourceFiles(patch);setLinkedSeries(current=>current?{...current,members:patch(current.members).filter(item=>item.metadata?.group?.id===current.members[0]?.metadata?.group?.id)}:null)}
+    window.addEventListener('grimoire-media-metadata',changed);return()=>window.removeEventListener('grimoire-media-metadata',changed)
+  },[])
   useEffect(() => {
     const controller = new AbortController()
     setSourcesError('')

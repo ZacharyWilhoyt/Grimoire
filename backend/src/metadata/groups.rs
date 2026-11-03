@@ -464,3 +464,80 @@ mod tests {
         assert!(identity("source", "music", &fields).is_none());
     }
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Join {
+    path: String,
+    target_path: String,
+    expected_group_id: String,
+}
+/// Copy group identity, never file identity or per-item numbering/provider IDs.
+pub async fn join(
+    State(state): State<AppState>,
+    Extension(identity): Extension<auth::Identity>,
+    Path(source): Path<String>,
+    Json(body): Json<Join>,
+) -> Result<Json<View>, AppError> {
+    let item = reference(&state, &identity.user, &source, &body.path, true).await?;
+    let target = reference(&state, &identity.user, &source, &body.target_path, true).await?;
+    if item.kind != target.kind || item.key == target.key {
+        return Err(crate::bad_request(
+            "Choose a different item of the same media type in this source.",
+        ));
+    }
+    let mut tx = state.db.begin().await.map_err(|_| auth::unavailable())?;
+    owner_lock(&mut tx, &source, identity.user.id).await?;
+    let record = sqlx::query_as::<_, Record>("SELECT * FROM media_metadata WHERE file_key=$1")
+        .bind(&target.key)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| auth::unavailable())?;
+    let fields = view(&body.target_path, &target.key, record.as_ref(), true, true).fields;
+    let group = self::identity(&source, target.kind, &fields)
+        .ok_or_else(|| crate::bad_request("The target must belong to an album or series."))?;
+    if group.id != body.expected_group_id {
+        return Err(AppError(
+            StatusCode::CONFLICT,
+            "The target group changed. Refresh and try again.".into(),
+        ));
+    }
+    ensure_row(&mut tx, &source, &body.path, &item.key).await?;
+    let previous =
+        sqlx::query_as::<_, Record>("SELECT * FROM media_metadata WHERE file_key=$1 FOR UPDATE")
+            .bind(&item.key)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|_| auth::unavailable())?;
+    let before = previous.custom_data.clone();
+    let mut custom = view(&body.path, &item.key, Some(&previous), true, true).fields;
+    custom.collection = fields.collection;
+    if item.kind != "video" {
+        custom.creator = Some(fields.creator.unwrap_or_default());
+    }
+    custom.genres = Some(fields.genres.unwrap_or_default());
+    if fields.year.is_some() {
+        custom.year = fields.year;
+    }
+    let data = serde_json::to_string(&custom.normalize()?).map_err(|_| auth::unavailable())?;
+    sqlx::query("UPDATE media_metadata SET custom_data=$2,updated_at=now() WHERE file_key=$1")
+        .bind(&item.key)
+        .bind(&data)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| auth::unavailable())?;
+    audit(
+        &mut tx,
+        &source,
+        &item.key,
+        identity.user.id,
+        "group_joined",
+        before,
+        Some(data),
+    )
+    .await?;
+    tx.commit().await.map_err(|_| auth::unavailable())?;
+    Ok(Json(
+        current_view(&state, &identity.user, &source, &body.path, &item.key).await?,
+    ))
+}

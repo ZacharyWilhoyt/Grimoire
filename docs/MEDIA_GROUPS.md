@@ -32,6 +32,27 @@ pagination limits still apply. Folder labels sort alphabetically for Title; othe
 choices and recent sections retain the input order. Members use season/disc and then
 track/episode/series-position ordering.
 
+## Add items to a group
+
+Source owners can drag an individual item onto an album/series folder. While dragging
+inside a folder, a destination shelf exposes other compatible groups in the loaded
+view. Each eligible item also offers **Move to group** for keyboard and touch use.
+Destinations must be in the same source and have the same media kind; season, disc,
+and creator folders are not destinations.
+
+Joining copies the destination representative's collection name, creator for music
+and books, individual genre tags, and release year when available. The item immediately
+inherits the destination group's custom cover and group tag overrides. Its title,
+episode/track/disc numbering, description, and individual artwork remain intact.
+The underlying file is never moved or renamed. These are custom metadata edits, so
+local rescans preserve them. Edit individual metadata or assign another group to
+change membership again.
+
+Only available, editable items and groups in the loaded view are offered. The server
+independently checks source ownership, media compatibility, and the destination's
+current group identity. A destination that changed since loading returns a conflict
+instead of silently assigning an outdated group. Membership changes are audited.
+
 ## Edit the group
 
 Source owners can use the folder's **Edit group** settings button, or **Edit album /
@@ -121,6 +142,7 @@ access. Catalog metadata adds `group`, `individual_genres` and active `credits`.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
+| POST | `/api/sources/{source}/metadata/group-membership` | JSON `{path, target_path, expected_group_id}`; join a current member's group |
 | GET | `/api/sources/{source}/groups/{group}?path=...` | Effective group settings and editability |
 | PUT | `/api/sources/{source}/groups/{group}/genres` | JSON `{path, genres:[...]}` |
 | DELETE | `/api/sources/{source}/groups/{group}/genres?path=...` | Restore individual tags |
@@ -131,3 +153,6 @@ access. Catalog metadata adds `group`, `individual_genres` and active `credits`.
 Tests cover folder consolidation and season/disc ordering, ownership boundaries,
 new-member inheritance, filename-only episodes, oversized/invalid cover rejection,
 revocation and stale membership, independent resets, and provider-specific credits.
+Membership tests also cover drag/drop, read-only UI, CSRF, incompatible media,
+path traversal, inherited group overrides, preserved individual fields/file bytes,
+and audit recording.
