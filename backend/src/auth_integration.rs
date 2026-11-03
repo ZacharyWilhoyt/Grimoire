@@ -23,6 +23,7 @@ fn state(pool: PgPool) -> AppState {
         catalog_scans: Arc::new(tokio::sync::Semaphore::new(2)),
         metadata: Arc::new(metadata::Runtime::new()),
         video_audio: Arc::new(crate::video_audio::Runtime::new()),
+        transcode: Arc::new(crate::transcode::Runtime::new()),
     }
 }
 async fn request(
@@ -4126,5 +4127,176 @@ async fn mkv_audio_selection_transcodes_and_rechecks_permissions(pool: PgPool) {
             .status(),
         StatusCode::BAD_REQUEST
     );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL and FFmpeg; run with --ignored"]
+async fn transcode_sessions_segments_and_revocation_are_scoped(pool: PgPool) {
+    let state = state(pool.clone());
+    let (owner, csrf, user) = register_user(&state, "transcode_owner").await;
+    let (viewer, _, viewer_user) = register_user(&state, "transcode_viewer").await;
+    let root = shared_media_fixture();
+    let file = root.join("stream.mkv");
+    assert!(tokio::process::Command::new("ffmpeg")
+        .args([
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=s=320x180:r=24:d=14",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=14",
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            "-c:v",
+            "libx264",
+            "-threads",
+            "1",
+            "-c:a",
+            "flac",
+            "-y"
+        ])
+        .arg(&file)
+        .status()
+        .await
+        .unwrap()
+        .success());
+    let source = Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO sources(id,owner_id,name,path) VALUES($1,$2,'Transcode',$3)")
+        .bind(&source)
+        .bind(Uuid::parse_str(user["id"].as_str().unwrap()).unwrap())
+        .bind(root.to_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let settings =
+        json!({"source_id":source,"path":"stream.mkv","encoder":"cpu","height":720,"audio":1});
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            "/api/transcode",
+            Some(&owner),
+            None,
+            Some(ORIGIN),
+            Some(settings.clone())
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    let result = request(
+        &state,
+        Method::POST,
+        "/api/transcode",
+        Some(&owner),
+        Some(&csrf),
+        Some(ORIGIN),
+        Some(settings),
+    )
+    .await;
+    assert_eq!(result.status(), StatusCode::OK);
+    let started = body(result).await;
+    let id = started["id"].as_str().unwrap();
+    let manifest = format!("/api/transcode/{id}/manifest.m3u8");
+    let segment = format!("/api/transcode/{id}/segment?index=1");
+    for url in [&manifest, &segment] {
+        assert_eq!(
+            request(&state, Method::GET, url, Some(&viewer), None, None, None)
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+    let response = request(
+        &state,
+        Method::GET,
+        &manifest,
+        Some(&owner),
+        None,
+        None,
+        None,
+    )
+    .await;
+    let playlist = String::from_utf8(
+        to_bytes(response.into_body(), 10000)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(playlist.contains("#EXT-X-ENDLIST"));
+    assert_eq!(playlist.matches("#EXTINF:").count(), 3);
+    let response = request(
+        &state,
+        Method::GET,
+        &segment,
+        Some(&owner),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["cache-control"], "private, no-store");
+    let output = root.join("segment.ts");
+    std::fs::write(
+        &output,
+        to_bytes(response.into_body(), 16 * 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let probe = tokio::process::Command::new("ffprobe")
+        .args(["-v", "error", "-show_streams", "-of", "json"])
+        .arg(&output)
+        .output()
+        .await
+        .unwrap();
+    let probe: Value = serde_json::from_slice(&probe.stdout).unwrap();
+    let streams = probe["streams"].as_array().unwrap();
+    assert_eq!(streams[0]["codec_name"], "h264");
+    assert_eq!(streams[1]["codec_name"], "aac");
+    let start = streams[0]["start_time"]
+        .as_str()
+        .unwrap()
+        .parse::<f64>()
+        .unwrap();
+    assert!((7.3..7.6).contains(&start), "timestamp offset: {start}");
+    // Even a source owner cannot reuse another account's prepared playback session.
+    sqlx::query("INSERT INTO source_permissions(source_id,user_id,can_discover,can_access_media) VALUES($1,$2,true,true)").bind(&source).bind(Uuid::parse_str(viewer_user["id"].as_str().unwrap()).unwrap()).execute(&pool).await.unwrap();
+    assert_eq!(
+        request(
+            &state,
+            Method::GET,
+            &segment,
+            Some(&viewer),
+            None,
+            None,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    sqlx::query("DELETE FROM sources WHERE id=$1")
+        .bind(&source)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for url in [&manifest, &segment] {
+        assert_eq!(
+            request(&state, Method::GET, url, Some(&owner), None, None, None)
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
     std::fs::remove_dir_all(root).unwrap();
 }

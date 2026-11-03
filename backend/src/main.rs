@@ -15,6 +15,7 @@ mod permissions;
 mod progress;
 mod subtitles;
 mod subtitles_mkv;
+mod transcode;
 mod video_audio;
 
 use serde::{Deserialize, Serialize};
@@ -40,6 +41,7 @@ struct AppState {
     catalog_scans: Arc<tokio::sync::Semaphore>,
     metadata: Arc<metadata::Runtime>,
     video_audio: Arc<video_audio::Runtime>,
+    transcode: Arc<transcode::Runtime>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -524,6 +526,14 @@ async fn not_found() -> (StatusCode, Json<ApiError>) {
 fn app(state: AppState) -> Router {
     use axum::{extract::DefaultBodyLimit, middleware};
     let protected = Router::new()
+        .route("/api/transcode/capabilities", get(transcode::status))
+        .route("/api/transcode", axum::routing::post(transcode::start))
+        .route(
+            "/api/transcode/{id}/manifest.m3u8",
+            get(transcode::manifest),
+        )
+        .route("/api/transcode/{id}/segment", get(transcode::segment))
+        .route("/api/transcode/{id}", delete(transcode::stop))
         .route("/api/media/link", get(catalog::linked))
         .route(
             "/api/sources/{source_id}/audio-tracks",
@@ -727,6 +737,7 @@ async fn main() {
         catalog_scans: Arc::new(tokio::sync::Semaphore::new(2)),
         metadata: Arc::new(metadata::Runtime::new()),
         video_audio: Arc::new(crate::video_audio::Runtime::new()),
+        transcode: Arc::new(crate::transcode::Runtime::new()),
     };
     let port = std::env::var("GRIMOIRE_PORT")
         .unwrap_or_else(|_| "3000".into())

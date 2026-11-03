@@ -1,5 +1,10 @@
 # Watch pages, links, and MKV audio
 
+**Current player:** audio selection now uses [segmented transcoding](TRANSCODING.md).
+The whole-file compatibility API documented below remains available for older
+clients. Player settings now offer CPU, NVIDIA and AMD video transcoding.
+
+
 Video and EPUB/CBZ open in full-page layouts with a related-content sidebar.
 Books keep chapter/page, zoom, text size and theme controls; they have no video
 controls. Comments are a disabled visual placeholder. The video fullscreen

@@ -14,8 +14,8 @@ it('prepares the selected stream, pauses, and retains the previous selection on 
     const select = host.querySelector('select')!
     await act(async () => { select.value='2'; select.dispatchEvent(new Event('change',{bubbles:true})) })
     expect(pause).toHaveBeenCalledOnce()
-    expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({stream_index:2})
-    expect(onSelect).toHaveBeenCalledWith('/api/sources/source/video-audio/prepared?path=episode.mkv')
+    expect(JSON.parse(fetch.mock.calls[1][1].body)).toMatchObject({audio:2,encoder:'auto',height:720})
+    expect(onSelect).toHaveBeenCalledWith('/api/transcode/prepared/manifest.m3u8')
     await act(async () => host.querySelector('button')!.click())
     expect(host.textContent).toContain('Processing busy')
     expect(onSelect).toHaveBeenCalledOnce()

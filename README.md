@@ -502,9 +502,10 @@ container and codec support depend on the browser. Companion subtitle files and
 embedded MKV text tracks are available through the subtitle selector. ASS uses
 libass with embedded font support; use **Fullscreen with subtitles** for overlays.
 See [watch pages, shareable links and MKV audio selection](docs/WATCH_PAGES.md)
-and [subtitle setup and limits](docs/SUBTITLES.md). MKV audio selection prepares a temporary seekable AAC compatibility copy. Video
-transcoding and bitmap captions remain future work, so unsupported video codecs
-may still require conversion. Restart the Rust API after updating.
+and [subtitle setup and limits](docs/SUBTITLES.md). Audio selection now starts segmented H.264/AAC playback. CPU and optional
+NVIDIA/AMD encoding are available under player Settings; see
+[transcoding setup, limits and testing](docs/TRANSCODING.md). Bitmap captions
+remain future work. Restart the Rust API after updating.
 
 ### EPUB and CBZ reading
 
