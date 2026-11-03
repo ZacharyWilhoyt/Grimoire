@@ -88,3 +88,8 @@ and format distinguish cache entries. Every HTTP request still checks current
 permissions. Two font downloads run concurrently, with the existing 32 MiB client
 font budget. ASS remains a complete script to preserve libass animation, layering,
 and overlapping events; first extraction still needs to scan the container.
+
+JASSUB 2.4.1 ships a source map for its WASM JavaScript loader that references an
+unpublished source file. Vite strips only that loader's broken source-map comment
+through a targeted development/worker build plugin. Worker code, WASM assets, and
+application source maps are preserved. Restart Vite after updating its configuration.
