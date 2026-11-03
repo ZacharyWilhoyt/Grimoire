@@ -167,10 +167,10 @@ allows same-origin access solely for parent-controlled sizing and input forwardi
 book scripts remain blocked by both sandbox and CSP. Chapter iframes expand to their
 content height so scrolling belongs to the reader viewport.
 
-Novel, Comic, Manga, and Manhua are user-selectable profiles. Fit, layout, zoom,
+Novel, Comic, Manga, and Manhwa are user-selectable profiles. Fit, layout, zoom,
 font size, theme, and direction are saved per account/profile in browser storage;
 each book's chosen profile is saved separately, and new books use the last selected
-profile for their format. Manhua defaults to fit-width long
+profile for their format. Manhwa defaults to fit-width long
 strip, Manga to right-to-left. Settings do not synchronize between devices.
 
 At the end of a volume, Next or scrolling to the end of long strip opens the next
