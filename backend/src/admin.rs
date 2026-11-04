@@ -18,6 +18,17 @@ fn password() -> Result<String, String> {
 }
 
 pub async fn command(db: &PgPool, args: &[String]) -> Result<(), String> {
+    if args == ["reset-ip-access"] {
+        let mut tx = db.begin().await.map_err(|_| "Database unavailable.")?;
+        sqlx::query("UPDATE instance_security SET ip_policy='{\"default_action\":\"allow\",\"allow\":[],\"deny\":[]}'::jsonb,ip_revision=ip_revision+1,updated_at=now() WHERE singleton").execute(&mut *tx).await.map_err(|_|"IP reset failed.")?;
+        sqlx::query("INSERT INTO auth_events(event) VALUES('operator_ip_policy_reset')")
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| "Audit failed.")?;
+        tx.commit().await.map_err(|_| "IP reset failed.")?;
+        println!("IP policy reset to unrestricted access. Authentication is still required.");
+        return Ok(());
+    }
     if args.len() != 2 {
         return Err("Usage: cargo run -- {bootstrap-admin|import-legacy-sources|reset-password|disable-user|enable-user} USERNAME".into());
     }

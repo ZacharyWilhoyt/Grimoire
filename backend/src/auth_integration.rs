@@ -12,6 +12,7 @@ use uuid::Uuid;
 const ORIGIN: &str = "http://localhost:5173";
 fn state(pool: PgPool) -> AppState {
     AppState {
+        network: Arc::new(crate::security::Network::default()),
         db: pool,
         config: Arc::new(auth::Config {
             additional_origins: Vec::new(),
@@ -790,6 +791,9 @@ async fn source_permissions_separate_visibility_media_and_acquisition_and_revoke
         }
     }
     let range_request = Request::builder()
+        .extension(ConnectInfo(
+            "127.0.0.1:12345".parse::<SocketAddr>().unwrap(),
+        ))
         .uri(format!("/api/sources/{id}/audio?path=track.mp3"))
         .header("cookie", &alice)
         .header("range", "bytes=0-5")
@@ -2574,6 +2578,9 @@ async fn group_image_request(
     bytes: Vec<u8>,
 ) -> Response {
     let mut builder = Request::builder()
+        .extension(ConnectInfo(
+            "127.0.0.1:12345".parse::<SocketAddr>().unwrap(),
+        ))
         .method(Method::POST)
         .uri(path)
         .header("content-type", "image/jpeg")
@@ -5201,4 +5208,166 @@ async fn personal_series_preferences_are_private_authorized_and_revision_checked
         StatusCode::BAD_REQUEST
     );
     fs::remove_dir_all(root).unwrap();
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn ip_access_is_admin_only_allow_over_deny_global_and_recoverable(pool: PgPool) {
+    let state = state(pool.clone());
+    let (owner, csrf, user) = register_user(&state, "ip_owner").await;
+    let (viewer, _, _) = register_user(&state, "ip_viewer").await;
+    sqlx::query("UPDATE users SET is_admin=true WHERE id=$1")
+        .bind(Uuid::parse_str(user["id"].as_str().unwrap()).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let url = "/api/admin/security/ip";
+    assert_eq!(
+        request(&state, Method::GET, url, None, None, None, None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        request(&state, Method::GET, url, Some(&viewer), None, None, None)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    let initial =
+        body(request(&state, Method::GET, url, Some(&owner), None, None, None).await).await;
+    assert_eq!(initial["revision"], 0);
+    assert_eq!(initial["policy"]["default_action"], "allow");
+    let policy = json!({"default_action":"deny","allow":["127.0.0.1"],"deny":["0.0.0.0/0","::/0"]});
+    let payload = json!({"policy":policy,"expected_revision":0});
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            url,
+            Some(&owner),
+            None,
+            Some(ORIGIN),
+            Some(payload.clone())
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    let preview = body(
+        request(
+            &state,
+            Method::POST,
+            "/api/admin/security/ip/preview",
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(policy),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(preview["would_block_you"], false);
+    let saved = request(
+        &state,
+        Method::PUT,
+        url,
+        Some(&owner),
+        Some(&csrf),
+        Some(ORIGIN),
+        Some(payload.clone()),
+    )
+    .await;
+    assert_eq!(saved.status(), StatusCode::OK);
+    assert_eq!(body(saved).await["revision"], 1);
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            url,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(payload)
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    for path in [
+        "/api/auth/me",
+        "/api/sources/test/book?path=test.cbz",
+        "/assets/app.js",
+        "/",
+    ] {
+        let response = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .extension(ConnectInfo(
+                        "198.51.100.4:1234".parse::<SocketAddr>().unwrap(),
+                    ))
+                    .header("cookie", &owner)
+                    .header("x-forwarded-for", "127.0.0.1")
+                    .header("x-grimoire-client-ip", "127.0.0.1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+    let mut block =
+        json!({"policy":{"default_action":"deny","allow":[],"deny":[]},"expected_revision":1});
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            url,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(block.clone())
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    block["acknowledge_lockout"] = json!(true);
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            url,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(block)
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(&state, Method::GET, url, Some(&owner), None, None, None)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    admin::command(&pool, &["reset-ip-access".into()])
+        .await
+        .unwrap();
+    assert_eq!(
+        request(&state, Method::GET, url, Some(&owner), None, None, None)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(&state, Method::GET, url, Some(&viewer), None, None, None)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM auth_events WHERE event IN ('ip_policy_changed','operator_ip_policy_reset')").fetch_one(&pool).await.unwrap(),3);
 }

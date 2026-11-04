@@ -14,6 +14,7 @@ mod metadata;
 mod music;
 mod permissions;
 mod progress;
+mod security;
 mod statistics;
 mod subtitles;
 mod subtitles_mkv;
@@ -38,6 +39,7 @@ const MAX_DIRECTORY_DEPTH: usize = 32;
 #[derive(Clone)]
 struct AppState {
     db: sqlx::PgPool,
+    network: Arc<security::Network>,
     config: Arc<auth::Config>,
     hashing: Arc<tokio::sync::Semaphore>,
     catalog_scans: Arc<tokio::sync::Semaphore>,
@@ -92,6 +94,7 @@ struct ApiError {
     error: String,
 }
 
+#[derive(Debug)]
 struct AppError(StatusCode, String);
 
 impl IntoResponse for AppError {
@@ -687,6 +690,16 @@ fn app(state: AppState) -> Router {
                 .put(music::save)
                 .layer(DefaultBodyLimit::max(1024 * 1024)),
         )
+        .route(
+            "/api/admin/security/ip",
+            get(security::read)
+                .put(security::save)
+                .layer(DefaultBodyLimit::max(16 * 1024)),
+        )
+        .route(
+            "/api/admin/security/ip/preview",
+            axum::routing::post(security::preview).layer(DefaultBodyLimit::max(16 * 1024)),
+        )
         .route("/api/statistics", get(statistics::read))
         .route("/api/sources", get(list_sources).post(add_source))
         .route("/api/sources/{source_id}", delete(remove_source))
@@ -717,6 +730,10 @@ fn app(state: AppState) -> Router {
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::origin_and_limits,
+        ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            security::enforce,
         ))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
@@ -769,6 +786,9 @@ async fn main() {
         .unwrap_or_else(|_| panic!("Password hashing initialization failed"));
     let config = auth::Config::from_env(dummy).unwrap_or_else(|message| panic!("{message}"));
     let state = AppState {
+        network: Arc::new(
+            security::Network::from_env().unwrap_or_else(|message| panic!("{message}")),
+        ),
         db,
         config: Arc::new(config),
         hashing: Arc::new(tokio::sync::Semaphore::new(4)),

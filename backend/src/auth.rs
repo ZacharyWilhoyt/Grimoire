@@ -4,7 +4,7 @@ use argon2::{
     Argon2,
 };
 use axum::{
-    extract::{ConnectInfo, Request, State},
+    extract::{Request, State},
     http::{HeaderMap, Method, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -18,7 +18,7 @@ use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgPool};
-use std::{net::SocketAddr, sync::Arc};
+use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use tokio::sync::Semaphore;
 use uuid::Uuid;
@@ -295,10 +295,9 @@ pub async fn origin_and_limits(
     {
         let address = request
             .extensions()
-            .get::<ConnectInfo<SocketAddr>>()
+            .get::<crate::security::ClientIp>()
             .ok_or_else(unavailable)?
-            .0
-            .ip();
+            .0;
         let registration = request.uri().path().ends_with("register");
         let (kind, count, seconds) = if registration {
             ("register", 5, 3600)

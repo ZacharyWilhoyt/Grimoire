@@ -591,6 +591,10 @@ with compact episode or volume browsing, synopsis tabs, sharing, and private
 per-user status/favorites. Catalog cards use the Continue Reading cover width.
 Restart the API to apply the new series-preference migration.
 
+Administrator-only [IP access controls](docs/IP_ACCESS.md) support IPv4/IPv6 and
+CIDR rules, explicit defaults, Allow-over-Deny precedence, lockout warnings and
+local recovery.
+
 ## Checks and Operations
 
 From the repository root, the normal local checks are below. Backup-helper tests

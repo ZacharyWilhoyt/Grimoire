@@ -14,6 +14,7 @@ import MediaCollection from './MediaCollection'
 import { filterMedia, pageFromHash, pageHashes, type MediaItem, type MetadataView, type PersonalState, type PageName, type Sort, type GroupBy } from './media'
 import SourcePermissions, { policyLabel, type AcquisitionPolicy } from './SourcePermissions'
 import AccountSettings from './AccountSettings'
+import AdminSecurity from './AdminSecurity'
 import Authentication, { type User } from './Authentication'
 import { apiFetch } from './api'
 import BookReader from './BookReader'
@@ -45,6 +46,7 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
   const [sourceRefresh, setSourceRefresh] = useState(0)
   const [sourcesError, setSourcesError] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [adminSecurityOpen,setAdminSecurityOpen]=useState(false)
   const [reading, setReading] = useState<MediaItem | null>(null)
   const [video, setVideo] = useState<MediaItem | null>(null)
   const [miniVideo, setMiniVideo] = useState(false)
@@ -324,7 +326,7 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
       {sourcesError && <p className="source-error no-sources" role="alert">{sourcesError}</p>}
       {sources.length === 0 && <p className="no-sources">No sources available yet.</p>}
       {user.is_admin && <button className="add-source" onClick={() => setConnectOpen(true)}><Plus size={15} /> Connect a directory</button>}
-      <div className="sidebar-bottom"><button className="nav-item" onClick={() => setSettingsOpen(true)}><Settings2 size={18} />Account settings</button><button className="nav-item" onClick={logout}>Sign out</button><div className="connection"><span className={`connection-dot ${apiStatus}`} />{apiStatus === 'connected' ? 'Connected to Grimoire' : apiStatus === 'offline' ? 'API not connected' : 'Connecting…'}</div></div>
+      <div className="sidebar-bottom">{user.is_admin&&<button className="nav-item" onClick={()=>setAdminSecurityOpen(true)}><Settings2 size={18}/>Administrator security</button>}<button className="nav-item" onClick={() => setSettingsOpen(true)}><Settings2 size={18} />Account settings</button><button className="nav-item" onClick={logout}>Sign out</button><div className="connection"><span className={`connection-dot ${apiStatus}`} />{apiStatus === 'connected' ? 'Connected to Grimoire' : apiStatus === 'offline' ? 'API not connected' : 'Connecting…'}</div></div>
     </aside>
 
     <main className="main-content" id="home">
@@ -350,6 +352,7 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
       </div>
     </main>
     {permissionsSource && <SourcePermissions source={permissionsSource} ownerUsername={user.username} onClose={() => setPermissionsSource(null)} onSaved={() => setSourceRefresh(value => value + 1)}/>}
+    {adminSecurityOpen&&user.is_admin&&<AdminSecurity onClose={()=>setAdminSecurityOpen(false)}/>}
     {settingsOpen && <AccountSettings onClose={() => setSettingsOpen(false)} />}
     {groupItem && <GroupEditor key={groupItem.metadata?.group?.id} item={groupItem} onClose={() => setGroupItem(null)} onUpdated={() => setSourceRefresh(value => value + 1)}/>}
     {metadataItem && <MetadataEditor key={metadataItem.file_key} item={metadataItem} onClose={() => setMetadataItem(null)} onUpdated={() => setSourceRefresh(value => value + 1)}/>}
