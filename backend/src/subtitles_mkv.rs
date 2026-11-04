@@ -220,6 +220,72 @@ async fn extract_uncached(
     }
 }
 
+// Callers authorize every request, including cache hits.
+async fn cached_extract(
+    file: &Path,
+    index: u64,
+    font: bool,
+    format: &str,
+    preview: bool,
+) -> Result<Vec<u8>, AppError> {
+    use std::{
+        collections::VecDeque,
+        sync::{Arc, Mutex, OnceLock},
+        time::Instant,
+    };
+    type Entry = (String, Instant, Arc<tokio::sync::OnceCell<Vec<u8>>>);
+    static CACHE: OnceLock<Mutex<VecDeque<Entry>>> = OnceLock::new();
+    let metadata = tokio::fs::metadata(file).await.map_err(|_| failed())?;
+    let key = format!(
+        "{:?}:{}:{:?}:{index}:{font}:{format}:{preview}",
+        file,
+        metadata.len(),
+        metadata.modified().ok()
+    );
+    let cache = CACHE.get_or_init(|| Mutex::new(VecDeque::new()));
+    let cell = {
+        let mut entries = cache.lock().unwrap();
+        entries.retain(|(_, time, _)| time.elapsed() < Duration::from_secs(600));
+        if let Some((_, _, cell)) = entries.iter().find(|(id, _, _)| id == &key) {
+            cell.clone()
+        } else {
+            while entries.len() >= 32 {
+                entries.pop_front();
+            }
+            let cell = Arc::new(tokio::sync::OnceCell::new());
+            entries.push_back((key, Instant::now(), cell.clone()));
+            cell
+        }
+    };
+    let bytes = cell
+        .get_or_try_init(|| extract_uncached(file, index, font, format, preview))
+        .await?;
+    let output = bytes.clone();
+    let mut entries = cache.lock().unwrap();
+    while entries
+        .iter()
+        .filter_map(|(_, _, cell)| cell.get())
+        .map(Vec::len)
+        .sum::<usize>()
+        > 48 * 1024 * 1024
+    {
+        entries.pop_front();
+    }
+    Ok(output)
+}
+
+pub async fn extract(
+    file: &Path,
+    index: u64,
+    font: bool,
+    format: &str,
+) -> Result<Vec<u8>, AppError> {
+    cached_extract(file, index, font, format, false).await
+}
+pub async fn preview(file: &Path, index: u64) -> Result<Vec<u8>, AppError> {
+    cached_extract(file, index, false, "ass", true).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,70 +397,4 @@ mod tests {
         );
         std::fs::remove_dir_all(root).unwrap();
     }
-}
-
-// Callers authorize every request, including cache hits.
-async fn cached_extract(
-    file: &Path,
-    index: u64,
-    font: bool,
-    format: &str,
-    preview: bool,
-) -> Result<Vec<u8>, AppError> {
-    use std::{
-        collections::VecDeque,
-        sync::{Arc, Mutex, OnceLock},
-        time::Instant,
-    };
-    type Entry = (String, Instant, Arc<tokio::sync::OnceCell<Vec<u8>>>);
-    static CACHE: OnceLock<Mutex<VecDeque<Entry>>> = OnceLock::new();
-    let metadata = tokio::fs::metadata(file).await.map_err(|_| failed())?;
-    let key = format!(
-        "{:?}:{}:{:?}:{index}:{font}:{format}:{preview}",
-        file,
-        metadata.len(),
-        metadata.modified().ok()
-    );
-    let cache = CACHE.get_or_init(|| Mutex::new(VecDeque::new()));
-    let cell = {
-        let mut entries = cache.lock().unwrap();
-        entries.retain(|(_, time, _)| time.elapsed() < Duration::from_secs(600));
-        if let Some((_, _, cell)) = entries.iter().find(|(id, _, _)| id == &key) {
-            cell.clone()
-        } else {
-            while entries.len() >= 32 {
-                entries.pop_front();
-            }
-            let cell = Arc::new(tokio::sync::OnceCell::new());
-            entries.push_back((key, Instant::now(), cell.clone()));
-            cell
-        }
-    };
-    let bytes = cell
-        .get_or_try_init(|| extract_uncached(file, index, font, format, preview))
-        .await?;
-    let output = bytes.clone();
-    let mut entries = cache.lock().unwrap();
-    while entries
-        .iter()
-        .filter_map(|(_, _, cell)| cell.get())
-        .map(Vec::len)
-        .sum::<usize>()
-        > 48 * 1024 * 1024
-    {
-        entries.pop_front();
-    }
-    Ok(output)
-}
-
-pub async fn extract(
-    file: &Path,
-    index: u64,
-    font: bool,
-    format: &str,
-) -> Result<Vec<u8>, AppError> {
-    cached_extract(file, index, font, format, false).await
-}
-pub async fn preview(file: &Path, index: u64) -> Result<Vec<u8>, AppError> {
-    cached_extract(file, index, false, "ass", true).await
 }

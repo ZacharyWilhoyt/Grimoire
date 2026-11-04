@@ -40,6 +40,7 @@ const MAX_DIRECTORY_DEPTH: usize = 32;
 struct AppState {
     db: sqlx::PgPool,
     network: Arc<security::Network>,
+    tls: Arc<security::tls::Runtime>,
     config: Arc<auth::Config>,
     hashing: Arc<tokio::sync::Semaphore>,
     catalog_scans: Arc<tokio::sync::Semaphore>,
@@ -533,6 +534,38 @@ fn scan_directory(root: &Path) -> Result<Vec<MediaFile>, String> {
     Ok(files)
 }
 
+async fn frontend(request: Request) -> Response {
+    if request.uri().path() == "/api"
+        || request.uri().path().starts_with("/api/")
+        || !matches!(
+            *request.method(),
+            axum::http::Method::GET | axum::http::Method::HEAD
+        )
+    {
+        return not_found().await.into_response();
+    }
+    let Some(root) = std::env::var_os("GRIMOIRE_WEB_ROOT").map(PathBuf::from) else {
+        return not_found().await.into_response();
+    };
+    let result = tower_http::services::ServeDir::new(&root)
+        .fallback(ServeFile::new(root.join("index.html")))
+        .try_call(request)
+        .await;
+    match result {
+        Ok(response) => {
+            let mut response = response.map(axum::body::Body::new);
+            response
+                .headers_mut()
+                .insert("x-content-type-options", "nosniff".parse().unwrap());
+            response
+                .headers_mut()
+                .insert("cache-control", "private, no-store".parse().unwrap());
+            response
+        }
+        Err(_) => not_found().await.into_response(),
+    }
+}
+
 async fn not_found() -> (StatusCode, Json<ApiError>) {
     (
         StatusCode::NOT_FOUND,
@@ -700,6 +733,12 @@ fn app(state: AppState) -> Router {
             "/api/admin/security/ip/preview",
             axum::routing::post(security::preview).layer(DefaultBodyLimit::max(16 * 1024)),
         )
+        .route(
+            "/api/admin/security/tls",
+            get(security::tls::read)
+                .put(security::tls::save)
+                .layer(DefaultBodyLimit::max(16 * 1024)),
+        )
         .route("/api/statistics", get(statistics::read))
         .route("/api/sources", get(list_sources).post(add_source))
         .route("/api/sources/{source_id}", delete(remove_source))
@@ -725,7 +764,7 @@ fn app(state: AppState) -> Router {
         .route("/api/ready", get(readiness))
         .route("/api/auth/register", axum::routing::post(auth::register))
         .route("/api/auth/login", axum::routing::post(auth::login))
-        .fallback(not_found)
+        .fallback(frontend)
         .layer(DefaultBodyLimit::max(4096))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -786,6 +825,9 @@ async fn main() {
         .unwrap_or_else(|_| panic!("Password hashing initialization failed"));
     let config = auth::Config::from_env(dummy).unwrap_or_else(|message| panic!("{message}"));
     let state = AppState {
+        tls: Arc::new(
+            security::tls::Runtime::from_env().unwrap_or_else(|message| panic!("{message}")),
+        ),
         network: Arc::new(
             security::Network::from_env().unwrap_or_else(|message| panic!("{message}")),
         ),
@@ -797,11 +839,21 @@ async fn main() {
         video_audio: Arc::new(crate::video_audio::Runtime::new()),
         transcode: Arc::new(crate::transcode::Runtime::new()),
     };
+    if state.tls.managed.is_some() && !state.network.require_proxy {
+        panic!(
+            "Managed Caddy requires GRIMOIRE_REQUIRE_PROXY=true and trusted proxy configuration."
+        );
+    }
+    security::tls::supervise(state.clone());
     let port = std::env::var("GRIMOIRE_PORT")
         .unwrap_or_else(|_| "3000".into())
         .parse::<u16>()
         .expect("GRIMOIRE_PORT must be a valid port");
-    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let bind = std::env::var("GRIMOIRE_BIND_ADDRESS")
+        .unwrap_or_else(|_| "127.0.0.1".into())
+        .parse::<std::net::IpAddr>()
+        .expect("GRIMOIRE_BIND_ADDRESS must be an IP address");
+    let address = SocketAddr::new(bind, port);
     let listener = tokio::net::TcpListener::bind(address)
         .await
         .expect("Failed to bind API listener");

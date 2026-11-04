@@ -20,7 +20,8 @@ architecture.
 > **Project status:** Grimoire has a working local prototype with accounts,
 > source permissions, media playback/readers, metadata and saved progress.
 > Distributed contributor delivery, user uploads, acquisition requests and public
-> deployment remain planned. See [Development Status](#development-status) for
+> deployment hardening remain planned. An optional [managed Caddy deployment](docs/DEPLOYMENT.md)
+> provides HTTPS and administrator IP controls. See [Development Status](#development-status) for
 > implemented capabilities and the remaining decisions.
 
 ## Table of Contents
@@ -594,6 +595,12 @@ Restart the API to apply the new series-preference migration.
 Administrator-only [IP access controls](docs/IP_ACCESS.md) support IPv4/IPv6 and
 CIDR rules, explicit defaults, Allow-over-Deny precedence, lockout warnings and
 local recovery.
+
+An optional [Docker Compose deployment](docs/DEPLOYMENT.md) runs dedicated Caddy,
+the API with built frontend, and PostgreSQL. Administrator security settings
+control TLS domains and certificate automation while preserving stored HTTPS
+certificates when automation is disabled. Existing direct local development
+remains available. See the deployment guide for DNS, first setup and recovery.
 
 ## Checks and Operations
 

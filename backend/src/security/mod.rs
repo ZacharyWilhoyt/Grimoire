@@ -1,4 +1,5 @@
 //! Application-wide IP policy. Forwarded identities require a pinned peer AND shared secret.
+pub mod tls;
 use crate::{auth, AppError, AppState};
 use axum::{
     extract::{ConnectInfo, Request, State},

@@ -10,9 +10,10 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 const ORIGIN: &str = "http://localhost:5173";
-fn state(pool: PgPool) -> AppState {
+pub(super) fn state(pool: PgPool) -> AppState {
     AppState {
         network: Arc::new(crate::security::Network::default()),
+        tls: Arc::new(crate::security::tls::Runtime::default()),
         db: pool,
         config: Arc::new(auth::Config {
             additional_origins: Vec::new(),
@@ -28,7 +29,7 @@ fn state(pool: PgPool) -> AppState {
         transcode: Arc::new(crate::transcode::Runtime::new()),
     }
 }
-async fn request(
+pub(super) async fn request(
     state: &AppState,
     method: Method,
     path: &str,
@@ -64,7 +65,7 @@ async fn request(
         .await
         .unwrap()
 }
-async fn body(response: Response) -> Value {
+pub(super) async fn body(response: Response) -> Value {
     serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap()).unwrap()
 }
 async fn session(response: Response, status: StatusCode) -> (String, String, Value) {
@@ -541,7 +542,7 @@ async fn authentication_errors_are_generic_and_rate_limited(pool: PgPool) {
     );
 }
 
-async fn register_user(state: &AppState, name: &str) -> (String, String, Value) {
+pub(super) async fn register_user(state: &AppState, name: &str) -> (String, String, Value) {
     session(
         request(
             state,
@@ -4108,8 +4109,10 @@ async fn mkv_audio_selection_transcodes_and_rechecks_permissions(pool: PgPool) {
         .unwrap();
     let samples: Vec<i16> = pcm
         .stdout
-        .chunks_exact(2)
-        .map(|s| i16::from_le_bytes([s[0], s[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|s| i16::from_le_bytes(*s))
         .collect();
     let crossings = samples.windows(2).filter(|s| s[0] <= 0 && s[1] > 0).count();
     assert!(

@@ -1,12 +1,13 @@
 import {useEffect,useState} from 'react'
 import {X} from 'lucide-react'
+import TlsCertificates from './TlsCertificates'
 import {apiFetch} from './api'
 import {useModalDialog} from './useModalDialog'
 type Policy={default_action:'allow'|'deny';allow:string[];deny:string[]}
 type View={revision:number;policy:Policy;current_ip:string}
 export default function AdminSecurity({onClose}:{onClose:()=>void}){
  const dialog=useModalDialog()
- return <dialog ref={dialog} className="video-backdrop" aria-labelledby="admin-security-title" onCancel={e=>{e.preventDefault();onClose()}}><section className="security-panel"><header className="settings-title"><h1 id="admin-security-title">Administrator security</h1><button aria-label="Close administrator security" onClick={onClose}><X/></button></header><IpAccess/></section></dialog>
+ return <dialog ref={dialog} className="video-backdrop" aria-labelledby="admin-security-title" onCancel={e=>{e.preventDefault();onClose()}}><section className="security-panel"><header className="settings-title"><h1 id="admin-security-title">Administrator security</h1><button aria-label="Close administrator security" onClick={onClose}><X/></button></header><IpAccess/><TlsCertificates/></section></dialog>
 }
 function IpAccess(){
  const [view,setView]=useState<View|null>(null),[action,setAction]=useState<'allow'|'deny'>('allow'),[allow,setAllow]=useState(''),[deny,setDeny]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState(''),[message,setMessage]=useState(''),[preview,setPreview]=useState<{policy:Policy;would_block_you:boolean}|null>(null),[ack,setAck]=useState(false)

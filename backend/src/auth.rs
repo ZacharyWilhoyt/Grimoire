@@ -286,7 +286,14 @@ pub async fn origin_and_limits(
                     .any(|allowed| allowed == origin)
             })
             .unwrap_or(&state.config.origin);
-        require_origin(request.headers(), expected)?;
+        let actual = request
+            .headers()
+            .get("origin")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        if !crate::security::tls::allows_origin(&state, actual).await? {
+            require_origin(request.headers(), expected)?;
+        }
     }
     if matches!(
         request.uri().path(),

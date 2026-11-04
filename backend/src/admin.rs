@@ -18,6 +18,26 @@ fn password() -> Result<String, String> {
 }
 
 pub async fn command(db: &PgPool, args: &[String]) -> Result<(), String> {
+    if args == ["reset-managed-tls"] || args == ["enable-automatic-tls"] {
+        let mut tx = db.begin().await.map_err(|_| "Database unavailable.")?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(0x4752494d544c53_i64)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| "TLS settings unavailable.")?;
+        if args[0] == "reset-managed-tls" {
+            sqlx::query("UPDATE instance_security SET tls_settings=NULL,tls_revision=tls_revision+1 WHERE singleton").execute(&mut *tx).await.map_err(|_|"TLS reset failed.")?;
+        } else {
+            sqlx::query("UPDATE instance_security SET tls_settings=jsonb_set(tls_settings,'{automatic}','true'),tls_revision=tls_revision+1 WHERE singleton AND tls_settings IS NOT NULL").execute(&mut *tx).await.map_err(|_|"TLS update failed.")?;
+        }
+        sqlx::query("INSERT INTO auth_events(event) VALUES('operator_tls_recovery')")
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| "Audit failed.")?;
+        tx.commit().await.map_err(|_| "TLS recovery failed.")?;
+        println!("TLS settings updated. Certificate files were preserved. See deployment recovery instructions.");
+        return Ok(());
+    }
     if args == ["reset-ip-access"] {
         let mut tx = db.begin().await.map_err(|_| "Database unavailable.")?;
         sqlx::query("UPDATE instance_security SET ip_policy='{\"default_action\":\"allow\",\"allow\":[],\"deny\":[]}'::jsonb,ip_revision=ip_revision+1,updated_at=now() WHERE singleton").execute(&mut *tx).await.map_err(|_|"IP reset failed.")?;

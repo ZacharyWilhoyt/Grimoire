@@ -16,3 +16,9 @@ __pycache__/
 **/.ignore/
 
 /data/video-cache/
+
+# Deployment-local data and secrets.
+/deploy/media/
+/deploy/runtime/
+
+/deploy/.env.setup.*

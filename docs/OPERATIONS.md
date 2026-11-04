@@ -1,9 +1,10 @@
 # API process operations
 
-The API binds to loopback (`127.0.0.1`, `GRIMOIRE_PORT`, default 3000).
-Public hosting still requires the TLS/reverse-proxy, database, secrets and origin
-configuration described in AUTHENTICATION.md. This document does not choose a
-public deployment hostname or expose the listener.
+The API binds to loopback by default (`127.0.0.1`, `GRIMOIRE_PORT`, default 3000).
+`GRIMOIRE_BIND_ADDRESS` selects an explicit bind address for isolated deployments.
+The optional [managed Caddy deployment](DEPLOYMENT.md) handles TLS and private
+upstreams; direct local development remains available. Public hosting still needs
+DNS, secrets, backups and operational review. No public hostname is chosen here.
 
 ## Shutdown and restarts
 

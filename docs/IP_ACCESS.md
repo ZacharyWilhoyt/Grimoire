@@ -9,7 +9,7 @@ requires explicit lockout acknowledgement. Revision conflicts require reloading.
 Rules cover new frontend, login, API and media requests. They do not terminate
 bytes already delivered or an existing stream. Policies live in PostgreSQL and
 are read on every request, so changes apply across workers immediately. Database
-failure fails closed. Direct, unproxied loopback `/api/health` and `/api/ready`
+failure fails closed. In direct local development (require-proxy disabled), unproxied loopback `/api/health` and `/api/ready`
 probes remain available without serving application content during DB outages.
 There is no privileged browser/network bypass for application resources.
 

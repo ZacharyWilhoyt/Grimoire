@@ -1,0 +1,96 @@
+name: grimoire
+services:
+  postgres:
+    image: postgres:18-bookworm
+    restart: unless-stopped
+    network_mode: none
+    environment:
+      POSTGRES_PASSWORD: ${GRIMOIRE_POSTGRES_ADMIN_PASSWORD:?Run deploy/setup.sh first}
+      POSTGRES_DB: grimoire
+      GRIMOIRE_DB_PASSWORD: ${GRIMOIRE_DB_PASSWORD:?Run deploy/setup.sh first}
+      POSTGRES_INITDB_ARGS: --auth-local=scram-sha-256 --auth-host=scram-sha-256
+    command: [postgres, -c, listen_addresses=, -c, unix_socket_directories=/var/run/postgresql]
+    volumes:
+      - postgres_data:/var/lib/postgresql
+      - postgres_socket:/var/run/postgresql
+      - ./init-db.sql:/docker-entrypoint-initdb.d/grimoire.sql:ro
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -h /var/run/postgresql -U postgres -d grimoire]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    stop_grace_period: 40s
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    environment:
+      DATABASE_URL: postgresql://grimoire:${GRIMOIRE_DB_PASSWORD:?Run deploy/setup.sh first}@localhost/grimoire?host=/var/run/postgresql
+      GRIMOIRE_APP_ORIGIN: https://localhost
+      GRIMOIRE_BIND_ADDRESS: 0.0.0.0
+      GRIMOIRE_PORT: '3000'
+      GRIMOIRE_TRUSTED_PROXIES: '["172.30.88.2/32"]'
+      GRIMOIRE_PROXY_TOKEN: ${GRIMOIRE_PROXY_TOKEN:?Run deploy/setup.sh first}
+      GRIMOIRE_REQUIRE_PROXY: 'true'
+      GRIMOIRE_CADDY_SOCKET: /run/caddy/admin.sock
+      GRIMOIRE_CADDY_STORAGE: /data/caddy
+      GRIMOIRE_INTEGRATION_KEY: ${GRIMOIRE_INTEGRATION_KEY:?Run deploy/setup.sh first}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      grimoire:
+        ipv4_address: 172.30.88.3
+    volumes:
+      - postgres_socket:/var/run/postgresql
+      - app_data:/app/data
+      - caddy_control:/run/caddy
+      - caddy_data:/data:ro
+      - ${GRIMOIRE_MEDIA_ROOT:?Set GRIMOIRE_MEDIA_ROOT in deploy/.env}:/media:ro
+  caddy:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.caddy
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID]
+    security_opt: [no-new-privileges:true]
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: '0'
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    environment:
+      GRIMOIRE_PROXY_TOKEN: ${GRIMOIRE_PROXY_TOKEN:?Run deploy/setup.sh first}
+    depends_on:
+      api:
+        condition: service_started
+    networks:
+      grimoire:
+        ipv4_address: 172.30.88.2
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp'
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+      - caddy_control:/run/caddy
+networks:
+  grimoire:
+    ipam:
+      config:
+        - subnet: 172.30.88.0/24
+volumes:
+  postgres_data:
+  postgres_socket:
+  app_data:
+  caddy_data:
+  caddy_config:
+  caddy_control:
