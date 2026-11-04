@@ -525,10 +525,15 @@ Use the close button or Escape to return to browsing. Opening a reader stops
 music and video playback. Chapter/page positions now persist across sessions; see [progress](docs/PROGRESS.md).
 
 Books use `GET /api/sources/{id}/book?path=...` and the same registered-source,
-path, and cache restrictions as the media endpoints. Archives are processed in
-browser memory with [zip.js](https://gildas-lormeau.github.io/zip.js/). The initial
-limits are 128 MiB compressed, 256 MiB expanded, 32 MiB per entry, and 5,000
-archive entries; encrypted archives are rejected. EPUB HTML is sanitized using
+path, and cache restrictions as the media endpoints. Archives are read on demand through authenticated byte ranges with
+[zip.js](https://gildas-lormeau.github.io/zip.js/), without downloading the entire
+archive into browser memory. CBZ limits are 4 GiB compressed and 8 GiB expanded;
+EPUB limits remain 128 MiB compressed and 256 MiB expanded. Both allow 32 MiB per
+entry and 5,000 archive entries; encrypted archives are rejected. The reader
+retains at most 64 MiB of extracted resources in its LRU cache and extracts at
+most two resources concurrently. Active page images and browser decoding use
+additional memory; offscreen pages release their object URLs. Reverse proxies
+must preserve byte-range requests and 206 responses. See [book archive loading](docs/BOOK_ARCHIVES.md). EPUB HTML is sanitized using
 [DOMPurify](https://github.com/cure53/DOMPurify), then shown in an iframe with an
 empty sandbox and a restrictive content security policy. Scripts, external
 resources, forms, and chapter hyperlinks are disabled. EPUB publisher styles

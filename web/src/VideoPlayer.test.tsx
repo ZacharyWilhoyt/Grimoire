@@ -178,3 +178,27 @@ it('fades mini-player controls 2.5 seconds after interaction',async()=>{
   expect(controls.classList.contains('mini-visible')).toBe(false)
  }finally{await act(async()=>root.unmount());vi.useRealTimers();vi.unstubAllGlobals()}
 })
+
+it('toggles playback from picture clicks without double-toggling toolbar controls',async()=>{
+ vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true)
+ const host=document.createElement('div'),root=createRoot(host)
+ try{
+  await act(async()=>root.render(<VideoPlayer sourceId="s" sourceName="Test" file={{name:'Film',relative_path:'film.mkv'}} onClose={()=>{}}/>))
+  const video=host.querySelector('video')!
+  let paused=false
+  Object.defineProperty(video,'paused',{configurable:true,get:()=>paused})
+  const pause=vi.spyOn(video,'pause').mockImplementation(()=>{paused=true;video.dispatchEvent(new Event('pause'))})
+  const play=vi.spyOn(video,'play').mockImplementation(async()=>{paused=false;video.dispatchEvent(new Event('play'))})
+  await act(async()=>video.dispatchEvent(new Event('play')))
+  await act(async()=>video.click())
+  expect(pause).toHaveBeenCalledOnce();expect(paused).toBe(true)
+  await act(async()=>video.click())
+  expect(play).toHaveBeenCalledOnce();expect(paused).toBe(false)
+  await act(async()=>host.querySelector<HTMLButtonElement>('[aria-label="Settings"]')!.click())
+  expect(pause).toHaveBeenCalledOnce()
+  await act(async()=>host.querySelector<HTMLButtonElement>('[aria-label="Pause"]')!.click())
+  expect(pause).toHaveBeenCalledTimes(2);expect(paused).toBe(true)
+  await act(async()=>root.unmount())
+  video.click();expect(play).toHaveBeenCalledOnce()
+ }finally{await act(async()=>root.unmount());vi.unstubAllGlobals()}
+})

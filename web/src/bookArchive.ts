@@ -1,4 +1,4 @@
-import { BlobReader, ZipReader, type FileEntry } from '@zip.js/zip.js'
+import { Reader, ZipReader, type FileEntry } from '@zip.js/zip.js'
 
 export const MAX_BOOK_BYTES = 128 * 1024 * 1024
 const MAX_ENTRY_BYTES = 32 * 1024 * 1024
@@ -17,23 +17,50 @@ export function parseXml(text: string) {
   return document
 }
 
-export async function openArchive(url: string, signal: AbortSignal) {
-  const response = await fetch(url, { signal })
-  if (!response.ok || !response.body) throw new Error('The book could not be opened. Check that its source is available and it is smaller than 128 MiB.')
-  const chunks: Uint8Array<ArrayBuffer>[] = []
-  const stream = response.body.getReader()
-  let received = 0
+// ZIP indexing and page extraction use bounded ranges, never a full archive Blob.
+export const MAX_CBZ_BYTES = 4 * 1024 ** 3
+export const MAX_CACHE_BYTES = 64 * 1024 ** 2
+const MAX_INDEX_READ = 16 * 1024 ** 2
+const RANGE_CHUNK = 512 * 1024
+async function range(url:string,start:number,length:number,signal:AbortSignal,total?:number,validator?:string){
+  const headers:Record<string,string>={Range:`bytes=${start}-${start+length-1}`}
+  if(validator)headers['If-Range']=validator
+  const response=await fetch(url,{signal,headers,credentials:'same-origin',cache:'no-store'})
+  const contentRange=/^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('content-range')??'')
+  if(response.status!==206||!response.body||!contentRange||Number(contentRange[1])!==start||Number(contentRange[2])!==start+length-1||!Number.isSafeInteger(Number(contentRange[3]))||(total!==undefined&&Number(contentRange[3])!==total)){
+    await response.body?.cancel()
+    throw Error('This book could not be read with byte ranges. Its source may be unavailable, the file may have changed, or a proxy may be stripping Range headers.')
+  }
+  const bytes=new Uint8Array(length),stream=response.body.getReader()
+  let received=0
+  try{while(true){const {value,done}=await stream.read();if(done)break;if(received+value.byteLength>length)throw Error('The book source returned an oversized range.');bytes.set(value,received);received+=value.byteLength}}
+  finally{await stream.cancel()}
+  if(received!==length)throw Error('The book source returned an incomplete range.')
+  return {bytes,size:Number(contentRange[3]),validator:response.headers.get('etag')?.replace(/^W\/.*$/,'')||response.headers.get('last-modified')||undefined}
+}
+class RangeReader extends Reader<undefined>{
+  constructor(private url:string,size:number,private signal:AbortSignal,private validator?:string){super(undefined);this.size=size}
+  async readUint8Array(index:number,length:number){
+    this.signal.throwIfAborted()
+    if(!Number.isSafeInteger(index)||index<0||!Number.isSafeInteger(length)||length<0)throw Error('Invalid book byte range.')
+    length=Math.min(length,Math.max(0,this.size-index))
+    if(length>MAX_INDEX_READ)throw Error('This archive exceeds the ZIP index processing limit.')
+    const bytes=new Uint8Array(length)
+    for(let offset=0;offset<length;offset+=RANGE_CHUNK){const chunk=await range(this.url,index+offset,Math.min(RANGE_CHUNK,length-offset),this.signal,this.size,this.validator);bytes.set(chunk.bytes,offset)}
+    return bytes
+  }
+}
+export async function openArchive(url: string, signal: AbortSignal, format:'epub'|'cbz'='epub') {
+  const lifetime=new AbortController()
+  const abort=()=>lifetime.abort(signal.reason)
+  if(signal.aborted)abort();else signal.addEventListener('abort',abort,{once:true})
+  const stop=()=>{lifetime.abort();signal.removeEventListener('abort',abort)}
+  let reader:ZipReader<undefined>|undefined
   try {
-    while (true) {
-      const { value, done } = await stream.read()
-      if (done) break
-      received += value.byteLength
-      if (received > MAX_BOOK_BYTES) throw new Error('Books must be smaller than 128 MiB.')
-      chunks.push(new Uint8Array(value))
-    }
-  } finally { await stream.cancel() }
-  const reader = new ZipReader(new BlobReader(new Blob(chunks)), { useWebWorkers: false })
-  try {
+    const initial=await range(url,0,1,lifetime.signal)
+    const maxBytes=format==='cbz'?MAX_CBZ_BYTES:MAX_BOOK_BYTES
+    if(initial.size>maxBytes)throw Error(format==='cbz'?'CBZ archives must be at most 4 GiB.':'EPUB books must be at most 128 MiB.')
+    reader = new ZipReader(new RangeReader(url,initial.size,lifetime.signal,initial.validator), { useWebWorkers: false })
     const entries = new Map<string, FileEntry>()
     let expanded = 0
     let entryCount = 0
@@ -41,32 +68,52 @@ export async function openArchive(url: string, signal: AbortSignal) {
       if (++entryCount > 5000) throw new Error('This archive contains too many files.')
       if (entry.directory) continue
       expanded += entry.uncompressedSize
-      if (entry.encrypted || entry.uncompressedSize > MAX_ENTRY_BYTES || expanded > MAX_EXPANDED_BYTES) throw new Error('This book is encrypted or exceeds the reader archive limits.')
+      const maxExpanded=format==='cbz'?8*1024**3:MAX_EXPANDED_BYTES
+      if (entry.encrypted || !Number.isSafeInteger(entry.uncompressedSize) || entry.uncompressedSize<0 || entry.uncompressedSize > MAX_ENTRY_BYTES || expanded > maxExpanded) throw new Error('This book is encrypted or exceeds the reader archive limits.')
       if (entries.has(entry.filename)) throw new Error('This archive contains duplicate file names.')
       entries.set(entry.filename, entry)
     }
-    let actualExpanded = 0
-    const cache = new Map<string, Promise<Blob>>()
+    let cacheBytes=0,slots=2
+    const cache = new Map<string, Blob>(),pending=new Map<string,Promise<Blob>>()
+    const waiters:(()=>void)[]=[]
+    const acquire=async()=>{if(slots>0){slots--;return}await new Promise<void>(resolve=>waiters.push(resolve))}
+    const release=()=>{const next=waiters.shift();if(next)next();else slots++}
     const extract = async (name: string) => {
-      const entry = entries.get(name)
-      if (!entry) throw new Error('A required book resource is missing.')
-      const parts: Uint8Array<ArrayBuffer>[] = []
-      let size = 0
-      await entry.getData(new WritableStream<Uint8Array>({ write(chunk) {
-        size += chunk.byteLength
-        actualExpanded += chunk.byteLength
-        if (actualExpanded > MAX_EXPANDED_BYTES) throw new Error('This book exceeds the expanded size limit.')
-        if (size > MAX_ENTRY_BYTES) throw new Error('A book resource exceeds the reader size limit.')
-        parts.push(new Uint8Array(chunk))
-      } }), { signal, checkSignature: true })
-      return new Blob(parts)
+      await acquire()
+      try{
+        lifetime.signal.throwIfAborted()
+        const entry = entries.get(name)
+        if (!entry) throw new Error('A required book resource is missing.')
+        const parts: Uint8Array<ArrayBuffer>[] = []
+        let size = 0
+        await entry.getData(new WritableStream<Uint8Array>({ write(chunk) {
+          size += chunk.byteLength
+          if (size > MAX_ENTRY_BYTES || size>entry.uncompressedSize) throw new Error('A book resource exceeds the reader size limit.')
+          parts.push(new Uint8Array(chunk))
+        } }), { signal:lifetime.signal, checkSignature: true })
+        if(size!==entry.uncompressedSize)throw Error('A book resource has an invalid size.')
+        return new Blob(parts)
+      }finally{release()}
     }
-    const read = (name: string) => {
-      let result = cache.get(name)
-      if (!result) { result = extract(name); cache.set(name, result) }
+    const read = (name: string):Promise<Blob> => {
+      if(lifetime.signal.aborted)return Promise.reject(lifetime.signal.reason)
+      const cached=cache.get(name)
+      if(cached){cache.delete(name);cache.set(name,cached);return Promise.resolve(cached)}
+      let result=pending.get(name)
+      if(!result){
+        result=extract(name).then(blob=>{
+          if(!lifetime.signal.aborted){
+            while(cacheBytes+blob.size>MAX_CACHE_BYTES&&cache.size){const oldest=cache.keys().next().value!;cacheBytes-=cache.get(oldest)!.size;cache.delete(oldest)}
+            cache.set(name,blob);cacheBytes+=blob.size
+          }
+          return blob
+        }).finally(()=>pending.delete(name))
+        pending.set(name,result)
+      }
       return result
     }
-    return { entries, read, close: () => reader.close() }
-  } catch (error) { await reader.close(); throw error }
+    const opened=reader
+    return { entries, read, close: async()=>{stop();cache.clear();cacheBytes=0;await opened.close()} }
+  } catch (error) { stop();await reader?.close();throw error }
 }
 export type BookArchive = Awaited<ReturnType<typeof openArchive>>

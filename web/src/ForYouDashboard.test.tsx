@@ -12,6 +12,7 @@ it('scrolls each continuation rail independently and resumes original user progr
  const host=document.createElement('div'),root=createRoot(host),open=vi.fn()
  try{
   await act(async()=>root.render(<ForYouDashboard items={[video,book]} catalog={[]} picks={null} onOpen={open} busy={false}/>))
+  expect(host.querySelector('.resume-strip')).toBeNull()
   const rails=[...host.querySelectorAll<HTMLElement>('.continuation-rail')]
   for(const rail of rails){Object.defineProperty(rail,'clientWidth',{value:300});Object.defineProperty(rail,'scrollWidth',{value:900});rail.scrollBy=vi.fn()}
   await act(async()=>window.dispatchEvent(new Event('resize')))

@@ -43,7 +43,7 @@ export default function BookReader({userId,sourceId,sourceName,file,onClose,onNe
       progress.current = session
       const saved = await session.load()
       if (controller.signal.aborted) return
-      opened = await openArchive(`/api/sources/${encodeURIComponent(sourceId)}/book?${new URLSearchParams({ path: file.relative_path })}`, controller.signal)
+      opened = await openArchive(`/api/sources/${encodeURIComponent(sourceId)}/book?${new URLSearchParams({ path: file.relative_path })}`, controller.signal, comic?'cbz':'epub')
       if (controller.signal.aborted) { await opened.close(); return }
       let pages: Chapter[]
       if (comic) {

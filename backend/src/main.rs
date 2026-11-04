@@ -347,16 +347,30 @@ async fn serve_media_file(
     request: Request,
     kind: &str,
 ) -> Result<Response, AppError> {
-    if kind == "book"
-        && fs::metadata(&path)
+    if kind == "book" {
+        let comic = path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("cbz"));
+        let limit = if comic {
+            4_u64 * 1024 * 1024 * 1024
+        } else {
+            128 * 1024 * 1024
+        };
+        if fs::metadata(&path)
             .map_err(|_| bad_request("Book unavailable."))?
             .len()
-            > 128 * 1024 * 1024
-    {
-        return Err(AppError(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "Books must be smaller than 128 MiB.".into(),
-        ));
+            > limit
+        {
+            return Err(AppError(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                if comic {
+                    "CBZ archives must be at most 4 GiB."
+                } else {
+                    "EPUB books must be at most 128 MiB."
+                }
+                .into(),
+            ));
+        }
     }
     let response = ServeFile::new(path)
         .try_call(request)
@@ -919,6 +933,41 @@ mod tests {
         .await;
         assert!(matches!(
             result,
+            Err(AppError(StatusCode::PAYLOAD_TOO_LARGE, _))
+        ));
+        let large = root.join("large.cbz");
+        fs::File::create(&large)
+            .unwrap()
+            .set_len(4_u64 * 1024 * 1024 * 1024)
+            .unwrap();
+        // A sparse 4 GiB file is served a byte at a time, without allocating its contents.
+        let response = serve_media_file(
+            large.clone(),
+            Request::builder()
+                .header("range", "bytes=0-0")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+            "book",
+        )
+        .await
+        .unwrap_or_else(|_| panic!("large CBZ"));
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.headers()["content-range"], "bytes 0-0/4294967296");
+        assert_eq!(
+            axum::body::to_bytes(response.into_body(), 1)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&large)
+            .unwrap()
+            .set_len(4_u64 * 1024 * 1024 * 1024 + 1)
+            .unwrap();
+        assert!(matches!(
+            serve_media_file(large, Request::new(axum::body::Body::empty()), "book").await,
             Err(AppError(StatusCode::PAYLOAD_TOO_LARGE, _))
         ));
         fs::remove_dir_all(root).unwrap();
