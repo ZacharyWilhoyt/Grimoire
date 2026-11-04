@@ -13,6 +13,7 @@ pub struct Fields {
     pub track: Option<u32>,
     pub disc: Option<u32>,
     pub volume: Option<f64>,
+    pub duration: Option<f64>,
     pub genres: Option<Vec<String>>,
     pub description: Option<String>,
 }
@@ -30,6 +31,12 @@ impl Fields {
                     return Err(bad_request("A metadata field exceeds its length limit."));
                 }
             }
+        }
+        if self
+            .duration
+            .is_some_and(|value| !value.is_finite() || value < 0.0)
+        {
+            return Err(bad_request("Invalid media duration."));
         }
         if self.year.is_some_and(|year| !(1..=9999).contains(&year))
             || [self.season, self.episode, self.track, self.disc]
@@ -76,6 +83,7 @@ impl Fields {
             track,
             disc,
             volume,
+            duration,
             genres,
             description
         );

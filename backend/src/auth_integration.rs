@@ -4644,3 +4644,95 @@ async fn additional_origins_are_explicit_and_do_not_bypass_csrf(pool: PgPool) {
         StatusCode::FORBIDDEN
     );
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn music_playlists_and_favorites_are_private_csrf_protected_and_revision_guarded(
+    pool: PgPool,
+) {
+    let state = state(pool);
+    let (owner, csrf, _) = register_user(&state, "music_owner").await;
+    let (viewer, _, _) = register_user(&state, "music_other").await;
+    let endpoint = "/api/music/library";
+    assert_eq!(
+        request(&state, Method::GET, endpoint, None, None, None, None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let library = json!({"favorites":["artist:example"],"playlists":[{"id":Uuid::new_v4(),"name":"My songs","tracks":["a".repeat(64)]}]});
+    let payload = json!({"expected_revision":0,"library":library});
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            endpoint,
+            Some(&owner),
+            None,
+            Some(ORIGIN),
+            Some(payload.clone())
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            endpoint,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(payload.clone())
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let persisted = body(
+        request(
+            &state,
+            Method::GET,
+            endpoint,
+            Some(&owner),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(persisted["library"], library);
+    assert_eq!(
+        body(
+            request(
+                &state,
+                Method::GET,
+                endpoint,
+                Some(&viewer),
+                None,
+                None,
+                None
+            )
+            .await
+        )
+        .await["library"]["playlists"],
+        json!([])
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            endpoint,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(payload)
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(request(&state,Method::PUT,endpoint,Some(&owner),Some(&csrf),Some(ORIGIN),Some(json!({"expected_revision":1,"library":{"favorites":[],"playlists":[{"id":Uuid::new_v4(),"name":"Invalid","tracks":["../../secret"]}]}}))).await.status(),StatusCode::BAD_REQUEST);
+}

@@ -56,3 +56,19 @@ it('flushes progress before an audio-resource switch and restores time and volum
     Object.defineProperty(second,'duration',{value:NaN})
   } finally { await act(async () => root.unmount()); vi.restoreAllMocks(); vi.unstubAllGlobals() }
 })
+
+it('does not restore an old music position when restoration is disabled',async()=>{
+ vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true)
+ vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify({position:73,total:100,locator:null,revision:1}))))
+ const play=vi.spyOn(HTMLMediaElement.prototype,'play').mockResolvedValue()
+ const host=document.createElement('div'),root=createRoot(host)
+ function Player(){const {media}=useMediaProgress<HTMLAudioElement>('source','song.mp3','',false);return <audio ref={media}/>}
+ try{
+  await act(async()=>root.render(<Player/>))
+  const audio=host.querySelector('audio')!
+  Object.defineProperty(audio,'readyState',{value:1});Object.defineProperty(audio,'duration',{value:100})
+  await act(async()=>audio.dispatchEvent(new Event('loadedmetadata')))
+  expect(audio.currentTime).toBe(0)
+  expect(play).toHaveBeenCalledOnce()
+ }finally{await act(async()=>root.unmount());vi.unstubAllGlobals()}
+})

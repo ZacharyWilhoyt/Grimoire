@@ -11,6 +11,7 @@ mod auth;
 mod auth_integration;
 mod catalog;
 mod metadata;
+mod music;
 mod permissions;
 mod progress;
 mod subtitles;
@@ -658,6 +659,12 @@ fn app(state: AppState) -> Router {
         .route(
             "/api/auth/password",
             axum::routing::post(auth::change_password),
+        )
+        .route(
+            "/api/music/library",
+            get(music::read)
+                .put(music::save)
+                .layer(DefaultBodyLimit::max(1024 * 1024)),
         )
         .route("/api/sources", get(list_sources).post(add_source))
         .route("/api/sources/{source_id}", delete(remove_source))

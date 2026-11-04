@@ -24,7 +24,7 @@ export default function MusicPlayer({ tracks, index, busy, onIndex, onClose }: P
   const previous = adjacentTrack(order, index, -1, repeat)
   const next = adjacentTrack(order, index, 1, repeat)
   const track = tracks[index]
-  const { media, progressError, retry, retryKey } = useMediaProgress<HTMLAudioElement>(track.source_id, track.relative_path)
+  const { media, progressError, retry, retryKey } = useMediaProgress<HTMLAudioElement>(track.source_id, track.relative_path, '', false)
   const url = `/api/sources/${encodeURIComponent(track.source_id)}/audio?${new URLSearchParams({ path: track.relative_path })}`
   const select = (target: number | undefined) => {
     if (target === undefined) return
