@@ -22,3 +22,4 @@ __pycache__/
 /deploy/runtime/
 
 /deploy/.env.setup.*
+/deploy/.env.import-*

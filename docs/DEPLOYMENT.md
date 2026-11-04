@@ -8,7 +8,7 @@ when migrating an existing database. Back up first; see [Backups](BACKUPS.md).
 
 ## First start
 
-Install Docker Engine with Compose v2 and OpenSSL on the host. From the repo:
+Install Docker Engine with Compose v2.24.4 or newer and OpenSSL on the host. From the repo:
 
 ```sh
 ./deploy/setup.sh
@@ -27,9 +27,13 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml up -d
 
 The bootstrap command uses the existing hidden password prompt. Register source
 directories using their **container** path (`/media/...`). Source owners still
-choose which encoders viewers can use. Containers default to CPU transcoding;
-GPU access requires an explicit device/driver override to the API service. This
-setup does not grant GPU access automatically or change existing host playback.
+choose which encoders viewers can use. Sources still default to CPU transcoding.
+The API container now receives the AMD/Intel render device and Mesa drivers;
+see [container GPU setup](TRANSCODING.md#container-gpu-access) for host permissions,
+CPU-only hosts and NVIDIA. Device access does not change source encoding policies.
+
+To copy an existing installation into a **new** container database without
+replacing either installation, use [Database migration](DATABASE_MIGRATION.md).
 
 ## Before configuring a public domain
 

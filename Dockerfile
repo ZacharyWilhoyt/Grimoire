@@ -11,7 +11,7 @@ COPY backend/ ./
 RUN CARGO_BUILD_JOBS=2 cargo build --locked --release
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates ffmpeg fonts-dejavu-core openssl && rm -rf /var/lib/apt/lists/* && useradd --uid 10001 --create-home grimoire
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates ffmpeg fonts-dejavu-core openssl mesa-va-drivers && rm -rf /var/lib/apt/lists/* && useradd --uid 10001 --create-home grimoire
 WORKDIR /app
 COPY --from=backend /build/backend/target/release/grimoire-api /usr/local/bin/grimoire-api
 COPY --from=web /build/web/dist /app/web

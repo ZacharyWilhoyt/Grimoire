@@ -1,0 +1,5 @@
+# Hosts without a render device (including CI): add this after compose.yaml.
+services:
+  api:
+    devices: !reset []
+    group_add: !reset []

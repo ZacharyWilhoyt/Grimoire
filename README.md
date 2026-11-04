@@ -24,6 +24,9 @@ architecture.
 > provides HTTPS and administrator IP controls. See [Development Status](#development-status) for
 > implemented capabilities and the remaining decisions.
 
+Existing installations can [copy their database into a new container database](docs/DATABASE_MIGRATION.md).
+The deployment supports [AMD/Intel, NVIDIA and CPU-only configurations](docs/TRANSCODING.md#container-gpu-access).
+
 ## Table of Contents
 
 -   [Vision](#vision)

@@ -15,7 +15,7 @@ if os.environ.get('GITHUB_ACTIONS') != 'true':
     raise SystemExit('This disposable deployment test runs only in GitHub Actions.')
 import pexpect
 
-COMPOSE = ['docker', 'compose', '-p', 'grimoire-security-ci', '--env-file', 'deploy/.env', '-f', 'deploy/compose.yaml']
+COMPOSE = ['docker', 'compose', '-p', 'grimoire-security-ci', '--env-file', 'deploy/.env', '-f', 'deploy/compose.yaml', '-f', 'deploy/compose.cpu.yaml']
 PASSWORD = 'disposable grimoire deployment test passphrase'
 
 

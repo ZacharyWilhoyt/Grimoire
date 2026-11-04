@@ -61,7 +61,7 @@ jobs:
       - run: bash -n scripts/backup-control-plane.sh
       - run: sh -n deploy/setup.sh deploy/caddy-entrypoint.sh
       - run: deploy/setup.sh
-      - run: docker compose --env-file deploy/.env -f deploy/compose.yaml config --quiet
+      - run: docker compose --env-file deploy/.env -f deploy/compose.yaml -f deploy/compose.cpu.yaml config --quiet
       - run: python3 -m unittest discover -s scripts/tests
   deployment:
     runs-on: ubuntu-latest
@@ -70,5 +70,5 @@ jobs:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y python3-pexpect
       - run: deploy/setup.sh
-      - run: docker compose --env-file deploy/.env -f deploy/compose.yaml build
+      - run: docker compose --env-file deploy/.env -f deploy/compose.yaml -f deploy/compose.cpu.yaml build
       - run: /usr/bin/python3 scripts/test-compose-deployment.py

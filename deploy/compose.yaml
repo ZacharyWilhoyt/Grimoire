@@ -27,14 +27,20 @@ services:
     stop_grace_period: 40s
     read_only: true
     cap_drop: [ALL]
+    devices:
+      - ${GRIMOIRE_VAAPI_HOST_DEVICE:-/dev/dri/renderD128}:/dev/dri/renderD128:rw
+    group_add:
+      - "${GRIMOIRE_RENDER_GID:-110}"
     security_opt: [no-new-privileges:true]
     tmpfs:
       - /tmp:size=256m,mode=1777
     environment:
-      DATABASE_URL: postgresql://grimoire:${GRIMOIRE_DB_PASSWORD:?Run deploy/setup.sh first}@localhost/grimoire?host=/var/run/postgresql
+      DATABASE_URL: postgresql://grimoire:${GRIMOIRE_DB_PASSWORD:?Run deploy/setup.sh first}@localhost/${GRIMOIRE_DATABASE_NAME:-grimoire}?host=/var/run/postgresql
       GRIMOIRE_APP_ORIGIN: https://localhost
       GRIMOIRE_BIND_ADDRESS: 0.0.0.0
       GRIMOIRE_PORT: '3000'
+      GRIMOIRE_VAAPI_DEVICE: /dev/dri/renderD128
+      GRIMOIRE_ARR_ALLOWED_URLS: ${GRIMOIRE_ARR_ALLOWED_URLS:-[]}
       GRIMOIRE_TRUSTED_PROXIES: '["172.30.88.2/32"]'
       GRIMOIRE_PROXY_TOKEN: ${GRIMOIRE_PROXY_TOKEN:?Run deploy/setup.sh first}
       GRIMOIRE_REQUIRE_PROXY: 'true'

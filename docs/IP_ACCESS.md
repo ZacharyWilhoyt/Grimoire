@@ -33,6 +33,16 @@ from other peers. Do not use broad trusted networks for community/client hosts.
 The authenticated client IP also supplies login/registration rate-limit keys.
 Arbitrary X-Forwarded-For and Forwarded headers never determine policy identity.
 
+When opening `https://localhost` on the Docker host, loopback/NAT forwarding can
+make Caddy receive the bridge gateway (`172.30.88.1`). This is different from
+Caddy's own pinned address (`172.30.88.2`). The host's LAN interface address is
+not the originating address of a localhost browser connection and must not be
+substituted for it. To test LAN-client rules, use a configured HTTPS network
+hostname from another device, with a valid/trusted certificate. If that connection
+also appears as a gateway, inspect the Docker port-forwarding/proxy path before
+restricting access; a forwarding header cannot recover an address already lost
+upstream. Never trust client-supplied headers as a workaround.
+
 API: admin-only `GET/PUT /api/admin/security/ip` and
 `POST /api/admin/security/ip/preview`. Mutations retain Origin/CSRF enforcement,
 body limits, canonical IP validation and bounded lists; updates are rate limited.
