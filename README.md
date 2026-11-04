@@ -581,6 +581,11 @@ extraction and online matching remain the default; Arr is optional. See
 URLs, folder mapping, API versions and operational limits. Download/acquisition
 requests remain future work.
 
+Video and written collections now share a [series detail page](docs/SERIES_DETAILS.md)
+with compact episode or volume browsing, synopsis tabs, sharing, and private
+per-user status/favorites. Catalog cards use the Continue Reading cover width.
+Restart the API to apply the new series-preference migration.
+
 ## Checks and Operations
 
 From the repository root, the normal local checks are below. Backup-helper tests

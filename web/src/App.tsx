@@ -9,7 +9,7 @@ import MetadataEditor from './MetadataEditor'
 import SourceMetadataTools from './SourceMetadataTools'
 import MetadataFilters from './MetadataFilters'
 import CatalogViews from './CatalogViews'
-import MediaDetails from './MediaDetails'
+import SeriesDetails from './SeriesDetails'
 import MediaCollection from './MediaCollection'
 import { filterMedia, pageFromHash, pageHashes, type MediaItem, type MetadataView, type PersonalState, type PageName, type Sort, type GroupBy } from './media'
 import SourcePermissions, { policyLabel, type AcquisitionPolicy } from './SourcePermissions'
@@ -79,7 +79,7 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
   const [connecting, setConnecting] = useState(false)
 
   useEffect(()=>{
-    const changed=(event:Event)=>{const {file_key,metadata}=(event as CustomEvent<{file_key:string;metadata:MetadataView}>).detail;const patch=(items:MediaItem[])=>items.map(item=>item.file_key===file_key?{...item,metadata}:item);setCatalog(patch);setSaved(patch);setContinuing(patch);setRecent(patch);setSourceFiles(patch);setLinkedSeries(current=>current?{...current,members:patch(current.members).filter(item=>item.metadata?.group?.id===current.members[0]?.metadata?.group?.id)}:null)}
+    const changed=(event:Event)=>{const {file_key,metadata}=(event as CustomEvent<{file_key:string;metadata:MetadataView}>).detail;const patch=(items:MediaItem[])=>items.map(item=>item.file_key===file_key?{...item,metadata}:item);setCatalog(patch);setSaved(patch);setContinuing(patch);setRecent(patch);setSourceFiles(patch);setDetailItem(current=>current?.file_key===file_key?{...current,metadata}:current);setLinkedSeries(current=>current?{...current,members:patch(current.members).filter(item=>item.metadata?.group?.id===current.members[0]?.metadata?.group?.id)}:null)}
     window.addEventListener('grimoire-media-metadata',changed);return()=>window.removeEventListener('grimoire-media-metadata',changed)
   },[])
   useEffect(() => {
@@ -177,7 +177,7 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
   const patchPersonal = (item: MediaItem, personal: PersonalState) => {
     const updated = { ...item, ...personal }
     const patch = (items: MediaItem[]) => items.map(old => old.file_key === item.file_key ? { ...old, ...personal } : old)
-    setCatalog(patch); setSourceFiles(patch)
+    setCatalog(patch); setSourceFiles(patch); setDetailItem(current=>current?.file_key===item.file_key?{...current,...personal}:current); setLinkedSeries(current=>current?{...current,members:patch(current.members)}:null)
     setSaved(items => personal.saved_at === null ? items.filter(old => old.file_key !== item.file_key) : [updated, ...items.filter(old => old.file_key !== item.file_key)])
     if (personal.last_opened_at !== null) setRecent(items => [updated, ...items.filter(old => old.file_key !== item.file_key)])
   }
@@ -225,7 +225,19 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
   const showSeries=async(item:MediaItem)=>{
     const group=item.metadata?.group;if(!group)return
     setLinkLoading(true);setLinkError('')
-    try{const context=await readApi<LinkContext>(`/api/media/link?${new URLSearchParams({source_id:item.source_id,group:group.id})}`);setLinkedSeries(context);window.history.pushState(null,'',seriesLink(item.source_id,group.id))}catch(e){setLinkError(e instanceof Error?e.message:'Series unavailable.')}finally{setLinkLoading(false)}
+    try{const context=await readApi<LinkContext>(`/api/media/link?${new URLSearchParams({source_id:item.source_id,group:group.id})}`);setDetailItem(null);setLinkedSeries(context);window.history.pushState(null,'',seriesLink(item.source_id,group.id))}catch(e){setLinkError(e instanceof Error?e.message:'Series unavailable.')}finally{setLinkLoading(false)}
+  }
+  const refreshDetails = () => {
+    setSourceRefresh(value=>value+1)
+    const item=detailItem??linkedSeries?.members[0]
+    if(!item)return
+    const params=new URLSearchParams({source_id:item.source_id})
+    if(linkedSeries&&!detailItem&&item.metadata?.group)params.set('group',item.metadata.group.id)
+    else params.set('path',item.relative_path)
+    void readApi<LinkContext>(`/api/media/link?${params}`).then(context=>{
+      if(detailItem)setDetailItem(current=>current?.file_key===item.file_key?context.item:current)
+      else setLinkedSeries(current=>current?.members[0]?.metadata?.group?.id===item.metadata?.group?.id?context:current)
+    }).catch(error=>setActionError(error instanceof Error?error.message:'Could not refresh details.'))
   }
   const toggleSaved = async (item: MediaItem) => {
     setActionBusy(true); setActionError('')
@@ -291,11 +303,15 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
 
   const musicPlayer = playback && <MusicPlayer key="music" tracks={playback.tracks} index={playback.index} busy={actionBusy} onIndex={index => { void openMedia(playback.tracks[index], playback.tracks) }} onClose={() => setPlayback(null)}/>
   if (linkLoading || linkError) return <>{musicPlayer}<section className="watch-page"><main className="watch-main"><button className="watch-back" onClick={closeWatch}>Back to library</button><p role={linkError ? 'alert' : 'status'}>{linkError || 'Opening media link…'}</p></main></section></>
-  if(detailItem)return <>{musicPlayer}<MediaDetails item={detailItem} onClose={closeWatch} onOpen={()=>{void openMedia(detailItem,[detailItem])}}/></>
   if (reading) return <BookReader userId={user.id} key={`${reading.source_id}:${reading.relative_path}`} sourceId={reading.source_id} sourceName={reading.source_name} file={reading} onClose={closeWatch} onNext={item=>{void openMedia(item,[item])}}/>
 
 
-  if (linkedSeries) return <>{musicPlayer}<section className="series-page"><header className="watch-header"><button className="watch-back" onClick={closeWatch}>Back to library</button><h1>{linkedSeries.label ?? 'Series'}</h1></header>{actionError && <p role="alert">{actionError}</p>}<MediaCollection onDetails={showDetails} onSeries={item=>{void showSeries(item)}} items={linkedSeries.members} groupBy="none" busy={actionBusy} onOpen={(item, queue) => { void openMedia(item, queue) }} onSave={item => { void toggleSaved(item) }} onMetadata={setMetadataItem} onGroupMetadata={setGroupItem}/>{metadataItem && <MetadataEditor item={metadataItem} onClose={() => setMetadataItem(null)} onUpdated={() => setSourceRefresh(value => value + 1)}/>}</section></>
+  if(linkedSeries?.members[0]?.kind==='music'&&!detailItem) return <>{musicPlayer}<section className="series-page"><header className="watch-header"><button className="watch-back" onClick={closeWatch}>Back to library</button><h1>{linkedSeries.label??'Album'}</h1></header>{actionError&&<p role="alert">{actionError}</p>}<MediaCollection items={linkedSeries.members} groupBy="none" busy={actionBusy} onOpen={(item,queue)=>{void openMedia(item,queue)}} onSave={item=>{void toggleSaved(item)}} onMetadata={setMetadataItem} onGroupMetadata={setGroupItem}/>{metadataItem&&<MetadataEditor item={metadataItem} onClose={()=>setMetadataItem(null)} onUpdated={refreshDetails}/>} {groupItem&&<GroupEditor item={groupItem} onClose={()=>setGroupItem(null)} onUpdated={refreshDetails}/>}</section></>
+  if (detailItem || linkedSeries) {
+    const members=detailItem?[detailItem]:linkedSeries!.members
+    return <>{musicPlayer}<SeriesDetails key={detailItem?.file_key??members[0]?.metadata?.group?.id} members={members} label={linkedSeries?.label} series={!detailItem} catalog={catalog} busy={actionBusy} error={actionError} onClose={closeWatch} onOpen={(item,queue)=>{void openMedia(item,queue)}} onSave={item=>{void toggleSaved(item)}} onDetails={showDetails} onSeries={item=>{void showSeries(item)}} onMetadata={setMetadataItem} onGroupMetadata={setGroupItem}/>{metadataItem&&<MetadataEditor item={metadataItem} onClose={()=>setMetadataItem(null)} onUpdated={refreshDetails}/>}
+    {groupItem&&<GroupEditor key={groupItem.metadata?.group?.id} item={groupItem} onClose={()=>setGroupItem(null)} onUpdated={refreshDetails}/>}</>
+  }
   return <>{musicPlayer}{video && <VideoPlayer userId={user.id} key={`${video.source_id}:${video.relative_path}`} sourceId={video.source_id} sourceName={video.source_name} file={video} mini={miniVideo} onRestore={() => { setMiniVideo(false); window.history.pushState(null, '', mediaLink(video.source_id, video.relative_path)) }} onDismiss={() => setVideo(null)} onNext={item => { void openMedia(item, [item]) }} onClose={() => { setMiniVideo(true); window.history.pushState(null, '', '/#discover') }}/>}
   <div className={`app-shell ${musicActive?'music-shell':''}`} style={video && !miniVideo ? {display:'none'} : undefined}>
     <aside className={`sidebar ${menuOpen ? 'open' : ''}`}>

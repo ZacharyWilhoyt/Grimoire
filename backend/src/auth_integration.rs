@@ -4976,3 +4976,229 @@ async fn statistics_use_recorded_activity_deduplicate_units_and_respect_revocati
     assert_eq!(revoked["watching_genres"], json!([]));
     fs::remove_dir_all(root).unwrap();
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn personal_series_preferences_are_private_authorized_and_revision_checked(pool: PgPool) {
+    let state = state(pool.clone());
+    let (owner, csrf, user) = register_user(&state, "series_owner").await;
+    let (viewer, viewer_csrf, viewer_user) = register_user(&state, "series_viewer").await;
+    let root = shared_media_fixture();
+    fs::write(root.join("episode.mkv"), b"test").unwrap();
+    let source = Uuid::new_v4().to_string();
+    let viewer_id = Uuid::parse_str(viewer_user["id"].as_str().unwrap()).unwrap();
+    sqlx::query("INSERT INTO sources(id,owner_id,name,path) VALUES($1,$2,'Series',$3)")
+        .bind(&source)
+        .bind(Uuid::parse_str(user["id"].as_str().unwrap()).unwrap())
+        .bind(root.to_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let key = catalog::file_key(&source, "episode.mkv");
+    let metadata = json!({"collection":"Series","episode":1,"title":"Episode"});
+    sqlx::query("INSERT INTO media_metadata(file_key,source_id,relative_path,local_data) VALUES($1,$2,'episode.mkv',$3)").bind(&key).bind(&source).bind(metadata.to_string()).execute(&pool).await.unwrap();
+    let details = body(
+        request(
+            &state,
+            Method::GET,
+            &format!("/api/sources/{source}/metadata?path=episode.mkv"),
+            Some(&owner),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    let group = details["group"]["id"].as_str().unwrap();
+    let url = format!("/api/sources/{source}/groups/{group}/personal");
+    let get = format!("{url}?path=episode.mkv");
+    let payload =
+        json!({"path":"episode.mkv","status":"active","favorite":true,"expected_revision":0});
+    assert_eq!(
+        request(&state, Method::GET, &get, None, None, None, None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        request(&state, Method::GET, &get, Some(&viewer), None, None, None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            &url,
+            Some(&owner),
+            None,
+            Some(ORIGIN),
+            Some(payload.clone())
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        body(request(&state, Method::GET, &get, Some(&owner), None, None, None).await).await,
+        json!({"status":null,"favorite":false,"revision":0})
+    );
+    let saved = request(
+        &state,
+        Method::PUT,
+        &url,
+        Some(&owner),
+        Some(&csrf),
+        Some(ORIGIN),
+        Some(payload.clone()),
+    )
+    .await;
+    assert_eq!(saved.status(), StatusCode::OK);
+    assert_eq!(
+        body(saved).await,
+        json!({"status":"active","favorite":true,"revision":1})
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            &url,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(payload.clone())
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    let mut update = payload.clone();
+    update["status"] = json!("completed");
+    update["expected_revision"] = json!(1);
+    let updated = request(
+        &state,
+        Method::PUT,
+        &url,
+        Some(&owner),
+        Some(&csrf),
+        Some(ORIGIN),
+        Some(update.clone()),
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+    assert_eq!(body(updated).await["revision"], 2);
+    sqlx::query("INSERT INTO source_permissions(source_id,user_id,can_discover,can_access_media) VALUES($1,$2,true,true)").bind(&source).bind(viewer_id).execute(&pool).await.unwrap();
+    assert_eq!(
+        body(request(&state, Method::GET, &get, Some(&viewer), None, None, None).await).await
+            ["revision"],
+        0
+    );
+    // A stale update must never create a record.
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            &url,
+            Some(&viewer),
+            Some(&viewer_csrf),
+            Some(ORIGIN),
+            Some(update)
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            &url,
+            Some(&viewer),
+            Some(&viewer_csrf),
+            Some(ORIGIN),
+            Some(payload.clone())
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let mut invalid = payload.clone();
+    invalid["status"] = json!("public");
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            &url,
+            Some(&viewer),
+            Some(&viewer_csrf),
+            Some(ORIGIN),
+            Some(invalid)
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        body(request(&state, Method::GET, &get, Some(&owner), None, None, None).await).await
+            ["status"],
+        "completed"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM media_progress WHERE file_key=$1")
+            .bind(&key)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT local_data FROM media_metadata WHERE file_key=$1")
+            .bind(&key)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        metadata.to_string()
+    );
+    sqlx::query("DELETE FROM source_permissions WHERE source_id=$1 AND user_id=$2")
+        .bind(&source)
+        .bind(viewer_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        request(&state, Method::GET, &get, Some(&viewer), None, None, None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            &url,
+            Some(&viewer),
+            Some(&viewer_csrf),
+            Some(ORIGIN),
+            Some(payload.clone())
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    // A link to a group that no longer contains the file cannot expose old preferences.
+    sqlx::query("UPDATE media_metadata SET local_data=$2 WHERE file_key=$1")
+        .bind(&key)
+        .bind(json!({"collection":"Different"}).to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        request(&state, Method::GET, &get, Some(&owner), None, None, None)
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    fs::remove_dir_all(root).unwrap();
+}

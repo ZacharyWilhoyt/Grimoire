@@ -571,6 +571,12 @@ fn app(state: AppState) -> Router {
                 .layer(DefaultBodyLimit::max(16 * 1024)),
         )
         .route(
+            "/api/sources/{source_id}/groups/{group_id}/personal",
+            get(metadata::groups::personal_series)
+                .put(metadata::groups::save_personal_series)
+                .layer(DefaultBodyLimit::max(16 * 1024)),
+        )
+        .route(
             "/api/sources/{source_id}/groups/{group_id}",
             get(metadata::groups::details),
         )
