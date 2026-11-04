@@ -155,7 +155,7 @@ If the Caddy control socket/configuration itself was changed outside Grimoire,
 repair permissions/mounts and use its native reload from inside the container:
 
 ```sh
-docker compose --env-file deploy/.env -f deploy/compose.yaml exec caddy caddy reload --address unix//run/caddy/admin.sock --config /etc/caddy/bootstrap.Caddyfile --adapter caddyfile
+docker compose --env-file deploy/.env -f deploy/compose.yaml exec --user 10001:10001 caddy caddy reload --address unix//run/caddy/admin.sock --config /etc/caddy/bootstrap.Caddyfile --adapter caddyfile
 ```
 
 Reset the stored TLS settings first so the supervisor does not restore a wrong
