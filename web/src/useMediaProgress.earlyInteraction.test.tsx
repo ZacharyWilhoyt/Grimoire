@@ -22,7 +22,7 @@ for (const manualPause of [false, true]) it(`restores saved time and ${manualPau
     expect(play).toHaveBeenCalledTimes(manualPause ? 0 : 1)
     video.currentTime = 30
     video.dispatchEvent(new Event('pause'))
-    expect(session.save).toHaveBeenLastCalledWith({ position: 30, total: 100, locator: null })
+    expect(session.save).toHaveBeenLastCalledWith({ position: 30, total: 100, locator: null, played_seconds: 0 })
   } finally { await act(async () => root.unmount()); play.mockRestore(); vi.unstubAllGlobals() }
 })
 it('preserves a manual seek while the saved position is loading', async () => {

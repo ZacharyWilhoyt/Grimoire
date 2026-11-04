@@ -14,6 +14,7 @@ mod metadata;
 mod music;
 mod permissions;
 mod progress;
+mod statistics;
 mod subtitles;
 mod subtitles_mkv;
 mod transcode;
@@ -666,6 +667,7 @@ fn app(state: AppState) -> Router {
                 .put(music::save)
                 .layer(DefaultBodyLimit::max(1024 * 1024)),
         )
+        .route("/api/statistics", get(statistics::read))
         .route("/api/sources", get(list_sources).post(add_source))
         .route("/api/sources/{source_id}", delete(remove_source))
         .route(

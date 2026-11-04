@@ -30,3 +30,13 @@ it('keeps read-only media outside grouping controls',async()=>{
  try{await act(async()=>root.render(<MediaCollection items={[item('Loose',null,false),item('Song','Album',false)]} busy={false} onOpen={()=>{}} onSave={()=>{}} onMetadata={()=>{}} onGroupMetadata={()=>{}}/>));expect(host.querySelector('[draggable=true]')).toBeNull();expect(host.textContent).not.toContain('Move to group')}
  finally{await act(async()=>root.unmount());vi.unstubAllGlobals()}
 })
+it('opens book details from cover clicks without starting the reader',async()=>{
+ vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true)
+ const book={...item('Novel',null,false),kind:'book' as const,extension:'epub',relative_path:'novel.epub'}
+ const host=document.createElement('div'),root=createRoot(host),details=vi.fn(),open=vi.fn()
+ try{
+  await act(async()=>root.render(<MediaCollection items={[book]} busy={false} onOpen={open} onDetails={details} onSave={()=>{}} onMetadata={()=>{}} onGroupMetadata={()=>{}}/>))
+  await act(async()=>host.querySelector<HTMLButtonElement>('[aria-label="Details Novel"]')!.click())
+  expect(details).toHaveBeenCalledExactlyOnceWith(book);expect(open).not.toHaveBeenCalled()
+ }finally{await act(async()=>root.unmount());vi.unstubAllGlobals()}
+})

@@ -1,4 +1,4 @@
-import { linkRequest, mediaLink, type LinkContext } from './mediaLinks'
+import { linkRequest, mediaLink, detailLink, seriesLink, type LinkContext } from './mediaLinks'
 import SourceTranscoding from './SourceTranscoding'
 import ConnectDirectory from './ConnectDirectory'
 import { loadCatalogPage, type PersonalPage } from './catalogLoader'
@@ -9,6 +9,7 @@ import MetadataEditor from './MetadataEditor'
 import SourceMetadataTools from './SourceMetadataTools'
 import MetadataFilters from './MetadataFilters'
 import CatalogViews from './CatalogViews'
+import MediaDetails from './MediaDetails'
 import MediaCollection from './MediaCollection'
 import { filterMedia, pageFromHash, pageHashes, type MediaItem, type MetadataView, type PersonalState, type PageName, type Sort, type GroupBy } from './media'
 import SourcePermissions, { policyLabel, type AcquisitionPolicy } from './SourcePermissions'
@@ -32,6 +33,7 @@ async function readApi<T>(url: string, signal?: AbortSignal): Promise<T> {
 }
 
 function Workspace({ user, logout }: { user: User; logout: () => void }) {
+  const [detailItem,setDetailItem]=useState<MediaItem|null>(null)
   const [linkedSeries, setLinkedSeries] = useState<LinkContext | null>(null)
   const [linkLoading, setLinkLoading] = useState(false)
   const [linkError, setLinkError] = useState('')
@@ -187,7 +189,7 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
       if (!response.ok) throw new Error(data.error ?? 'Could not open this media.')
       if (signal?.aborted) return
       patchPersonal(item, data as PersonalState)
-      setReading(null); setVideo(null); setPlayback(null); setLinkedSeries(null)
+      setDetailItem(null);setReading(null); setVideo(null); setPlayback(null); setLinkedSeries(null)
       if (updateUrl) window.history.pushState(null, '', item.kind==='music'?'/#music':mediaLink(item.source_id, item.relative_path))
       if (item.kind === 'book') setReading(item)
       else if (item.kind === 'video') { setMiniVideo(false); setVideo(item) }
@@ -203,12 +205,13 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
       controller.abort(); controller = new AbortController()
       const signal = controller.signal
       const url = linkRequest(window.location.search)
-      setVideo(null); setReading(null); setLinkedSeries(null); setLinkError('')
+      setDetailItem(null);setVideo(null); setReading(null); setLinkedSeries(null); setLinkError('')
       if (!url) { setLinkLoading(false); return }
       setLinkLoading(true)
       void readApi<LinkContext>(url, signal).then(async context => {
         if (signal.aborted) return
-        if(initial&&context.item?.kind==='music'){setPage('Music');window.history.replaceState(null,'','/#music')}
+        if(context.item&&new URLSearchParams(window.location.search).has('details'))setDetailItem(context.item)
+        else if(initial&&context.item?.kind==='music'){setPage('Music');window.history.replaceState(null,'','/#music')}
         else if (context.item) await openMedia(context.item, context.members, false, signal)
         else setLinkedSeries(context)
       }).catch(error => { if (!signal.aborted) setLinkError(error instanceof Error ? error.message : 'This link is unavailable.') }).finally(() => { if (!signal.aborted) setLinkLoading(false) })
@@ -217,7 +220,13 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
     return () => { controller.abort(); window.removeEventListener('popstate', load) }
     // Resolve URLs only on entry/browser navigation. Ordinary item selection updates history directly.
   }, [])
-  const closeWatch = () => { setVideo(null); setReading(null); setLinkedSeries(null); setLinkError(''); window.history.pushState(null, '', '/#discover') }
+  const closeWatch = () => { setDetailItem(null);setVideo(null); setReading(null); setLinkedSeries(null); setLinkError(''); window.history.pushState(null, '', '/#discover') }
+  const showDetails=(item:MediaItem)=>{setDetailItem(item);window.history.pushState(null,'',detailLink(item.source_id,item.relative_path))}
+  const showSeries=async(item:MediaItem)=>{
+    const group=item.metadata?.group;if(!group)return
+    setLinkLoading(true);setLinkError('')
+    try{const context=await readApi<LinkContext>(`/api/media/link?${new URLSearchParams({source_id:item.source_id,group:group.id})}`);setLinkedSeries(context);window.history.pushState(null,'',seriesLink(item.source_id,group.id))}catch(e){setLinkError(e instanceof Error?e.message:'Series unavailable.')}finally{setLinkLoading(false)}
+  }
   const toggleSaved = async (item: MediaItem) => {
     setActionBusy(true); setActionError('')
     try {
@@ -281,11 +290,12 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
   ]
 
   const musicPlayer = playback && <MusicPlayer key="music" tracks={playback.tracks} index={playback.index} busy={actionBusy} onIndex={index => { void openMedia(playback.tracks[index], playback.tracks) }} onClose={() => setPlayback(null)}/>
-  if (linkLoading || linkError) return <section className="watch-page"><main className="watch-main"><button className="watch-back" onClick={closeWatch}>Back to library</button><p role={linkError ? 'alert' : 'status'}>{linkError || 'Opening media link…'}</p></main></section>
+  if (linkLoading || linkError) return <>{musicPlayer}<section className="watch-page"><main className="watch-main"><button className="watch-back" onClick={closeWatch}>Back to library</button><p role={linkError ? 'alert' : 'status'}>{linkError || 'Opening media link…'}</p></main></section></>
+  if(detailItem)return <>{musicPlayer}<MediaDetails item={detailItem} onClose={closeWatch} onOpen={()=>{void openMedia(detailItem,[detailItem])}}/></>
   if (reading) return <BookReader userId={user.id} key={`${reading.source_id}:${reading.relative_path}`} sourceId={reading.source_id} sourceName={reading.source_name} file={reading} onClose={closeWatch} onNext={item=>{void openMedia(item,[item])}}/>
 
 
-  if (linkedSeries) return <section className="series-page"><header className="watch-header"><button className="watch-back" onClick={closeWatch}>Back to library</button><h1>{linkedSeries.label ?? 'Series'}</h1></header>{actionError && <p role="alert">{actionError}</p>}<MediaCollection items={linkedSeries.members} groupBy="none" busy={actionBusy} onOpen={(item, queue) => { void openMedia(item, queue) }} onSave={item => { void toggleSaved(item) }} onMetadata={setMetadataItem} onGroupMetadata={setGroupItem}/>{metadataItem && <MetadataEditor item={metadataItem} onClose={() => setMetadataItem(null)} onUpdated={() => setSourceRefresh(value => value + 1)}/>}</section>
+  if (linkedSeries) return <>{musicPlayer}<section className="series-page"><header className="watch-header"><button className="watch-back" onClick={closeWatch}>Back to library</button><h1>{linkedSeries.label ?? 'Series'}</h1></header>{actionError && <p role="alert">{actionError}</p>}<MediaCollection onDetails={showDetails} onSeries={item=>{void showSeries(item)}} items={linkedSeries.members} groupBy="none" busy={actionBusy} onOpen={(item, queue) => { void openMedia(item, queue) }} onSave={item => { void toggleSaved(item) }} onMetadata={setMetadataItem} onGroupMetadata={setGroupItem}/>{metadataItem && <MetadataEditor item={metadataItem} onClose={() => setMetadataItem(null)} onUpdated={() => setSourceRefresh(value => value + 1)}/>}</section></>
   return <>{musicPlayer}{video && <VideoPlayer userId={user.id} key={`${video.source_id}:${video.relative_path}`} sourceId={video.source_id} sourceName={video.source_name} file={video} mini={miniVideo} onRestore={() => { setMiniVideo(false); window.history.pushState(null, '', mediaLink(video.source_id, video.relative_path)) }} onDismiss={() => setVideo(null)} onNext={item => { void openMedia(item, [item]) }} onClose={() => { setMiniVideo(true); window.history.pushState(null, '', '/#discover') }}/>}
   <div className={`app-shell ${musicActive?'music-shell':''}`} style={video && !miniVideo ? {display:'none'} : undefined}>
     <aside className={`sidebar ${menuOpen ? 'open' : ''}`}>
@@ -319,7 +329,7 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
           {!sourceLoading && !sourceError && filteredFiles.length === 0 && <div className="source-empty"><FolderOpen size={23}/><strong>{query || kind || genre ? 'No matching media' : 'No supported media found'}</strong><span>{query || kind || genre ? 'Try another search or filter.' : 'We look for common video, audio, EPUB, and CBZ files in this directory and its subfolders.'}</span></div>}
           {!sourceLoading && !sourceError && filteredFiles.length > 0 && <MediaCollection compact onGroupMetadata={setGroupItem} groupBy={groupBy} onMetadata={setMetadataItem} items={filteredFiles} busy={actionBusy} onOpen={(item, queue) => { void openMedia(item, queue) }} onSave={item => { void toggleSaved(item) }}/>}
           <p className="source-footnote">Select Play for music, Watch for video, or Read for EPUB and CBZ books.</p></>}
-        </section> : page==='Music'?null:<CatalogViews continuing={continuing} onGroupMetadata={setGroupItem} genre={genre} groupBy={groupBy} onGenre={setGenre} onGroup={setGroupBy} onMetadata={setMetadataItem} page={page} username={user.username} catalog={catalog} saved={saved} recent={recent} loading={pageLoading} error={pageError} note={pageNote} query={query} kind={kind} source={sourceFilter} sort={sort} sources={sources} busy={actionBusy} hasMore={hasMore} onKind={setKind} onSource={setSourceFilter} onSort={setSort} onRefresh={() => setSourceRefresh(value => value + 1)} onLoadMore={() => { void loadMore() }} onOpen={(item, queue) => { void openMedia(item, queue) }} onSave={item => { void toggleSaved(item) }} onDiscover={() => navigate('Discover')}/>}
+        </section> : page==='Music'?null:<CatalogViews onDetails={showDetails} onSeries={item=>{void showSeries(item)}} continuing={continuing} onGroupMetadata={setGroupItem} genre={genre} groupBy={groupBy} onGenre={setGenre} onGroup={setGroupBy} onMetadata={setMetadataItem} page={page} username={user.username} catalog={catalog} saved={saved} recent={recent} loading={pageLoading} error={pageError} note={pageNote} query={query} kind={kind} source={sourceFilter} sort={sort} sources={sources} busy={actionBusy} hasMore={hasMore} onKind={setKind} onSource={setSourceFilter} onSort={setSort} onRefresh={() => setSourceRefresh(value => value + 1)} onLoadMore={() => { void loadMore() }} onOpen={(item, queue) => { void openMedia(item, queue) }} onSave={item => { void toggleSaved(item) }} onDiscover={() => navigate('Discover')}/>}
         {!musicActive&&<><MetadataCredits/><footer className="footer"><span>MADE FOR THE MOMENTS BETWEEN</span><span>GRIMOIRE <b>·</b> EARLY ACCESS</span></footer></>}
       </div>
     </main>

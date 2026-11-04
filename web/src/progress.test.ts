@@ -25,3 +25,13 @@ it('does not save an unknown revision after a failed initial read', async () => 
   const session = new ProgressSession('source','file',error,fetcher)
   await session.load(); session.save(position(3)); expect(fetcher).toHaveBeenCalledTimes(1); expect(error).toHaveBeenCalled()
 })
+it('coalesces pending elapsed time and distinct reading units without dropping completed activity',async()=>{
+ let release!:(response:Response)=>void
+ const fetcher=vi.fn().mockResolvedValueOnce(new Response('null')).mockImplementationOnce(()=>new Promise<Response>(resolve=>{release=resolve})).mockResolvedValueOnce(new Response(JSON.stringify({...position(3),revision:2})))
+ const session=new ProgressSession('source','book.epub',()=>{},fetcher)
+ await session.load()
+ session.save({...position(0),completed_units:[0]});session.save({...position(1),completed_units:[1]});session.save({...position(2),completed_units:[1,2],completed:true})
+ release(new Response(JSON.stringify({...position(0),revision:1})))
+ await vi.waitFor(()=>expect(fetcher).toHaveBeenCalledTimes(3))
+ expect(JSON.parse(fetcher.mock.calls[2][1].body)).toMatchObject({completed_units:[1,2],completed:true})
+})

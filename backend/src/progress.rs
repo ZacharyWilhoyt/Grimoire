@@ -21,6 +21,12 @@ pub struct Update {
     total: Option<f64>,
     locator: Option<String>,
     expected_revision: i64,
+    #[serde(default)]
+    played_seconds: Option<f64>,
+    #[serde(default)]
+    completed_units: Vec<i32>,
+    #[serde(default)]
+    completed: bool,
 }
 #[derive(Serialize, sqlx::FromRow)]
 pub struct Progress {
@@ -66,6 +72,19 @@ fn values(update: &Update, kind: &str) -> Result<(), AppError> {
         return Err(crate::bad_request(
             "Invalid progress position, total, or revision.",
         ));
+    }
+    if update.played_seconds.is_some_and(|value| {
+        kind != "video" || !value.is_finite() || !(0.0..=60.0).contains(&value)
+    }) || update.completed_units.len() > 100
+        || update.completed_units.iter().any(|unit| {
+            kind != "book"
+                || *unit < 0
+                || *unit >= 5000
+                || update.total.is_none_or(|total| *unit as f64 >= total)
+        })
+        || update.completed && kind == "music"
+    {
+        return Err(crate::bad_request("Invalid activity summary."));
     }
     if update
         .locator
@@ -141,6 +160,8 @@ pub async fn put(
         ));
     }
     let row=sqlx::query_as::<_,Progress>("INSERT INTO media_progress(user_id,file_key,source_id,relative_path,position,total,locator,revision) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(user_id,file_key) DO UPDATE SET position=$5,total=$6,locator=$7,revision=$8,updated_at=now() RETURNING position,total,locator,revision").bind(identity.user.id).bind(key).bind(update.source_id).bind(update.relative_path).bind(update.position).bind(update.total).bind(update.locator).bind(update.expected_revision+1).fetch_one(&mut *tx).await.map_err(|_|auth::unavailable())?;
+    sqlx::query("UPDATE media_progress SET watched_seconds=CASE WHEN $3::float8 IS NULL THEN watched_seconds ELSE coalesce(watched_seconds,0)+$3 END,completed_units=ARRAY(SELECT DISTINCT unit FROM unnest(completed_units || $4::int[]) AS unit ORDER BY unit),completed=completed OR $5 WHERE user_id=$1 AND file_key=$2")
+        .bind(identity.user.id).bind(catalog::file_key(&reference.source_id,&reference.relative_path)).bind(update.played_seconds).bind(update.completed_units).bind(update.completed).execute(&mut *tx).await.map_err(|_|auth::unavailable())?;
     tx.commit().await.map_err(|_| auth::unavailable())?;
     Ok(Json(row))
 }
@@ -156,6 +177,9 @@ mod tests {
             total: Some(20.0),
             locator: None,
             expected_revision: 0,
+            played_seconds: None,
+            completed_units: Vec::new(),
+            completed: false,
         };
         assert!(values(&update, "video").is_ok());
         assert!(values(&update, "book").is_err());
@@ -173,6 +197,7 @@ pub struct Summary {
     pub position: f64,
     pub total: Option<f64>,
     pub updated_at: f64,
+    pub completed: bool,
 }
 #[derive(sqlx::FromRow)]
 struct SummaryRow {
@@ -180,6 +205,7 @@ struct SummaryRow {
     position: f64,
     total: Option<f64>,
     updated_at: f64,
+    completed: bool,
 }
 pub async fn enrich(
     state: &AppState,
@@ -187,7 +213,7 @@ pub async fn enrich(
     items: &mut [catalog::Item],
 ) -> Result<(), AppError> {
     let keys: Vec<_> = items.iter().map(|item| item.file_key.as_str()).collect();
-    let rows=sqlx::query_as::<_,SummaryRow>("SELECT p.file_key,p.position,p.total,extract(epoch from p.updated_at)::float8 AS updated_at FROM media_progress p JOIN sources s ON s.id=p.source_id WHERE p.user_id=$1 AND p.file_key=ANY($2) AND (s.owner_id=$1 OR EXISTS(SELECT 1 FROM source_permissions a WHERE a.source_id=s.id AND a.user_id=$1 AND a.can_discover AND a.can_access_media))").bind(user).bind(keys).fetch_all(&state.db).await.map_err(|_|auth::unavailable())?;
+    let rows=sqlx::query_as::<_,SummaryRow>("SELECT p.file_key,p.position,p.total,p.completed,extract(epoch from p.updated_at)::float8 AS updated_at FROM media_progress p JOIN sources s ON s.id=p.source_id WHERE p.user_id=$1 AND p.file_key=ANY($2) AND (s.owner_id=$1 OR EXISTS(SELECT 1 FROM source_permissions a WHERE a.source_id=s.id AND a.user_id=$1 AND a.can_discover AND a.can_access_media))").bind(user).bind(keys).fetch_all(&state.db).await.map_err(|_|auth::unavailable())?;
     let mut rows: std::collections::HashMap<_, _> = rows
         .into_iter()
         .map(|row| {
@@ -197,6 +223,7 @@ pub async fn enrich(
                     position: row.position,
                     total: row.total,
                     updated_at: row.updated_at,
+                    completed: row.completed,
                 },
             )
         })

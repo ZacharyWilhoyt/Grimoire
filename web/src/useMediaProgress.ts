@@ -24,15 +24,25 @@ export function useMediaProgress<T extends HTMLMediaElement>(sourceId: string, p
       if (restorePosition && !interacted && savedPosition > 0 && Number.isFinite(element.duration) && savedPosition < element.duration) element.currentTime = savedPosition
       if (!pausedEarly) void element.play().catch(() => { /* Browser autoplay policy; native Play remains available. */ })
     }
+    let played=0,sampledAt=performance.now(),sampledPosition=element.currentTime,wasPlaying=!element.paused
+    const sample=()=>{
+      const now=performance.now(),wall=(now-sampledAt)/1000,delta=element.currentTime-sampledPosition
+      if(element.tagName==='VIDEO'&&wasPlaying&&!element.seeking&&wall>0&&wall<=15&&delta>0&&delta<=wall*Math.max(1,element.playbackRate)+.5)played+=Math.min(wall,delta/Math.max(.25,element.playbackRate))
+      sampledAt=now;sampledPosition=element.currentTime;wasPlaying=!element.paused
+    }
+    const resetSample=()=>{sampledAt=performance.now();sampledPosition=element.currentTime;wasPlaying=!element.paused}
+    element.addEventListener('seeking',resetSample);element.addEventListener('seeked',resetSample);element.addEventListener('play',resetSample)
     const save = () => {
       if (!restored || !Number.isFinite(element.currentTime) || !Number.isFinite(element.duration) || element.duration <= 0) return
-      session.save({ position: Math.min(element.currentTime, element.duration), total: element.duration, locator: null })
+      sample()
+      session.save({ ...(element.tagName==='VIDEO'?{played_seconds:Math.min(60,played),...(element.ended?{completed:true}:{})}:{}), position: Math.min(element.currentTime, element.duration), total: element.duration, locator: null })
+      played=0
       lastSave = Date.now()
     }
     const paused = () => { if (!restored) pausedEarly = true; save() }
     const earlyInteraction = () => { if (!restored) interacted = true }
     element.addEventListener('seeking', earlyInteraction)
-    const tick = () => { if (!element.paused && Date.now() - lastSave >= 10000) save() }
+    const tick = () => { sample(); if (!element.paused && Date.now() - lastSave >= 10000) save() }
     const hidden = () => { if (document.visibilityState === 'hidden') save() }
     element.addEventListener('loadedmetadata', restore)
     element.addEventListener('timeupdate', tick)
@@ -45,6 +55,7 @@ export function useMediaProgress<T extends HTMLMediaElement>(sourceId: string, p
     return () => {
       save(); previousFlush.current = session.flush(); active = false
       retrySettings.current = { volume: element.volume, muted: element.muted, playbackRate: element.playbackRate }
+      element.removeEventListener('seeking',resetSample);element.removeEventListener('seeked',resetSample);element.removeEventListener('play',resetSample)
       element.removeEventListener('seeking', earlyInteraction); element.removeEventListener('loadedmetadata', restore); element.removeEventListener('timeupdate', tick); element.removeEventListener('pause', paused); element.removeEventListener('seeked', save); element.removeEventListener('ended', save)
       document.removeEventListener('visibilitychange', hidden); window.removeEventListener('pagehide', save)
     }
