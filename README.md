@@ -407,6 +407,9 @@ bitmap subtitle rendering, DRM and within-chapter reading-position restoration
 are not implemented. The current application is an early prototype; the security
 and distributed-delivery requirements remain ongoing engineering work.
 
+See [Dedicated Music library](docs/MUSIC.md) for the Music page, private playlists,
+favorites, and fresh-session playback behavior.
+
 ## Local Development
 
 The application lives in two projects:

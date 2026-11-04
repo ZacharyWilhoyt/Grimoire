@@ -141,6 +141,10 @@ pub fn probe_fields(json: &Value, base: Fields) -> Fields {
             .map(|value| model::text(value, limit))
     };
     let fields = Fields {
+        duration: json["format"]["duration"]
+            .as_str()
+            .and_then(|value| value.parse::<f64>().ok())
+            .filter(|value| value.is_finite() && *value >= 0.0),
         title: get(&["title"], 300),
         creator: get(&["album_artist", "albumartist", "artist", "author"], 300),
         collection: get(&["album", "show", "series"], 300),
@@ -354,7 +358,7 @@ pub async fn extract(path: &Path, kind: &str) -> Result<Extracted, AppError> {
         artwork: None,
         warnings: Vec::new(),
     };
-    let args=["-v","error","-protocol_whitelist","pipe","-max_alloc","33554432","-probesize","5000000","-analyzeduration","2000000","-i","pipe:0","-show_entries","format_tags=title,artist,album,album_artist,albumartist,author,date,year,genre,track,disc,show,series,season_number,episode_sort,episode_id,description,comment:stream_tags=title,artist,album,genre,track,disc","-of","json"];
+    let args=["-v","error","-protocol_whitelist","pipe","-max_alloc","33554432","-probesize","5000000","-analyzeduration","2000000","-i","pipe:0","-show_entries","format=duration:stream=duration:format_tags=title,artist,album,album_artist,albumartist,author,date,year,genre,track,disc,show,series,season_number,episode_sort,episode_id,description,comment:stream_tags=title,artist,album,genre,track,disc","-of","json"];
     match tool(path, "ffprobe", &args, 262144)
         .await
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).map_err(|_| failed()))
