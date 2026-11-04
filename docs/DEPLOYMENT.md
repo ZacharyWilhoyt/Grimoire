@@ -65,6 +65,12 @@ Wildcard/DNS-provider challenges are not implemented. HTTP and TLS-ALPN challeng
 use Caddy's normal facilities; ACME validation is handled at the edge without
 opening protected application routes. HTTP application requests redirect to HTTPS.
 
+Local/reserved names such as `mechamaru.local` cannot receive Let's Encrypt
+certificates and are rejected by the public-domain settings. A public DNS name
+resolving locally does not prove external reachability: the CA must reach the
+public address on TCP 80 or 443. Timeouts require checking DNS, router forwarding,
+firewall rules and ISP/CGNAT restrictions. Local bootstrap uses `https://localhost`.
+
 Changing the served names can move the site; sign in again on the new origin once
 its certificate is issued. Configure DNS first and keep local recovery access.
 Issuance failure can leave a new domain without usable HTTPS even though Caddy
@@ -153,13 +159,18 @@ For wrong domains or an inaccessible site, restore local setup mode:
 docker compose --env-file deploy/.env -f deploy/compose.yaml exec api grimoire-api reset-managed-tls
 ```
 
-Within 30 seconds the supervisor restores the localhost/internal-CA site. Stored
-public certificates/keys remain untouched. Fix DNS/settings, then apply again.
+The command resets the selected database and immediately applies the
+localhost/internal-CA configuration to Caddy. It reports an error if proxy
+application fails; the supervisor retries within 30 seconds. When run on the
+host without managed Caddy configuration, it explicitly reports a database-only
+reset; that does not reset the container deployment. Stored public
+certificates/keys remain untouched. Only `https://localhost` is served after
+reset; other names must be configured again. Fix DNS/settings, then apply again.
 If the Caddy control socket/configuration itself was changed outside Grimoire,
 repair permissions/mounts and use its native reload from inside the container:
 
 ```sh
-docker compose --env-file deploy/.env -f deploy/compose.yaml exec --user 10001:10001 caddy caddy reload --address unix//run/caddy/admin.sock --config /etc/caddy/bootstrap.Caddyfile --adapter caddyfile
+docker compose --env-file deploy/.env -f deploy/compose.yaml exec --user 10001:10001 caddy caddy reload --force --address unix//run/caddy/admin.sock --config /etc/caddy/bootstrap.Caddyfile --adapter caddyfile
 ```
 
 Reset the stored TLS settings first so the supervisor does not restore a wrong

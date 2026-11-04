@@ -193,7 +193,19 @@ https://localhost:{https_port} {{
         process = start(resume=True)
         wait_for(lambda: request())
         assert before == (cert.read_bytes(), key.read_bytes())
-        print('Caddy smoke passed: HTTPS, forwarding-header replacement, ranges, redirects, WebSockets, disabled automation, rejected reload and restart persistence.')
+        # Operator reset must recover local HTTPS after a persisted manual site.
+        file.write_text(common.replace('AUTOMATION', 'auto_https ignore_loaded_certs').replace('TLS', 'tls internal'))
+        recovered = subprocess.run([BINARY, 'adapt', '--config', str(file), '--adapter', 'caddyfile'], env=environment, capture_output=True, check=True)
+        recovery_config = json.loads(recovered.stdout)
+        recovery_config['@id'] = 'grimoire-smoke-recovered'
+        recovery_bytes = json.dumps(recovery_config).encode()
+        assert api('/load', recovery_bytes)[0] == 200
+        wait_for(lambda: request())
+        assert before == (cert.read_bytes(), key.read_bytes())
+        # Forced reset of the same configuration must remain usable too.
+        assert api('/load', recovery_bytes)[0] == 200
+        assert request()[0] == 200
+        print('Caddy smoke passed: HTTPS, forwarding-header replacement, ranges, redirects, WebSockets, disabled automation, rejected reload, restart persistence and localhost TLS recovery.')
     except Exception:
         log.flush()
         print((root / 'process.log').read_text()[-9000:])

@@ -35,6 +35,14 @@ pub async fn command(db: &PgPool, args: &[String]) -> Result<(), String> {
             .await
             .map_err(|_| "Audit failed.")?;
         tx.commit().await.map_err(|_| "TLS recovery failed.")?;
+        if args[0] == "reset-managed-tls" {
+            if crate::security::tls::restore_local_proxy().await? {
+                println!("TLS settings reset and localhost HTTPS configuration applied to Caddy. Certificate files were preserved. Open https://localhost.");
+            } else {
+                println!("TLS settings reset in the selected database only. Managed Caddy is not configured in this process; run recovery inside the deployed API container to reset its proxy.");
+            }
+            return Ok(());
+        }
         println!("TLS settings updated. Certificate files were preserved. See deployment recovery instructions.");
         return Ok(());
     }

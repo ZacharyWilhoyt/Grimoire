@@ -79,7 +79,12 @@ try:
     me = wait(lambda: json.loads(request('/api/auth/me')))
     assert me['user']['username'] == 'ci_admin'
     assert json.loads(request('/api/admin/security/ip'))['policy']['default_action'] == 'deny'
-    print('Compose smoke passed: bootstrap, HTTPS frontend/API, private Caddy control, IP enforcement and restart/session persistence.')
+    phase = 'operator TLS reset through the running API container'
+    recovered = compose('exec', '-T', 'api', 'grimoire-api', 'reset-managed-tls')
+    assert b'configuration applied to Caddy' in recovered
+    wait(lambda: request('/api/health'))
+    assert json.loads(request('/api/admin/security/tls'))['settings'] is None
+    print('Compose smoke passed: bootstrap, HTTPS frontend/API, private Caddy control, IP enforcement, restart/session persistence and operator TLS reset.')
 except Exception as error:
     def diagnostic(text):
         text = re.sub(r'[a-fA-F0-9]{64}', '[redacted hex]', text).replace(PASSWORD, '[test password]')

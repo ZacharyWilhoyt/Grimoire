@@ -69,6 +69,20 @@ pub struct Settings {
 }
 fn domain(value: &str) -> Result<String, AppError> {
     let value = value.trim().trim_end_matches('.').to_ascii_lowercase();
+    if [
+        "local",
+        "localhost",
+        "internal",
+        "test",
+        "invalid",
+        "example",
+        "home.arpa",
+    ]
+    .iter()
+    .any(|suffix| value == *suffix || value.ends_with(&format!(".{suffix}")))
+    {
+        return Err(crate::bad_request("Public TLS requires a public DNS hostname. Local and reserved names such as .local cannot receive Let's Encrypt certificates. Use https://localhost for local setup."));
+    }
     if value.len() > 253
         || !value.contains('.')
         || value.parse::<std::net::IpAddr>().is_ok()
@@ -259,10 +273,10 @@ impl Managed {
     async fn generated(&self, settings: &Settings) -> Result<Value, AppError> {
         self.generated_file(self.caddyfile(settings)).await
     }
-    async fn apply_bootstrap(&self) -> Result<(), AppError> {
+    async fn apply_bootstrap(&self, force: bool) -> Result<(), AppError> {
         let config = self.generated_file(self.bootstrap()).await?;
         let current = self.api("/config/", None).await?;
-        if current.get("@id") != config.get("@id") {
+        if force || current.get("@id") != config.get("@id") {
             self.api("/load", Some((config, "application/json")))
                 .await?;
         }
@@ -405,6 +419,18 @@ impl Managed {
         }
         Ok(())
     }
+}
+/// Operator recovery must report a control-plane failure instead of merely
+/// resetting the DB and implying that the proxy already serves localhost.
+pub async fn restore_local_proxy() -> Result<bool, String> {
+    let runtime = Runtime::from_env()?;
+    let Some(managed) = runtime.managed else {
+        return Ok(false);
+    };
+    managed.apply_bootstrap(true).await.map_err(|error| {
+        format!("TLS database settings were reset, but localhost HTTPS could not be applied: {} The supervisor will retry; see deployment recovery instructions.", error.1)
+    })?;
+    Ok(true)
 }
 async fn command(binary: &str, args: &[&str]) -> Result<std::process::Output, ()> {
     tokio::time::timeout(
@@ -562,12 +588,12 @@ pub fn supervise(state: AppState) {
                     managed.apply(&settings).await?;
                     managed.observe(&state.db, &settings.domains()).await?;
                 } else {
-                    managed.apply_bootstrap().await?;
+                    managed.apply_bootstrap(false).await?;
                 }
                 Ok::<(), AppError>(())
             };
-            if work.await.is_err() {
-                eprintln!("Managed Caddy reconciliation unavailable; keeping its last working configuration.");
+            if let Err(error) = work.await {
+                eprintln!("Managed Caddy reconciliation unavailable; keeping its last working configuration. {}", error.1);
             }
         }
     });
@@ -645,6 +671,14 @@ mod tests {
             "127.0.0.1",
             "../secrets",
             "localhost",
+            "mechamaru.local",
+            "MECHAMARU.LOCAL.",
+            "app.localhost",
+            "app.internal",
+            "app.test",
+            "app.invalid",
+            "app.example",
+            "app.home.arpa",
         ] {
             assert!(domain(name).is_err());
         }
@@ -1008,6 +1042,17 @@ mod integration_tests {
         )
         .await;
         assert_eq!(status["certificates"][0]["last_successful_renewal"], 1234.0);
+        let managed = state.tls.managed.as_ref().unwrap();
+        managed.apply_bootstrap(true).await.unwrap();
+        // Reconciliation skips an unchanged config, but explicit operator recovery
+        // must reprovision it and report proxy failure even when its ID matches.
+        fake.reject.store(true, Ordering::SeqCst);
+        managed.apply_bootstrap(false).await.unwrap();
+        let failure = managed.apply_bootstrap(true).await.unwrap_err();
+        assert!(failure.1.contains("retained"));
+        assert!(!failure.1.contains("private-proxy-secret"));
+        fake.reject.store(false, Ordering::SeqCst);
+        managed.apply_bootstrap(true).await.unwrap();
         server.abort();
         tokio::fs::remove_dir_all(root).await.unwrap();
     }
