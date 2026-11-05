@@ -205,7 +205,49 @@ https://localhost:{https_port} {{
         # Forced reset of the same configuration must remain usable too.
         assert api('/load', recovery_bytes)[0] == 200
         assert request()[0] == 200
-        print('Caddy smoke passed: HTTPS, forwarding-header replacement, ranges, redirects, WebSockets, disabled automation, rejected reload, restart persistence and localhost TLS recovery.')
+        # An unreachable public issuer must not remove local recovery, including
+        # after Caddy resumes the saved combined configuration. Never contact ACME.
+        public = f"""
+https://video.example.com:{https_port} {{
+ tls {{
+  issuer acme {{
+   dir http://127.0.0.1:9/directory
+  }}
+ }}
+ respond "public fixture"
+}}
+"""
+        file.write_text(common.replace('AUTOMATION', 'auto_https ignore_loaded_certs').replace('TLS', 'tls internal') + public)
+        combined = subprocess.run([BINARY, 'adapt', '--config', str(file), '--adapter', 'caddyfile'], env=environment, capture_output=True, check=True)
+        assert api('/load', combined.stdout)[0] == 200
+        wait_for(lambda: request())
+        process.terminate(); process.wait(timeout=5)
+        process = start(resume=True)
+        wait_for(lambda: request())
+        assert request('/range') == (206, 'bytes 2-4/10', b'234')
+        # Manual public certificates must not globally disable the local issuer.
+        public_cert, public_key = root / 'public.crt', root / 'public.key'
+        subprocess.run(['openssl', 'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-subj', '/CN=video.example.com', '-addext', 'subjectAltName=DNS:video.example.com', '-days', '1', '-keyout', str(public_key), '-out', str(public_cert)], check=True, capture_output=True)
+        public_manual = f"""
+https://video.example.com:{https_port} {{
+ tls {public_cert} {public_key}
+ respond "manual public fixture"
+}}
+"""
+        file.write_text(common.replace('AUTOMATION', '').replace('TLS', 'tls internal') + public_manual)
+        adapted_manual = subprocess.run([BINARY, 'adapt', '--config', str(file), '--adapter', 'caddyfile'], env=environment, capture_output=True, check=True)
+        config_manual = json.loads(adapted_manual.stdout)
+        for server in config_manual['apps']['http']['servers'].values():
+            server.setdefault('automatic_https', {})['skip_certificates'] = ['video.example.com']
+        encoded_manual = json.dumps(config_manual).encode()
+        assert api('/load', encoded_manual)[0] == 200
+        assert api('/load', encoded_manual)[0] == 200
+        wait_for(lambda: request())
+        process.terminate(); process.wait(timeout=5)
+        process = start(resume=True)
+        wait_for(lambda: request())
+        assert before == (cert.read_bytes(), key.read_bytes())
+        print('Caddy smoke passed: HTTPS, forwarding-header replacement, ranges, redirects, WebSockets, disabled automation, rejected reload, restart persistence, localhost TLS recovery and unavailable public issuer.')
     except Exception:
         log.flush()
         print((root / 'process.log').read_text()[-9000:])

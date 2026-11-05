@@ -186,15 +186,24 @@ impl Managed {
     }
     fn render(&self, settings: &Settings, local: bool) -> String {
         let mut result=format!("{{\n admin {}\n storage file_system {{\n root {}\n }}\n skip_install_trust\n servers {{\n strict_sni_host\n }}\n log default {{\n output file {} {{\n roll_size 10MiB\n roll_keep 2\n }}\n format json\n }}\n",quote(&format!("unix/{}",self.socket.display())),quote(&self.storage.to_string_lossy()),quote(&self.storage.join("grimoire.log").to_string_lossy()));
-        if !settings.automatic {
-            result.push_str(" auto_https disable_certs\n");
-        } else {
+        if settings.automatic {
             result.push_str(" auto_https ignore_loaded_certs\n");
         }
         result.push_str("}\n");
-        for host in settings.domains() {
+        // Keep local recovery independent of public certificate issuance/renewal.
+        // It uses the same proxy, authentication and IP policies as every site.
+        let hosts = if local {
+            vec!["localhost".to_string()]
+        } else {
+            settings
+                .domains()
+                .into_iter()
+                .chain(["localhost".to_string()])
+                .collect()
+        };
+        for host in hosts {
             result.push_str(&format!("https://{host} {{\n"));
-            if local {
+            if host == "localhost" {
                 result.push_str(" tls internal\n");
             } else if settings.automatic {
                 result.push_str(&format!(" tls {{\n issuer acme {{\n dir {LE}\n }}\n }}\n"));
@@ -271,7 +280,21 @@ impl Managed {
         Ok(config)
     }
     async fn generated(&self, settings: &Settings) -> Result<Value, AppError> {
-        self.generated_file(self.caddyfile(settings)).await
+        let mut config = self.generated_file(self.caddyfile(settings)).await?;
+        if !settings.automatic {
+            // Disable only public-name automation, keeping the internal localhost
+            // certificate renewable. A global disable_certs would break recovery.
+            let servers = config["apps"]["http"]["servers"]
+                .as_object_mut()
+                .ok_or_else(auth::unavailable)?;
+            for server in servers.values_mut() {
+                if !server["automatic_https"].is_object() {
+                    server["automatic_https"] = json!({});
+                }
+                server["automatic_https"]["skip_certificates"] = json!(settings.domains());
+            }
+        }
+        Ok(config)
     }
     async fn apply_bootstrap(&self, force: bool) -> Result<(), AppError> {
         let config = self.generated_file(self.bootstrap()).await?;
@@ -697,7 +720,10 @@ mod tests {
             additional_domains: vec![],
             automatic: false,
         });
-        assert!(file.contains("auto_https disable_certs"));
+        assert!(!file.contains("auto_https disable_certs"));
+        assert!(!file.contains("auto_https ignore_loaded_certs"));
+        assert!(file.contains("https://localhost"));
+        assert!(file.contains("tls internal"));
         assert!(file.contains("https://video.example.com"));
         assert!(file.contains("video.example.com.key"));
         assert!(!file.contains("issuer acme"));
@@ -705,6 +731,48 @@ mod tests {
         assert!(file.contains("{http.request.remote.host}"));
         assert!(!file.contains("{$GRIMOIRE_PROXY_TOKEN}"));
         assert!(file.contains(&"0".repeat(64)));
+    }
+    #[tokio::test]
+    async fn manual_policy_disables_only_public_certificate_automation() {
+        let root =
+            std::env::temp_dir().join(format!("grimoire-local-policy-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir(&root).await.unwrap();
+        let socket = root.join("admin.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let app = axum::Router::new().route(
+            "/adapt",
+            axum::routing::post(|_: String| async {
+                Json(json!({"result":{"apps":{"http":{"servers":{"srv0":{}}}}}}))
+            }),
+        );
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let managed = Managed {
+            client: reqwest::Client::builder()
+                .unix_socket(socket.clone())
+                .no_proxy()
+                .build()
+                .unwrap(),
+            socket,
+            storage: root.clone(),
+            upstream: "api:3000".into(),
+            proxy_token: "0".repeat(64),
+        };
+        let mut settings = Settings {
+            primary_domain: "video.example.com".into(),
+            additional_domains: vec!["books.example.com".into()],
+            automatic: false,
+        };
+        let config = managed.generated(&settings).await.unwrap();
+        let automatic = &config["apps"]["http"]["servers"]["srv0"]["automatic_https"];
+        assert_eq!(automatic["skip_certificates"], json!(settings.domains()));
+        assert!(automatic.get("disable_certificates").is_none());
+        settings.automatic = true;
+        let config = managed.generated(&settings).await.unwrap();
+        assert!(config["apps"]["http"]["servers"]["srv0"]
+            .get("automatic_https")
+            .is_none());
+        task.abort();
+        tokio::fs::remove_dir_all(root).await.unwrap();
     }
 }
 
@@ -759,10 +827,12 @@ mod live_tests {
                 format!("unix/{}", managed.socket.display())
             );
             if automatic {
-                assert_eq!(
-                    config["apps"]["tls"]["automation"]["policies"][0]["issuers"][0]["ca"],
-                    LE
-                );
+                let policies = config["apps"]["tls"]["automation"]["policies"]
+                    .as_array()
+                    .unwrap();
+                assert!(policies
+                    .iter()
+                    .any(|policy| policy["issuers"][0]["ca"] == LE));
             } else {
                 assert_eq!(
                     config["apps"]["tls"]["certificates"]["load_files"]
@@ -772,6 +842,13 @@ mod live_tests {
                     2
                 );
             }
+            let policies = config["apps"]["tls"]["automation"]["policies"]
+                .as_array()
+                .unwrap();
+            assert!(policies
+                .iter()
+                .any(|policy| policy["subjects"] == json!(["localhost"])
+                    && policy["issuers"][0]["module"] == "internal"));
         }
         tokio::fs::remove_dir_all(root).await.unwrap();
     }

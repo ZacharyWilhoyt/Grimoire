@@ -49,6 +49,10 @@ client's trusted CA store. Do not bypass browser certificate warnings or copy
 private CA keys. For remote setup, use an SSH tunnel to local port 443, retaining
 `localhost` as the HTTPS name. Remove that local trust later if no longer needed.
 Unconfigured public hostnames are not served as application sites.
+`https://localhost` remains configured after public domains are added, including
+when public certificate issuance fails or public renewal is disabled. It keeps
+using the existing local CA and the same authentication/IP access rules; it is
+not an authorization bypass. Use local recovery to reset IP rules if necessary.
 
 ## Public DNS and certificates
 
@@ -92,9 +96,10 @@ issuance. Observed renewal/error timestamps persist in PostgreSQL.
 
 Turn off Automatic Let's Encrypt management and apply. Every configured domain
 must already have a usable stored certificate/key pair; otherwise the change is
-rejected and the old configuration stays active. Grimoire emits
-`auto_https disable_certs` and explicit certificate/key paths, preserving HTTPS
-termination and redirects. Nothing deletes certificates or private keys.
+rejected and the old configuration stays active. Grimoire loads explicit public
+certificate/key paths and adds those public names to Caddy's `skip_certificates`
+list, preserving HTTPS termination and redirects. Localhost remains on its
+internal issuer with renewal enabled. Nothing deletes certificates or private keys.
 
 Caddy 2.11 can remove a former managed certificate from its memory cache when
 switching to file-based certificates. The apply sequence reprovisions the manual
