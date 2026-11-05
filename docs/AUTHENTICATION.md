@@ -135,9 +135,11 @@ email recovery, or email verification is included.
   registrations per connecting IP / hour, and ten password changes per user / 15
   minutes. Attempts include successful requests. These are initial operational
   settings, not acquisition quotas. Counters are shared across API instances.
-  Forwarded-IP headers are deliberately ignored: behind Vite or a reverse proxy,
-  its connecting IP shares the limit. A trusted-proxy model and edge limits are
-  required before expanding public traffic; do not simply trust X-Forwarded-For.
+  Arbitrary forwarded-IP headers are deliberately ignored. Vite development
+  traffic shares its connecting IP limit. The managed Caddy deployment uses a
+  pinned peer plus a private token to identify clients; see [IP access](IP_ACCESS.md).
+  Edge abuse prevention still requires deployment review; do not simply trust
+  X-Forwarded-For.
 - Audit records track registrations, login outcomes, logout, password changes,
   bootstrap/import, and operator account changes without passwords or raw session
   tokens. Auth responses and protected responses use `private, no-store`.
@@ -240,3 +242,19 @@ For internet access, use an HTTPS reverse proxy, set `GRIMOIRE_APP_ORIGIN` to th
 exact public HTTPS origin, and remove both HTTP development flags. Additional
 HTTPS origins can be explicitly listed without enabling either development flag.
 Never infer allowed origins from untrusted Host or forwarded headers.
+
+Dedicated managed Caddy deployments use a pinned peer plus a private proxy token
+for client IP identity; see [IP access](IP_ACCESS.md) and [deployment](DEPLOYMENT.md).
+Vite development proxy traffic continues to use the loopback peer identity by
+default. Test client-specific network rules through the managed proxy.
+
+### Guarded integration-test launcher
+
+Use `scripts/test-backend-integration.sh` with an explicitly exported `DATABASE_URL`
+to a disposable database whose name ends in `_test` or `_tests`. The launcher
+refuses missing/non-test names before Cargo can load the application's `.env`.
+Raw `cargo test -- --ignored` can fall back to that `.env`; avoid it without an
+explicit test URL. SQLx creates bookkeeping in the selected database before
+creating per-test databases, so a denied CREATEDB privilege is not a substitute
+for choosing the correct connection. The test role must have CREATEDB, and must
+not be the application's runtime role. CI uses the guarded launcher.

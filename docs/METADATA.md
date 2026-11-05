@@ -67,13 +67,13 @@ metadata, seek-dependent MP4 files, unusual codecs and large attached artwork ma
 not extract. These subprocess limits are **not an OS sandbox**; maintain FFmpeg
 and isolate media processing before accepting arbitrary uploaded media at scale.
 
-Book archives are limited to 128 MiB compressed and 5,000 entries, with bounded
+For automatic metadata extraction, book archives are limited to 128 MiB compressed and 5,000 entries, with bounded
 XML reads (1–4 MiB) and cover reads (8 MiB). XML DTDs are rejected and archives are
 never extracted onto disk. Raster artwork is decoded with dimension/allocation
 limits (4,096 pixels per side, 64 MiB), reduced to at most 600 pixels per side,
 and re-encoded as JPEG (maximum 512 KiB). SVG artwork is not accepted. Unsupported
 or corrupt books may fail extraction; file browsing and owner editing still work.
-The reader's existing independent archive limits remain unchanged.
+These extraction limits are independent of [reader limits](BOOK_ARCHIVES.md): large CBZ files can still be read, and their metadata can be edited manually.
 
 ## Metadata precedence
 

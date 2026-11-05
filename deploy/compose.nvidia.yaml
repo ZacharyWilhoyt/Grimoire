@@ -1,0 +1,14 @@
+# NVIDIA hosts: requires NVIDIA Container Toolkit. Add after compose.yaml.
+services:
+  api:
+    devices: !reset []
+    group_add: !reset []
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

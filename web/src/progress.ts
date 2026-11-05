@@ -1,6 +1,6 @@
 import { apiFetch } from './api'
 export type Progress = { position: number; total: number | null; locator: string | null; revision: number }
-export type Position = Omit<Progress, 'revision'>
+export type Position = Omit<Progress, 'revision'> & {played_seconds?:number;completed_units?:number[];completed?:boolean}
 // Each mounted reader/player gets its own revision owner. Never share it across users.
 export class ProgressSession {
   private revision = 0
@@ -21,7 +21,7 @@ export class ProgressSession {
   }
   save(position: Position) {
     if (!this.ready || this.failed) return
-    this.pending = position
+    this.pending = {...position,...(this.pending?.played_seconds!==undefined||position.played_seconds!==undefined?{played_seconds:Math.min(60,(this.pending?.played_seconds??0)+(position.played_seconds??0))}:{}),...(this.pending?.completed_units||position.completed_units?{completed_units:[...new Set([...(this.pending?.completed_units??[]),...(position.completed_units??[])])].slice(0,100)}:{}),...(this.pending?.completed||position.completed?{completed:true}:{})}
     if (!this.writing) this.drained = this.drain()
   }
   flush() { return this.drained }

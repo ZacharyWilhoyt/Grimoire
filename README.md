@@ -20,8 +20,12 @@ architecture.
 > **Project status:** Grimoire has a working local prototype with accounts,
 > source permissions, media playback/readers, metadata and saved progress.
 > Distributed contributor delivery, user uploads, acquisition requests and public
-> deployment remain planned. See [Development Status](#development-status) for
+> deployment hardening remain planned. An optional [managed Caddy deployment](docs/DEPLOYMENT.md)
+> provides HTTPS and administrator IP controls. See [Development Status](#development-status) for
 > implemented capabilities and the remaining decisions.
+
+Existing installations can [copy their database into a new container database](docs/DATABASE_MIGRATION.md).
+The deployment supports [AMD/Intel, NVIDIA and CPU-only configurations](docs/TRANSCODING.md#container-gpu-access).
 
 ## Table of Contents
 
@@ -407,6 +411,9 @@ bitmap subtitle rendering, DRM and within-chapter reading-position restoration
 are not implemented. The current application is an early prototype; the security
 and distributed-delivery requirements remain ongoing engineering work.
 
+See [For you dashboard](docs/FOR_YOU.md) for continuation, media cards, and
+recorded activity statistics.
+
 See [Dedicated Music library](docs/MUSIC.md) for the Music page, private playlists,
 favorites, and fresh-session playback behavior.
 
@@ -522,10 +529,15 @@ Use the close button or Escape to return to browsing. Opening a reader stops
 music and video playback. Chapter/page positions now persist across sessions; see [progress](docs/PROGRESS.md).
 
 Books use `GET /api/sources/{id}/book?path=...` and the same registered-source,
-path, and cache restrictions as the media endpoints. Archives are processed in
-browser memory with [zip.js](https://gildas-lormeau.github.io/zip.js/). The initial
-limits are 128 MiB compressed, 256 MiB expanded, 32 MiB per entry, and 5,000
-archive entries; encrypted archives are rejected. EPUB HTML is sanitized using
+path, and cache restrictions as the media endpoints. Archives are read on demand through authenticated byte ranges with
+[zip.js](https://gildas-lormeau.github.io/zip.js/), without downloading the entire
+archive into browser memory. CBZ limits are 4 GiB compressed and 8 GiB expanded;
+EPUB limits remain 128 MiB compressed and 256 MiB expanded. Both allow 32 MiB per
+entry and 5,000 archive entries; encrypted archives are rejected. The reader
+retains at most 64 MiB of extracted resources in its LRU cache and extracts at
+most two resources concurrently. Active page images and browser decoding use
+additional memory; offscreen pages release their object URLs. Reverse proxies
+must preserve byte-range requests and 206 responses. See [book archive loading](docs/BOOK_ARCHIVES.md). EPUB HTML is sanitized using
 [DOMPurify](https://github.com/cure53/DOMPurify), then shown in an iframe with an
 empty sandbox and a restrictive content security policy. Scripts, external
 resources, forms, and chapter hyperlinks are disabled. EPUB publisher styles
@@ -577,6 +589,21 @@ extraction and online matching remain the default; Arr is optional. See
 [Arr integrations](docs/ARR_INTEGRATIONS.md) for encryption-key setup, approved
 URLs, folder mapping, API versions and operational limits. Download/acquisition
 requests remain future work.
+
+Video and written collections now share a [series detail page](docs/SERIES_DETAILS.md)
+with compact episode or volume browsing, synopsis tabs, sharing, and private
+per-user status/favorites. Catalog cards use the Continue Reading cover width.
+Restart the API to apply the new series-preference migration.
+
+Administrator-only [IP access controls](docs/IP_ACCESS.md) support IPv4/IPv6 and
+CIDR rules, explicit defaults, Allow-over-Deny precedence, lockout warnings and
+local recovery.
+
+An optional [Docker Compose deployment](docs/DEPLOYMENT.md) runs dedicated Caddy,
+the API with built frontend, and PostgreSQL. Administrator security settings
+control TLS domains and certificate automation while preserving stored HTTPS
+certificates when automation is disabled. Existing direct local development
+remains available. See the deployment guide for DNS, first setup and recovery.
 
 ## Checks and Operations
 

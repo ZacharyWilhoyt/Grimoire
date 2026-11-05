@@ -32,6 +32,41 @@ system device permissions.
 Vendor references: [NVIDIA FFmpeg guide](https://docs.nvidia.com/video-technologies/video-codec-sdk/13.1/ffmpeg-with-nvidia-gpu/index.html),
 [AMD AMF integration](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/wiki/FFmpeg-and-AMF-HW-Acceleration).
 
+## Container GPU access
+
+The base Compose deployment passes only `/dev/dri/renderD128` to the API,
+adds its render group, and includes Mesa VA-API drivers. It keeps the non-root
+API user, dropped capabilities, read-only root filesystem and source-owner
+encoding permissions. Existing sources continue using their configured encoder.
+No privileged container or Docker socket mount is needed.
+
+On this host the render group is GID **110**. On another host, inspect
+`stat -c '%g' /dev/dri/renderD128` and set `GRIMOIRE_RENDER_GID` in `deploy/.env`.
+`GRIMOIRE_VAAPI_HOST_DEVICE` can select a different host render node; inside the
+container it is always `/dev/dri/renderD128`. Rebuild/recreate the API to apply:
+
+```sh
+docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --build --no-deps api
+```
+
+A small synthetic encode checks real hardware access without reading media:
+
+```sh
+docker compose --env-file deploy/.env -f deploy/compose.yaml exec -T api ffmpeg -hide_banner -loglevel error -vaapi_device /dev/dri/renderD128 -f lavfi -i color=size=128x128:rate=1 -vf format=nv12,hwupload -frames:v 1 -c:v h264_vaapi -f null -
+```
+
+For a host **without** a render node, append
+`-f deploy/compose.cpu.yaml` to every Compose command (before the subcommand).
+This removes device/group mappings; CI uses this override too.
+
+For **NVIDIA**, install the host NVIDIA driver and NVIDIA Container Toolkit,
+configure Docker's NVIDIA runtime, and append `-f deploy/compose.nvidia.yaml`
+instead. It removes AMD mappings and requests one NVIDIA GPU with video/compute
+runtime libraries. This configuration requires a working host runtime; it has
+not been hardware-tested on this AMD host. Source owners must still explicitly
+select NVIDIA/Auto encoding. Do not use the CPU and NVIDIA overrides together.
+Compose v2.24.4+ is required for the `!reset` overrides.
+
 ## Playback and bounded processing
 
 The server generates authenticated VOD HLS playlists and encodes independent

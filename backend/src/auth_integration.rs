@@ -10,8 +10,10 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 const ORIGIN: &str = "http://localhost:5173";
-fn state(pool: PgPool) -> AppState {
+pub(super) fn state(pool: PgPool) -> AppState {
     AppState {
+        network: Arc::new(crate::security::Network::default()),
+        tls: Arc::new(crate::security::tls::Runtime::default()),
         db: pool,
         config: Arc::new(auth::Config {
             additional_origins: Vec::new(),
@@ -27,7 +29,7 @@ fn state(pool: PgPool) -> AppState {
         transcode: Arc::new(crate::transcode::Runtime::new()),
     }
 }
-async fn request(
+pub(super) async fn request(
     state: &AppState,
     method: Method,
     path: &str,
@@ -63,7 +65,7 @@ async fn request(
         .await
         .unwrap()
 }
-async fn body(response: Response) -> Value {
+pub(super) async fn body(response: Response) -> Value {
     serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap()).unwrap()
 }
 async fn session(response: Response, status: StatusCode) -> (String, String, Value) {
@@ -540,7 +542,7 @@ async fn authentication_errors_are_generic_and_rate_limited(pool: PgPool) {
     );
 }
 
-async fn register_user(state: &AppState, name: &str) -> (String, String, Value) {
+pub(super) async fn register_user(state: &AppState, name: &str) -> (String, String, Value) {
     session(
         request(
             state,
@@ -790,6 +792,9 @@ async fn source_permissions_separate_visibility_media_and_acquisition_and_revoke
         }
     }
     let range_request = Request::builder()
+        .extension(ConnectInfo(
+            "127.0.0.1:12345".parse::<SocketAddr>().unwrap(),
+        ))
         .uri(format!("/api/sources/{id}/audio?path=track.mp3"))
         .header("cookie", &alice)
         .header("range", "bytes=0-5")
@@ -2574,6 +2579,9 @@ async fn group_image_request(
     bytes: Vec<u8>,
 ) -> Response {
     let mut builder = Request::builder()
+        .extension(ConnectInfo(
+            "127.0.0.1:12345".parse::<SocketAddr>().unwrap(),
+        ))
         .method(Method::POST)
         .uri(path)
         .header("content-type", "image/jpeg")
@@ -4101,8 +4109,10 @@ async fn mkv_audio_selection_transcodes_and_rechecks_permissions(pool: PgPool) {
         .unwrap();
     let samples: Vec<i16> = pcm
         .stdout
-        .chunks_exact(2)
-        .map(|s| i16::from_le_bytes([s[0], s[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|s| i16::from_le_bytes(*s))
         .collect();
     let crossings = samples.windows(2).filter(|s| s[0] <= 0 && s[1] > 0).count();
     assert!(
@@ -4735,4 +4745,632 @@ async fn music_playlists_and_favorites_are_private_csrf_protected_and_revision_g
         StatusCode::CONFLICT
     );
     assert_eq!(request(&state,Method::PUT,endpoint,Some(&owner),Some(&csrf),Some(ORIGIN),Some(json!({"expected_revision":1,"library":{"favorites":[],"playlists":[{"id":Uuid::new_v4(),"name":"Invalid","tracks":["../../secret"]}]}}))).await.status(),StatusCode::BAD_REQUEST);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn statistics_use_recorded_activity_deduplicate_units_and_respect_revocation(pool: PgPool) {
+    let state = state(pool.clone());
+    let (owner, csrf, user) = register_user(&state, "stats_owner").await;
+    let (viewer, viewer_csrf, viewer_user) = register_user(&state, "stats_viewer").await;
+    let root = shared_media_fixture();
+    let source = Uuid::new_v4().to_string();
+    let owner_id = Uuid::parse_str(user["id"].as_str().unwrap()).unwrap();
+    let viewer_id = Uuid::parse_str(viewer_user["id"].as_str().unwrap()).unwrap();
+    sqlx::query("INSERT INTO sources(id,owner_id,name,path) VALUES($1,$2,'Stats test',$3)")
+        .bind(&source)
+        .bind(owner_id)
+        .bind(root.to_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    for (path, metadata) in [
+        (
+            "clip.mp4",
+            json!({"episode":1,"collection":"Show","genres":["drama"]}),
+        ),
+        (
+            "story.epub",
+            json!({"collection":"Books","genres":["fantasy"]}),
+        ),
+    ] {
+        sqlx::query("INSERT INTO media_metadata(file_key,source_id,relative_path,local_data) VALUES($1,$2,$3,$4)").bind(catalog::file_key(&source,path)).bind(&source).bind(path).bind(metadata.to_string()).execute(&pool).await.unwrap();
+    }
+    assert_eq!(
+        request(
+            &state,
+            Method::GET,
+            "/api/statistics",
+            None,
+            None,
+            None,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let empty = body(
+        request(
+            &state,
+            Method::GET,
+            "/api/statistics",
+            Some(&owner),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert!(empty["watch_seconds"].is_null());
+    let update = json!({"source_id":source,"relative_path":"clip.mp4","position":900,"total":1000,"expected_revision":0,"played_seconds":20});
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            "/api/progress",
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(update.clone())
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            "/api/progress",
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(update)
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    let update = json!({"source_id":source,"relative_path":"clip.mp4","position":1000,"total":1000,"expected_revision":1,"played_seconds":5,"completed":true});
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            "/api/progress",
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(update)
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let book = json!({"source_id":source,"relative_path":"story.epub","position":0,"total":2,"locator":"one.xhtml","expected_revision":0});
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            "/api/progress",
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(book)
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let continuing = body(
+        request(
+            &state,
+            Method::GET,
+            "/api/continue",
+            Some(&owner),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert!(continuing["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["relative_path"] == "story.epub"));
+    for (revision, units, done) in [(1, json!([0, 0]), false), (2, json!([0, 1]), true)] {
+        let book = json!({"source_id":source,"relative_path":"story.epub","position":1,"total":2,"locator":"two.xhtml","expected_revision":revision,"completed_units":units,"completed":done});
+        assert_eq!(
+            request(
+                &state,
+                Method::PUT,
+                "/api/progress",
+                Some(&owner),
+                Some(&csrf),
+                Some(ORIGIN),
+                Some(book)
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+    }
+    let stats = body(
+        request(
+            &state,
+            Method::GET,
+            "/api/statistics",
+            Some(&owner),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(stats["watch_seconds"], 25.0);
+    assert_eq!(stats["episodes_watched"], 1);
+    assert_eq!(stats["reading_units"], 2);
+    assert_eq!(stats["books_completed"], 1);
+    assert_eq!(stats["reading_active"], 0);
+    assert_eq!(stats["watching_genres"][0]["name"], "drama");
+    assert_eq!(stats["reading_genres"][0]["name"], "fantasy");
+    assert!(stats["series_completed"].is_null());
+    let continuing = body(
+        request(
+            &state,
+            Method::GET,
+            "/api/continue",
+            Some(&owner),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(continuing["items"], json!([]));
+    let private = body(
+        request(
+            &state,
+            Method::GET,
+            "/api/statistics",
+            Some(&viewer),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert!(private["watch_seconds"].is_null());
+    sqlx::query("INSERT INTO source_permissions(source_id,user_id,can_discover,can_access_media) VALUES($1,$2,true,true)").bind(&source).bind(viewer_id).execute(&pool).await.unwrap();
+    let update = json!({"source_id":source,"relative_path":"clip.mp4","position":10,"total":1000,"expected_revision":0,"played_seconds":7});
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            "/api/progress",
+            Some(&viewer),
+            Some(&viewer_csrf),
+            Some(ORIGIN),
+            Some(update)
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    sqlx::query("DELETE FROM source_permissions WHERE source_id=$1 AND user_id=$2")
+        .bind(&source)
+        .bind(viewer_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let revoked = body(
+        request(
+            &state,
+            Method::GET,
+            "/api/statistics",
+            Some(&viewer),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert!(revoked["watch_seconds"].is_null());
+    assert_eq!(revoked["watching_genres"], json!([]));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn personal_series_preferences_are_private_authorized_and_revision_checked(pool: PgPool) {
+    let state = state(pool.clone());
+    let (owner, csrf, user) = register_user(&state, "series_owner").await;
+    let (viewer, viewer_csrf, viewer_user) = register_user(&state, "series_viewer").await;
+    let root = shared_media_fixture();
+    fs::write(root.join("episode.mkv"), b"test").unwrap();
+    let source = Uuid::new_v4().to_string();
+    let viewer_id = Uuid::parse_str(viewer_user["id"].as_str().unwrap()).unwrap();
+    sqlx::query("INSERT INTO sources(id,owner_id,name,path) VALUES($1,$2,'Series',$3)")
+        .bind(&source)
+        .bind(Uuid::parse_str(user["id"].as_str().unwrap()).unwrap())
+        .bind(root.to_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let key = catalog::file_key(&source, "episode.mkv");
+    let metadata = json!({"collection":"Series","episode":1,"title":"Episode"});
+    sqlx::query("INSERT INTO media_metadata(file_key,source_id,relative_path,local_data) VALUES($1,$2,'episode.mkv',$3)").bind(&key).bind(&source).bind(metadata.to_string()).execute(&pool).await.unwrap();
+    let details = body(
+        request(
+            &state,
+            Method::GET,
+            &format!("/api/sources/{source}/metadata?path=episode.mkv"),
+            Some(&owner),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    let group = details["group"]["id"].as_str().unwrap();
+    let url = format!("/api/sources/{source}/groups/{group}/personal");
+    let get = format!("{url}?path=episode.mkv");
+    let payload =
+        json!({"path":"episode.mkv","status":"active","favorite":true,"expected_revision":0});
+    assert_eq!(
+        request(&state, Method::GET, &get, None, None, None, None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        request(&state, Method::GET, &get, Some(&viewer), None, None, None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            &url,
+            Some(&owner),
+            None,
+            Some(ORIGIN),
+            Some(payload.clone())
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        body(request(&state, Method::GET, &get, Some(&owner), None, None, None).await).await,
+        json!({"status":null,"favorite":false,"revision":0})
+    );
+    let saved = request(
+        &state,
+        Method::PUT,
+        &url,
+        Some(&owner),
+        Some(&csrf),
+        Some(ORIGIN),
+        Some(payload.clone()),
+    )
+    .await;
+    assert_eq!(saved.status(), StatusCode::OK);
+    assert_eq!(
+        body(saved).await,
+        json!({"status":"active","favorite":true,"revision":1})
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            &url,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(payload.clone())
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    let mut update = payload.clone();
+    update["status"] = json!("completed");
+    update["expected_revision"] = json!(1);
+    let updated = request(
+        &state,
+        Method::PUT,
+        &url,
+        Some(&owner),
+        Some(&csrf),
+        Some(ORIGIN),
+        Some(update.clone()),
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+    assert_eq!(body(updated).await["revision"], 2);
+    sqlx::query("INSERT INTO source_permissions(source_id,user_id,can_discover,can_access_media) VALUES($1,$2,true,true)").bind(&source).bind(viewer_id).execute(&pool).await.unwrap();
+    assert_eq!(
+        body(request(&state, Method::GET, &get, Some(&viewer), None, None, None).await).await
+            ["revision"],
+        0
+    );
+    // A stale update must never create a record.
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            &url,
+            Some(&viewer),
+            Some(&viewer_csrf),
+            Some(ORIGIN),
+            Some(update)
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            &url,
+            Some(&viewer),
+            Some(&viewer_csrf),
+            Some(ORIGIN),
+            Some(payload.clone())
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let mut invalid = payload.clone();
+    invalid["status"] = json!("public");
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            &url,
+            Some(&viewer),
+            Some(&viewer_csrf),
+            Some(ORIGIN),
+            Some(invalid)
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        body(request(&state, Method::GET, &get, Some(&owner), None, None, None).await).await
+            ["status"],
+        "completed"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM media_progress WHERE file_key=$1")
+            .bind(&key)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT local_data FROM media_metadata WHERE file_key=$1")
+            .bind(&key)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        metadata.to_string()
+    );
+    sqlx::query("DELETE FROM source_permissions WHERE source_id=$1 AND user_id=$2")
+        .bind(&source)
+        .bind(viewer_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        request(&state, Method::GET, &get, Some(&viewer), None, None, None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            &url,
+            Some(&viewer),
+            Some(&viewer_csrf),
+            Some(ORIGIN),
+            Some(payload.clone())
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    // A link to a group that no longer contains the file cannot expose old preferences.
+    sqlx::query("UPDATE media_metadata SET local_data=$2 WHERE file_key=$1")
+        .bind(&key)
+        .bind(json!({"collection":"Different"}).to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        request(&state, Method::GET, &get, Some(&owner), None, None, None)
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn ip_access_is_admin_only_allow_over_deny_global_and_recoverable(pool: PgPool) {
+    let state = state(pool.clone());
+    let (owner, csrf, user) = register_user(&state, "ip_owner").await;
+    let (viewer, _, _) = register_user(&state, "ip_viewer").await;
+    sqlx::query("UPDATE users SET is_admin=true WHERE id=$1")
+        .bind(Uuid::parse_str(user["id"].as_str().unwrap()).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let url = "/api/admin/security/ip";
+    assert_eq!(
+        request(&state, Method::GET, url, None, None, None, None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        request(&state, Method::GET, url, Some(&viewer), None, None, None)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    let initial =
+        body(request(&state, Method::GET, url, Some(&owner), None, None, None).await).await;
+    assert_eq!(initial["revision"], 0);
+    assert_eq!(initial["policy"]["default_action"], "allow");
+    let policy = json!({"default_action":"deny","allow":["127.0.0.1"],"deny":["0.0.0.0/0","::/0"]});
+    let payload = json!({"policy":policy,"expected_revision":0});
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            url,
+            Some(&owner),
+            None,
+            Some(ORIGIN),
+            Some(payload.clone())
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    let preview = body(
+        request(
+            &state,
+            Method::POST,
+            "/api/admin/security/ip/preview",
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(policy),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(preview["would_block_you"], false);
+    let saved = request(
+        &state,
+        Method::PUT,
+        url,
+        Some(&owner),
+        Some(&csrf),
+        Some(ORIGIN),
+        Some(payload.clone()),
+    )
+    .await;
+    assert_eq!(saved.status(), StatusCode::OK);
+    assert_eq!(body(saved).await["revision"], 1);
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            url,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(payload)
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    for path in [
+        "/api/auth/me",
+        "/api/sources/test/book?path=test.cbz",
+        "/assets/app.js",
+        "/",
+    ] {
+        let response = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .extension(ConnectInfo(
+                        "198.51.100.4:1234".parse::<SocketAddr>().unwrap(),
+                    ))
+                    .header("cookie", &owner)
+                    .header("x-forwarded-for", "127.0.0.1")
+                    .header("x-grimoire-client-ip", "127.0.0.1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+    let mut block =
+        json!({"policy":{"default_action":"deny","allow":[],"deny":[]},"expected_revision":1});
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            url,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(block.clone())
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    block["acknowledge_lockout"] = json!(true);
+    assert_eq!(
+        request(
+            &state,
+            Method::PUT,
+            url,
+            Some(&owner),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(block)
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(&state, Method::GET, url, Some(&owner), None, None, None)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    admin::command(&pool, &["reset-ip-access".into()])
+        .await
+        .unwrap();
+    assert_eq!(
+        request(&state, Method::GET, url, Some(&owner), None, None, None)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(&state, Method::GET, url, Some(&viewer), None, None, None)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM auth_events WHERE event IN ('ip_policy_changed','operator_ip_policy_reset')").fetch_one(&pool).await.unwrap(),3);
 }

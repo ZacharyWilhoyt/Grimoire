@@ -34,6 +34,13 @@ export default function VideoToolbar(p: Props) {
   const seek=(value:number)=>{if(p.video&&duration>0)p.video.currentTime=Math.min(duration,Math.max(0,value))}
   const stamp=(value:number)=>{const seconds=Math.floor(value);return `${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`}
   const play=async()=>{setPlayError('');if(!p.video)return;if(!p.video.paused)p.video.pause();else try{await p.video.play()}catch{setPlayError('Playback could not start. Try again or select a compatible audio track.')}}
+  // Handle the picture area only; toolbar buttons retain their own click behavior.
+  useEffect(()=>{
+    const video=p.video;if(!video)return
+    const click=()=>{void play()}
+    video.addEventListener('click',click)
+    return()=>video.removeEventListener('click',click)
+  },[p.video])
   useEffect(() => { if (p.video) { p.video.playbackRate=speed; p.video.style.objectFit=fit } }, [p.video,speed,fit])
   useEffect(() => { const changed=()=>{if(away && document.hidden) p.video?.pause()}; document.addEventListener('visibilitychange',changed); return()=>document.removeEventListener('visibilitychange',changed) },[away,p.video])
   useEffect(() => {

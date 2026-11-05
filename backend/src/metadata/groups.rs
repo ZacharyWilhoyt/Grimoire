@@ -541,3 +541,100 @@ pub async fn join(
         current_view(&state, &identity.user, &source, &body.path, &item.key).await?,
     ))
 }
+
+#[derive(Serialize, FromRow)]
+pub struct PersonalSeries {
+    status: Option<String>,
+    favorite: bool,
+    revision: i64,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersonalSeriesUpdate {
+    path: String,
+    status: Option<String>,
+    favorite: bool,
+    expected_revision: i64,
+}
+pub async fn personal_series(
+    State(state): State<AppState>,
+    Extension(identity): Extension<auth::Identity>,
+    Path((source, id)): Path<(String, String)>,
+    Query(query): Query<FileQuery>,
+) -> Result<Json<PersonalSeries>, AppError> {
+    let (file, _) = member(&state, &identity.user, &source, &id, &query.path, false).await?;
+    if file.kind == "music" {
+        return Err(crate::bad_request(
+            "Use the music library for album preferences.",
+        ));
+    }
+    let row=sqlx::query_as::<_,PersonalSeries>("SELECT status,favorite,revision FROM user_series WHERE user_id=$1 AND source_id=$2 AND group_id=$3").bind(identity.user.id).bind(&source).bind(&id).fetch_optional(&state.db).await.map_err(|_|auth::unavailable())?;
+    Ok(Json(row.unwrap_or(PersonalSeries {
+        status: None,
+        favorite: false,
+        revision: 0,
+    })))
+}
+pub async fn save_personal_series(
+    State(state): State<AppState>,
+    Extension(identity): Extension<auth::Identity>,
+    Path((source, id)): Path<(String, String)>,
+    Json(body): Json<PersonalSeriesUpdate>,
+) -> Result<Json<PersonalSeries>, AppError> {
+    if body.expected_revision < 0
+        || body.expected_revision == i64::MAX
+        || body.status.as_deref().is_some_and(|status| {
+            !matches!(
+                status,
+                "planning" | "active" | "completed" | "on_hold" | "dropped"
+            )
+        })
+    {
+        return Err(crate::bad_request("Invalid series preference."));
+    }
+    let (file, _) = member(&state, &identity.user, &source, &id, &body.path, false).await?;
+    if file.kind == "music" {
+        return Err(crate::bad_request(
+            "Use the music library for album preferences.",
+        ));
+    }
+    auth::rate_limit(
+        &state.db,
+        format!("series-preferences:{}", identity.user.id),
+        120,
+        300,
+    )
+    .await?;
+    let mut tx = state.db.begin().await.map_err(|_| auth::unavailable())?;
+    let allowed:Option<String>=sqlx::query_scalar("SELECT s.id FROM sources s WHERE s.id=$2 AND (s.owner_id=$1 OR EXISTS(SELECT 1 FROM source_permissions p WHERE p.source_id=s.id AND p.user_id=$1 AND p.can_discover AND p.can_access_media)) FOR SHARE OF s").bind(identity.user.id).bind(&source).fetch_optional(&mut *tx).await.map_err(|_|auth::unavailable())?;
+    if allowed.is_none() {
+        return Err(not_found());
+    }
+    locked_member(&mut tx, &source, &id, &body.path, &file).await?;
+    let query = if body.expected_revision == 0 {
+        "INSERT INTO user_series(user_id,source_id,group_id,status,favorite,revision) VALUES($1,$2,$3,$4,$5,1) ON CONFLICT DO NOTHING RETURNING status,favorite,revision"
+    } else {
+        "UPDATE user_series SET status=$4,favorite=$5,revision=revision+1,updated_at=now() WHERE user_id=$1 AND source_id=$2 AND group_id=$3 AND revision=$6 RETURNING status,favorite,revision"
+    };
+    let mut query = sqlx::query_as::<_, PersonalSeries>(query)
+        .bind(identity.user.id)
+        .bind(&source)
+        .bind(&id)
+        .bind(body.status)
+        .bind(body.favorite);
+    if body.expected_revision != 0 {
+        query = query.bind(body.expected_revision);
+    }
+    let row = query
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| auth::unavailable())?
+        .ok_or_else(|| {
+            AppError(
+                StatusCode::CONFLICT,
+                "Series preferences changed in another window. Reload before saving again.".into(),
+            )
+        })?;
+    tx.commit().await.map_err(|_| auth::unavailable())?;
+    Ok(Json(row))
+}

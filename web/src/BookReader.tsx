@@ -43,7 +43,7 @@ export default function BookReader({userId,sourceId,sourceName,file,onClose,onNe
       progress.current = session
       const saved = await session.load()
       if (controller.signal.aborted) return
-      opened = await openArchive(`/api/sources/${encodeURIComponent(sourceId)}/book?${new URLSearchParams({ path: file.relative_path })}`, controller.signal)
+      opened = await openArchive(`/api/sources/${encodeURIComponent(sourceId)}/book?${new URLSearchParams({ path: file.relative_path })}`, controller.signal, comic?'cbz':'epub')
       if (controller.signal.aborted) { await opened.close(); return }
       let pages: Chapter[]
       if (comic) {
@@ -76,12 +76,21 @@ export default function BookReader({userId,sourceId,sourceName,file,onClose,onNe
    return()=>abort.abort()
  },[sourceId,file.relative_path])
  const save=useCallback((page:number)=>{if(ready.current.has(page)&&chapters[page])progress.current?.save({position:page,total:chapters.length,locator:chapters[page].path})},[chapters])
+ const [bookFinished,setBookFinished]=useState(false)
+ const finishedUnits=useRef(new Set<number>()),currentUnit=useRef(index)
+ currentUnit.current=index
+ const finishUnit=useCallback((page:number)=>{
+   if(!ready.current.has(page)||finishedUnits.current.has(page)||!chapters[page])return
+   finishedUnits.current.add(page)
+   if(page===chapters.length-1)setBookFinished(true)
+   progress.current?.save({position:page,total:chapters.length,locator:chapters[page].path,completed_units:[page],completed:page===chapters.length-1})
+ },[chapters])
  const pageReady=useCallback((page:number,width:number,height:number)=>{
    ready.current.add(page)
    if(comic)setWide(old=>old[page]===isSpread(width,height)?old:{...old,[page]:isSpread(width,height)})
    if(page===index)save(page)
  },[comic,index,save])
- const visible=useCallback((page:number)=>{setIndex(page);save(page)},[save])
+ const visible=useCallback((page:number)=>{if(page>currentUnit.current)finishUnit(currentUnit.current);currentUnit.current=page;setIndex(page);save(page)},[save,finishUnit])
  const members=spreadMembers(index,chapters.length,wide,settings.layout)
  // Decode only the next candidate to decide whether two portrait pages can pair.
  useEffect(()=>{
@@ -96,6 +105,7 @@ export default function BookReader({userId,sourceId,sourceName,file,onClose,onNe
    return()=>{cancelled=true;if(url)URL.revokeObjectURL(url)}
  },[archive,chapters,index,comic,settings.layout,wide])
  const advance=()=>{
+   finishUnit(index)
    if(index+members.length<chapters.length){setIndex(index+members.length);if(viewport.current)viewport.current.scrollTop=0}
    else if(next&&onNext&&!advanceLock.current){advanceLock.current=true;onNext(next)}
  }
@@ -104,7 +114,7 @@ export default function BookReader({userId,sourceId,sourceName,file,onClose,onNe
    if(settings.layout==='double'&&previous>0&&wide[previous]===false&&wide[previous-1]===false)previous--
    setIndex(Math.max(0,previous));if(viewport.current)viewport.current.scrollTop=0
  }
- const go=(page:number)=>{setIndex(page);if(strip)viewport.current?.querySelector(`[data-page="${page}"]`)?.scrollIntoView({block:'start'});else if(viewport.current)viewport.current.scrollTop=0}
+ const go=(page:number)=>{if(page===index+1)finishUnit(index);setIndex(page);if(strip)viewport.current?.querySelector(`[data-page="${page}"]`)?.scrollIntoView({block:'start'});else if(viewport.current)viewport.current.scrollTop=0}
  useEffect(()=>{if(strip&&!loading)requestAnimationFrame(()=>viewport.current?.querySelector(`[data-page="${index}"]`)?.scrollIntoView?.({block:'start'}))},[loading,strip])
  useEffect(()=>{
    const view=viewport.current;if(!view)return
@@ -132,7 +142,7 @@ export default function BookReader({userId,sourceId,sourceName,file,onClose,onNe
  <nav className="reader-navigation" aria-label="Page navigation">
  <button aria-label="Previous" disabled={loading||index===0} onClick={previous}><ChevronLeft/></button>
  <label>{comic?'Page':'Chapter'}<select aria-label={comic?'Page':'Chapter'} value={index} disabled={loading} onChange={e=>go(Number(e.target.value))}>{chapters.map((chapter,i)=><option key={chapter.path} value={i}>{comic?i+1:chapter.label}</option>)}</select> / {chapters.length}</label>
- <button aria-label="Next" disabled={loading||index>=chapters.length-1&&!next} onClick={()=>strip&&index<chapters.length-1?go(index+1):advance()}><ChevronRight/></button>
+ <button aria-label={index===chapters.length-1&&!next?'Finish book':'Next'} title={index===chapters.length-1&&!next?'Mark book finished':'Next'} disabled={loading||index>=chapters.length-1&&!next&&bookFinished} onClick={()=>strip&&index<chapters.length-1?go(index+1):advance()}><ChevronRight/></button>
  </nav><button className="reader-cozy-toggle" aria-label="Cozy reading view" aria-pressed={cozy} onClick={toggleCozy}><PanelRightClose/></button></header>
  <div className="reader-layout">
  <button ref={settingsButton} className="reader-settings-toggle" aria-label="Reading settings" aria-expanded={settingsOpen} aria-controls="reading-settings" onClick={()=>setSettingsOpen(value=>!value)}><Settings size={21}/></button>
@@ -151,7 +161,7 @@ export default function BookReader({userId,sourceId,sourceName,file,onClose,onNe
  onPointerUp={()=>{suppressClick.current=drag.current?.moved??false;drag.current=null}}
  onPointerCancel={()=>{drag.current=null}}
  onClick={e=>{if(suppressClick.current){suppressClick.current=false;return}if(e.target instanceof Element&&e.target.closest('button,a'))return;const rect=e.currentTarget.getBoundingClientRect(),x=e.clientX-rect.left,margin=Math.max(40,rect.width*.12);if(x<margin||x>rect.width-margin){clearTimeout(marginTimer.current);const forward=(x>rect.width-margin)===(settings.direction==='ltr');marginTimer.current=setTimeout(()=>{if(strip){if(forward&&index<chapters.length-1)go(index+1);else if(forward)advance();else go(Math.max(0,index-1))}else if(forward)advance();else previous()},220)}}}
- onScroll={e=>{const v=e.currentTarget;if(strip&&v.scrollTop>20&&v.scrollTop+v.clientHeight>=v.scrollHeight-3&&ready.current.has(chapters.length-1)&&next&&!advanceLock.current){advanceLock.current=true;onNext?.(next)}}}>
+ onScroll={e=>{const v=e.currentTarget;if(strip&&v.scrollTop>20&&v.scrollTop+v.clientHeight>=v.scrollHeight-3&&ready.current.has(chapters.length-1)&&!advanceLock.current){finishUnit(chapters.length-1);if(next){advanceLock.current=true;onNext?.(next)}}}}>
  {loading&&<p role="status">Opening book content…</p>}{error&&<p role="alert">{error}</p>}{progressError&&<p role="status">{progressError}</p>}
  {archive&&!loading&&!error&&<div className="reader-surface" style={{zoom:settings.zoom/100,direction:!strip&&settings.direction==='rtl'?'rtl':'ltr'}}>{(strip?chapters.map((_,i)=>i):members).map(page=><ReaderPage key={chapters[page].path} archive={archive} path={chapters[page].path} index={page} comic={comic} settings={settings} onReady={pageReady} onVisible={strip?visible:undefined} onCozy={toggleCozy} lazy={strip&&page!==index}/>)}</div>}
  </div></div></main>

@@ -4,7 +4,7 @@ export type MetadataView = { group?: GroupView | null; individual_genres?: strin
 export const displayTitle = (item: { name: string; metadata?: MetadataView | null }) => item.metadata?.fields.title?.trim() || item.name
 export type GroupBy = 'none' | 'collection' | 'creator'
 export type MediaKind = 'video' | 'music' | 'book'
-export type MediaItem = { progress?: { position: number; total: number | null; updated_at: number } | null; metadata?: MetadataView | null; file_key: string; available: boolean; source_id: string; source_name: string; name: string; relative_path: string; kind: MediaKind; extension: string; size_bytes: number; modified_at: number | null; saved_at: number | null; last_opened_at: number | null }
+export type MediaItem = { progress?: { position: number; total: number | null; updated_at: number; completed?:boolean } | null; metadata?: MetadataView | null; file_key: string; available: boolean; source_id: string; source_name: string; name: string; relative_path: string; kind: MediaKind; extension: string; size_bytes: number; modified_at: number | null; saved_at: number | null; last_opened_at: number | null }
 export type PersonalState = Pick<MediaItem, 'file_key' | 'saved_at' | 'last_opened_at'>
 export type PageName = 'For you' | 'Discover' | 'My library' | 'Music'
 export type Sort = 'title' | 'modified' | 'saved' | 'source'

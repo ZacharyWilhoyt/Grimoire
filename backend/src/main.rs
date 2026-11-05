@@ -14,6 +14,8 @@ mod metadata;
 mod music;
 mod permissions;
 mod progress;
+mod security;
+mod statistics;
 mod subtitles;
 mod subtitles_mkv;
 mod transcode;
@@ -37,6 +39,8 @@ const MAX_DIRECTORY_DEPTH: usize = 32;
 #[derive(Clone)]
 struct AppState {
     db: sqlx::PgPool,
+    network: Arc<security::Network>,
+    tls: Arc<security::tls::Runtime>,
     config: Arc<auth::Config>,
     hashing: Arc<tokio::sync::Semaphore>,
     catalog_scans: Arc<tokio::sync::Semaphore>,
@@ -91,6 +95,7 @@ struct ApiError {
     error: String,
 }
 
+#[derive(Debug)]
 struct AppError(StatusCode, String);
 
 impl IntoResponse for AppError {
@@ -346,16 +351,30 @@ async fn serve_media_file(
     request: Request,
     kind: &str,
 ) -> Result<Response, AppError> {
-    if kind == "book"
-        && fs::metadata(&path)
+    if kind == "book" {
+        let comic = path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("cbz"));
+        let limit = if comic {
+            4_u64 * 1024 * 1024 * 1024
+        } else {
+            128 * 1024 * 1024
+        };
+        if fs::metadata(&path)
             .map_err(|_| bad_request("Book unavailable."))?
             .len()
-            > 128 * 1024 * 1024
-    {
-        return Err(AppError(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "Books must be smaller than 128 MiB.".into(),
-        ));
+            > limit
+        {
+            return Err(AppError(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                if comic {
+                    "CBZ archives must be at most 4 GiB."
+                } else {
+                    "EPUB books must be at most 128 MiB."
+                }
+                .into(),
+            ));
+        }
     }
     let response = ServeFile::new(path)
         .try_call(request)
@@ -515,6 +534,38 @@ fn scan_directory(root: &Path) -> Result<Vec<MediaFile>, String> {
     Ok(files)
 }
 
+async fn frontend(request: Request) -> Response {
+    if request.uri().path() == "/api"
+        || request.uri().path().starts_with("/api/")
+        || !matches!(
+            *request.method(),
+            axum::http::Method::GET | axum::http::Method::HEAD
+        )
+    {
+        return not_found().await.into_response();
+    }
+    let Some(root) = std::env::var_os("GRIMOIRE_WEB_ROOT").map(PathBuf::from) else {
+        return not_found().await.into_response();
+    };
+    let result = tower_http::services::ServeDir::new(&root)
+        .fallback(ServeFile::new(root.join("index.html")))
+        .try_call(request)
+        .await;
+    match result {
+        Ok(response) => {
+            let mut response = response.map(axum::body::Body::new);
+            response
+                .headers_mut()
+                .insert("x-content-type-options", "nosniff".parse().unwrap());
+            response
+                .headers_mut()
+                .insert("cache-control", "private, no-store".parse().unwrap());
+            response
+        }
+        Err(_) => not_found().await.into_response(),
+    }
+}
+
 async fn not_found() -> (StatusCode, Json<ApiError>) {
     (
         StatusCode::NOT_FOUND,
@@ -567,6 +618,12 @@ fn app(state: AppState) -> Router {
             "/api/progress",
             get(progress::get)
                 .put(progress::put)
+                .layer(DefaultBodyLimit::max(16 * 1024)),
+        )
+        .route(
+            "/api/sources/{source_id}/groups/{group_id}/personal",
+            get(metadata::groups::personal_series)
+                .put(metadata::groups::save_personal_series)
                 .layer(DefaultBodyLimit::max(16 * 1024)),
         )
         .route(
@@ -666,6 +723,23 @@ fn app(state: AppState) -> Router {
                 .put(music::save)
                 .layer(DefaultBodyLimit::max(1024 * 1024)),
         )
+        .route(
+            "/api/admin/security/ip",
+            get(security::read)
+                .put(security::save)
+                .layer(DefaultBodyLimit::max(16 * 1024)),
+        )
+        .route(
+            "/api/admin/security/ip/preview",
+            axum::routing::post(security::preview).layer(DefaultBodyLimit::max(16 * 1024)),
+        )
+        .route(
+            "/api/admin/security/tls",
+            get(security::tls::read)
+                .put(security::tls::save)
+                .layer(DefaultBodyLimit::max(16 * 1024)),
+        )
+        .route("/api/statistics", get(statistics::read))
         .route("/api/sources", get(list_sources).post(add_source))
         .route("/api/sources/{source_id}", delete(remove_source))
         .route(
@@ -690,11 +764,15 @@ fn app(state: AppState) -> Router {
         .route("/api/ready", get(readiness))
         .route("/api/auth/register", axum::routing::post(auth::register))
         .route("/api/auth/login", axum::routing::post(auth::login))
-        .fallback(not_found)
+        .fallback(frontend)
         .layer(DefaultBodyLimit::max(4096))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::origin_and_limits,
+        ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            security::enforce,
         ))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
@@ -747,6 +825,12 @@ async fn main() {
         .unwrap_or_else(|_| panic!("Password hashing initialization failed"));
     let config = auth::Config::from_env(dummy).unwrap_or_else(|message| panic!("{message}"));
     let state = AppState {
+        tls: Arc::new(
+            security::tls::Runtime::from_env().unwrap_or_else(|message| panic!("{message}")),
+        ),
+        network: Arc::new(
+            security::Network::from_env().unwrap_or_else(|message| panic!("{message}")),
+        ),
         db,
         config: Arc::new(config),
         hashing: Arc::new(tokio::sync::Semaphore::new(4)),
@@ -755,11 +839,21 @@ async fn main() {
         video_audio: Arc::new(crate::video_audio::Runtime::new()),
         transcode: Arc::new(crate::transcode::Runtime::new()),
     };
+    if state.tls.managed.is_some() && !state.network.require_proxy {
+        panic!(
+            "Managed Caddy requires GRIMOIRE_REQUIRE_PROXY=true and trusted proxy configuration."
+        );
+    }
+    security::tls::supervise(state.clone());
     let port = std::env::var("GRIMOIRE_PORT")
         .unwrap_or_else(|_| "3000".into())
         .parse::<u16>()
         .expect("GRIMOIRE_PORT must be a valid port");
-    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let bind = std::env::var("GRIMOIRE_BIND_ADDRESS")
+        .unwrap_or_else(|_| "127.0.0.1".into())
+        .parse::<std::net::IpAddr>()
+        .expect("GRIMOIRE_BIND_ADDRESS must be an IP address");
+    let address = SocketAddr::new(bind, port);
     let listener = tokio::net::TcpListener::bind(address)
         .await
         .expect("Failed to bind API listener");
@@ -911,6 +1005,41 @@ mod tests {
         .await;
         assert!(matches!(
             result,
+            Err(AppError(StatusCode::PAYLOAD_TOO_LARGE, _))
+        ));
+        let large = root.join("large.cbz");
+        fs::File::create(&large)
+            .unwrap()
+            .set_len(4_u64 * 1024 * 1024 * 1024)
+            .unwrap();
+        // A sparse 4 GiB file is served a byte at a time, without allocating its contents.
+        let response = serve_media_file(
+            large.clone(),
+            Request::builder()
+                .header("range", "bytes=0-0")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+            "book",
+        )
+        .await
+        .unwrap_or_else(|_| panic!("large CBZ"));
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.headers()["content-range"], "bytes 0-0/4294967296");
+        assert_eq!(
+            axum::body::to_bytes(response.into_body(), 1)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&large)
+            .unwrap()
+            .set_len(4_u64 * 1024 * 1024 * 1024 + 1)
+            .unwrap();
+        assert!(matches!(
+            serve_media_file(large, Request::new(axum::body::Body::empty()), "book").await,
             Err(AppError(StatusCode::PAYLOAD_TOO_LARGE, _))
         ));
         fs::remove_dir_all(root).unwrap();

@@ -18,6 +18,45 @@ fn password() -> Result<String, String> {
 }
 
 pub async fn command(db: &PgPool, args: &[String]) -> Result<(), String> {
+    if args == ["reset-managed-tls"] || args == ["enable-automatic-tls"] {
+        let mut tx = db.begin().await.map_err(|_| "Database unavailable.")?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(0x4752494d544c53_i64)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| "TLS settings unavailable.")?;
+        if args[0] == "reset-managed-tls" {
+            sqlx::query("UPDATE instance_security SET tls_settings=NULL,tls_revision=tls_revision+1 WHERE singleton").execute(&mut *tx).await.map_err(|_|"TLS reset failed.")?;
+        } else {
+            sqlx::query("UPDATE instance_security SET tls_settings=jsonb_set(tls_settings,'{automatic}','true'),tls_revision=tls_revision+1 WHERE singleton AND tls_settings IS NOT NULL").execute(&mut *tx).await.map_err(|_|"TLS update failed.")?;
+        }
+        sqlx::query("INSERT INTO auth_events(event) VALUES('operator_tls_recovery')")
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| "Audit failed.")?;
+        tx.commit().await.map_err(|_| "TLS recovery failed.")?;
+        if args[0] == "reset-managed-tls" {
+            if crate::security::tls::restore_local_proxy().await? {
+                println!("TLS settings reset and localhost HTTPS configuration applied to Caddy. Certificate files were preserved. Open https://localhost.");
+            } else {
+                println!("TLS settings reset in the selected database only. Managed Caddy is not configured in this process; run recovery inside the deployed API container to reset its proxy.");
+            }
+            return Ok(());
+        }
+        println!("TLS settings updated. Certificate files were preserved. See deployment recovery instructions.");
+        return Ok(());
+    }
+    if args == ["reset-ip-access"] {
+        let mut tx = db.begin().await.map_err(|_| "Database unavailable.")?;
+        sqlx::query("UPDATE instance_security SET ip_policy='{\"default_action\":\"allow\",\"allow\":[],\"deny\":[]}'::jsonb,ip_revision=ip_revision+1,updated_at=now() WHERE singleton").execute(&mut *tx).await.map_err(|_|"IP reset failed.")?;
+        sqlx::query("INSERT INTO auth_events(event) VALUES('operator_ip_policy_reset')")
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| "Audit failed.")?;
+        tx.commit().await.map_err(|_| "IP reset failed.")?;
+        println!("IP policy reset to unrestricted access. Authentication is still required.");
+        return Ok(());
+    }
     if args.len() != 2 {
         return Err("Usage: cargo run -- {bootstrap-admin|import-legacy-sources|reset-password|disable-user|enable-user} USERNAME".into());
     }

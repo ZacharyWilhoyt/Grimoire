@@ -1,0 +1,25 @@
+{
+ admin unix//run/caddy/admin.sock
+ storage file_system {
+  root /data/caddy
+ }
+ skip_install_trust
+ servers {
+  strict_sni_host
+ }
+ log default {
+  output file /data/caddy/grimoire.log {
+   roll_size 10MiB
+   roll_keep 2
+  }
+  format json
+ }
+}
+https://localhost {
+ tls internal
+ reverse_proxy api:3000 {
+  header_up X-Grimoire-Client-IP {http.request.remote.host}
+  header_up X-Grimoire-Proxy-Token {$GRIMOIRE_PROXY_TOKEN}
+  header_up -Forwarded
+ }
+}

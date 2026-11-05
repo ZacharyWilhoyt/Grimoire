@@ -1114,6 +1114,8 @@ mod scan_tests {
         let runtime = Arc::new(Runtime::new());
         let blocked = runtime.work.clone().acquire_many_owned(2).await.unwrap();
         let state = AppState {
+            network: Arc::new(crate::security::Network::default()),
+            tls: Arc::new(crate::security::tls::Runtime::default()),
             db: pool.clone(),
             config: Arc::new(auth::Config {
                 additional_origins: Vec::new(),
