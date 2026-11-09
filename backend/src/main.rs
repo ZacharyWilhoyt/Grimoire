@@ -277,6 +277,16 @@ async fn remove_source(
     }
     sqlx::query("INSERT INTO source_permission_audit(source_id,actor_id,target_id,action,before_state) SELECT source_id,$2,user_id,'revoked',json_build_object('can_discover',can_discover,'can_access_media',can_access_media,'acquisition_policy',acquisition_policy)::text FROM source_permissions WHERE source_id=$1")
         .bind(&source_id).bind(identity.user.id).execute(&mut *tx).await.map_err(|_| auth::unavailable())?;
+    let managed: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM arr_connections WHERE source_id=$1 AND managed)",
+    )
+    .bind(&source_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|_| auth::unavailable())?;
+    if managed {
+        return Err(bad_request("Remove this source's managed Arr instances and their connections before disconnecting it."));
+    }
     sqlx::query("DELETE FROM sources WHERE id=$1")
         .bind(source_id)
         .execute(&mut *tx)
@@ -644,6 +654,15 @@ fn app(state: AppState) -> Router {
                 .layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
         )
         .route("/api/sources/{source_id}/arr", get(metadata::arr::list))
+        .route(
+            "/api/sources/{source_id}/arr/managed",
+            axum::routing::post(metadata::arr::managed::create)
+                .layer(DefaultBodyLimit::max(16 * 1024)),
+        )
+        .route(
+            "/api/sources/{source_id}/arr/{connection_id}/manage/{action}",
+            axum::routing::post(metadata::arr::managed::action),
+        )
         .route(
             "/api/sources/{source_id}/arr/{connection_id}",
             axum::routing::put(metadata::arr::save)

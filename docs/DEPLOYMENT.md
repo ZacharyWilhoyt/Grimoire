@@ -35,6 +35,9 @@ CPU-only hosts and NVIDIA. Device access does not change source encoding policie
 To copy an existing installation into a **new** container database without
 replacing either installation, use [Database migration](DATABASE_MIGRATION.md).
 
+To provision and manage Sonarr, Radarr, or Lidarr containers from an owned source,
+enable the optional [managed Arr controller](ARR_INTEGRATIONS.md#create-containers-from-grimoire).
+
 ## Before configuring a public domain
 
 Open `https://localhost` on the server. The bootstrap site uses Caddy's private
