@@ -1,4 +1,4 @@
-//! Bounded, authenticated sidecar captions. No remote URLs or embedded styling.
+//! Bounded, authenticated subtitle discovery and delivery.
 use crate::{auth, AppError, AppState};
 use axum::{
     extract::{Path, Query, State},
@@ -195,6 +195,29 @@ fn clock(ms: u64) -> String {
         ms % 1000
     )
 }
+fn write_cue_text(output: &mut String, mut line: &str) {
+    // Native WebVTT supports these attribute-free formatting tags and entities.
+    const ALLOWED: [&str; 12] = [
+        "<i>", "</i>", "<b>", "</b>", "<u>", "</u>", "&amp;", "&lt;", "&gt;", "&nbsp;", "&lrm;",
+        "&rlm;",
+    ];
+    while let Some(index) = line.find(['<', '>', '&']) {
+        let (text, rest) = line.split_at(index);
+        output.push_str(text);
+        if let Some(token) = ALLOWED.iter().find(|token| rest.starts_with(**token)) {
+            output.push_str(token);
+            line = &rest[token.len()..];
+        } else {
+            output.push_str(match rest.as_bytes()[0] {
+                b'<' => "&lt;",
+                b'>' => "&gt;",
+                _ => "&amp;",
+            });
+            line = &rest[1..];
+        }
+    }
+    output.push_str(line);
+}
 fn convert(input: &str) -> Result<String, AppError> {
     let invalid = || {
         crate::bad_request("The caption file is invalid or unsupported. Use UTF-8 SRT or WebVTT.")
@@ -239,12 +262,7 @@ fn convert(input: &str) -> Result<String, AppError> {
         }
         output.push_str(&format!("{} --> {}\n", clock(start), clock(end)));
         for line in &lines[index + 1..] {
-            output.push_str(
-                &line
-                    .replace('&', "&amp;")
-                    .replace('<', "&lt;")
-                    .replace('>', "&gt;"),
-            );
+            write_cue_text(&mut output, line);
             output.push('\n');
         }
         output.push('\n');
@@ -381,6 +399,15 @@ mod tests {
         assert!(!vtt.contains("STYLE"));
         assert!(!vtt.contains("align"));
         assert!(vtt.contains("Hi"));
+    }
+    #[test]
+    fn preserves_basic_cue_formatting_and_escapes_other_markup() {
+        let output = convert(
+            "WEBVTT\n\n00:01.000 --> 00:02.000\n<i><b>Test &amp; <u>caption</u></b></i>\n<i class=x>2 < 3 & 4 &lt;i&gt;
+",
+        ).unwrap();
+        assert!(output.contains("<i><b>Test &amp; <u>caption</u></b></i>"));
+        assert!(output.contains("&lt;i class=x&gt;2 &lt; 3 &amp; 4 &lt;i&gt;"));
     }
     #[test]
     fn rejects_bad_timing_and_unrelated_files() {
