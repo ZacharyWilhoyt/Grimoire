@@ -195,3 +195,43 @@ it('advances from the right margin in a right-to-left spread', async () => {
     vi.unstubAllGlobals()
   }
 })
+
+it('anchors zoom to the entire spread even when the cursor is over one page', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+  vi.stubGlobal('Image', class {
+    naturalWidth = 400
+    naturalHeight = 700
+    onload?: () => void
+    set src(_value: string) { queueMicrotask(() => this.onload?.()) }
+  })
+  URL.createObjectURL = vi.fn(() => 'blob:test')
+  URL.revokeObjectURL = vi.fn()
+  const settingsKey = 'grimoire:reader:v1:spread-test:Comic'
+  localStorage.setItem(settingsKey, JSON.stringify({ layout: 'double', fit: 'original' }))
+  const host = document.createElement('div'), root = createRoot(host)
+  document.body.append(host)
+  try {
+    await act(async () => root.render(<BookReader userId="spread-test" sourceId="s" sourceName="Test" file={{ name: 'Comic', relative_path: 'comic.cbz', extension: 'cbz' }} onClose={() => {}}/>))
+    const image = host.querySelector('img')!
+    Object.defineProperties(image, { naturalWidth: { value: 600 }, naturalHeight: { value: 800 } })
+    await act(async () => image.dispatchEvent(new Event('load')))
+    const spread = host.querySelector<HTMLElement>('.reader-spread')!
+    expect(spread.querySelectorAll('.reader-page')).toHaveLength(2)
+    expect(spread.style.gridTemplateColumns).toContain('600fr')
+    expect(spread.style.gridTemplateColumns).toContain('400fr')
+    const initialWidth = spread.style.width
+    const viewport = host.querySelector<HTMLElement>('.reader-viewport')!
+    const rect = (width: number, height: number) => ({ left: 0, top: 0, width, height, right: width, bottom: height }) as DOMRect
+    image.getBoundingClientRect = () => rect(600, 800)
+    spread.getBoundingClientRect = () => spread.style.width === initialWidth ? rect(1000, 800) : rect(1100, 880)
+    await act(async () => viewport.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, shiftKey: true, deltaY: -100, clientX: 250, clientY: 200 })))
+    expect(spread.style.width).not.toBe(initialWidth)
+    expect(viewport.scrollLeft).toBeCloseTo(25)
+    expect(viewport.scrollTop).toBeCloseTo(20)
+  } finally {
+    await act(async () => root.unmount())
+    host.remove()
+    localStorage.removeItem(settingsKey)
+    vi.unstubAllGlobals()
+  }
+})

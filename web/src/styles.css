@@ -133,3 +133,8 @@
 
 .reader-page-status{padding:12px;text-align:center}
 .reader-page-status [role=alert]{margin:0}
+
+.reader-paged{container-type:inline-size}
+.reader-paged .reader-spread{display:grid;min-height:0;margin-inline:auto;justify-content:normal}
+.reader-paged .reader-spread:has(.reader-page:nth-child(2)) .reader-page{width:100%;max-width:none}
+.reader-paged .reader-spread .reader-page img{width:100%;height:auto;max-height:none}

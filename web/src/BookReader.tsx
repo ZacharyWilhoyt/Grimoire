@@ -3,7 +3,7 @@ import WatchSidebar from './WatchSidebar'
 import {epubChapters,type Chapter} from './epubChapters'
 import {ProgressSession} from './progress'
 import {displayTitle,type MetadataView,type MediaItem} from './media'
-import {useCallback,useEffect,useLayoutEffect,useRef,useState} from 'react'
+import {useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState} from 'react'
 import {ArrowLeft,ChevronLeft,ChevronRight,PanelRightClose,Settings,X} from 'lucide-react'
 import {isImage,openArchive,parseXml,type BookArchive} from './bookArchive'
 import {readSettings,isSpread,spreadMembers,type ReaderKind} from './readerSettings'
@@ -17,7 +17,9 @@ export default function BookReader({userId,sourceId,sourceName,file,onClose,onNe
  const [kind,setKind]=useState<ReaderKind>(()=>{try{const v=localStorage.getItem(`${storage}:kind:${sourceId}:${file.relative_path}`)??localStorage.getItem(`${storage}:last:${comic?'cbz':'epub'}`);return ['Novel','Comic','Manga','Manhua'].includes(v??'')?v as ReaderKind:comic?'Comic':'Novel'}catch{return comic?'Comic':'Novel'}})
  const [settings,setSettings]=useState(()=>readSettings(storage,kind))
  const [cozy,setCozy]=useState(false),[archive,setArchive]=useState<BookArchive|null>(null),[chapters,setChapters]=useState<Chapter[]>([]),[index,setIndex]=useState(0),[loading,setLoading]=useState(true),[error,setError]=useState(''),[progressError,setProgressError]=useState('')
- const [wide,setWide]=useState<Record<number,boolean>>({}),[next,setNext]=useState<MediaItem|null>(null)
+ const [pageSizes,setPageSizes]=useState<Record<number,{width:number;height:number}>>({})
+ const wide=useMemo(()=>Object.fromEntries(Object.entries(pageSizes).map(([page,{width,height}])=>[page,isSpread(width,height)])),[pageSizes])
+ const [next,setNext]=useState<MediaItem|null>(null)
  const progress=useRef<ProgressSession|null>(null),viewport=useRef<HTMLDivElement>(null),ready=useRef(new Set<number>()),advanceLock=useRef(false)
  const marginTimer=useRef<ReturnType<typeof setTimeout>|undefined>(undefined)
  useEffect(()=>()=>clearTimeout(marginTimer.current),[])
@@ -85,13 +87,26 @@ export default function BookReader({userId,sourceId,sourceName,file,onClose,onNe
    if(page===chapters.length-1)setBookFinished(true)
    progress.current?.save({position:page,total:chapters.length,locator:chapters[page].path,completed_units:[page],completed:page===chapters.length-1})
  },[chapters])
+ const recordPageSize=useCallback((page:number,width:number,height:number)=>{
+   setPageSizes(old=>old[page]?.width===width&&old[page]?.height===height?old:{...old,[page]:{width,height}})
+ },[])
  const pageReady=useCallback((page:number,width:number,height:number)=>{
    ready.current.add(page)
-   if(comic)setWide(old=>old[page]===isSpread(width,height)?old:{...old,[page]:isSpread(width,height)})
+   if(comic)recordPageSize(page,width,height)
    if(page===index)save(page)
- },[comic,index,save])
+ },[comic,index,recordPageSize,save])
  const visible=useCallback((page:number)=>{if(page>currentUnit.current)finishUnit(currentUnit.current);currentUnit.current=page;setIndex(page);save(page)},[save,finishUnit])
  const members=spreadMembers(index,chapters.length,wide,settings.layout)
+ const first=pageSizes[index],second=pageSizes[index+1]
+ const spread=members.length===2&&first?.width>0&&second?.width>0&&Math.max(first.height,second.height)>0
+ const spreadWidth=spread?first.width+second.width:0
+ const heightFitWidth=`calc(${cozy?'100dvh':'(100dvh - 76px)'} * ${spread?spreadWidth/Math.max(first.height,second.height):1})`
+ const fittedSpreadWidth={
+   original:`${spreadWidth}px`,
+   width:'100cqw',
+   height:heightFitWidth,
+   both:`min(${spreadWidth}px, 100cqw, ${heightFitWidth})`,
+ }[settings.fit]
  const preload=useRef<Promise<void>>(Promise.resolve())
  const spreadEnd=index+members.length
  useEffect(()=>{
@@ -115,11 +130,11 @@ export default function BookReader({userId,sourceId,sourceName,file,onClose,onNe
    void archive.read(chapters[index+1].path).then(blob=>{
      if(cancelled)return
      url=URL.createObjectURL(blob);const image=new Image()
-     image.onload=()=>{if(!cancelled)setWide(old=>({...old,[index+1]:isSpread(image.naturalWidth,image.naturalHeight)}));if(url)URL.revokeObjectURL(url)}
+     image.onload=()=>{if(!cancelled)recordPageSize(index+1,image.naturalWidth,image.naturalHeight);if(url)URL.revokeObjectURL(url)}
      image.onerror=()=>{if(url)URL.revokeObjectURL(url)};image.src=url
    }).catch(()=>{})
    return()=>{cancelled=true;if(url)URL.revokeObjectURL(url)}
- },[archive,chapters,index,comic,settings.layout,wide])
+ },[archive,chapters,index,comic,settings.layout,wide,recordPageSize])
  const advance=()=>{
    finishUnit(index)
    if(index+members.length<chapters.length){setIndex(index+members.length);if(viewport.current)viewport.current.scrollTop=0}
@@ -137,7 +152,7 @@ export default function BookReader({userId,sourceId,sourceName,file,onClose,onNe
    const wheel=(event:WheelEvent)=>{
      if(!event.shiftKey)return
      event.preventDefault()
-     const element=[...view.querySelectorAll<HTMLElement>('.reader-page img,.reader-page iframe')].find(element=>{const rect=element.getBoundingClientRect();return event.clientX>=rect.left&&event.clientX<=rect.right&&event.clientY>=rect.top&&event.clientY<=rect.bottom})??view.querySelector<HTMLElement>('.reader-surface')
+     const element=view.querySelector<HTMLElement>('.reader-spread')??[...view.querySelectorAll<HTMLElement>('.reader-page img,.reader-page iframe')].find(element=>{const rect=element.getBoundingClientRect();return event.clientX>=rect.left&&event.clientX<=rect.right&&event.clientY>=rect.top&&event.clientY<=rect.bottom})??view.querySelector<HTMLElement>('.reader-surface')
      if(element){const rect=element.getBoundingClientRect();zoomAnchor.current={element,x:rect.width?(event.clientX-rect.left)/rect.width:0,y:rect.height?(event.clientY-rect.top)/rect.height:0,clientX:event.clientX,clientY:event.clientY}}
      setSettings(old=>({...old,zoom:Math.max(25,Math.min(400,old.zoom+(event.deltaY<0?10:-10)))}))
    }
@@ -179,7 +194,9 @@ export default function BookReader({userId,sourceId,sourceName,file,onClose,onNe
  onClick={e=>{if(suppressClick.current){suppressClick.current=false;return}if(e.target instanceof Element&&e.target.closest('button,a'))return;const rect=e.currentTarget.getBoundingClientRect(),x=e.clientX-rect.left,margin=Math.max(40,rect.width*.12);if(x<margin||x>rect.width-margin){clearTimeout(marginTimer.current);const forward=x>rect.width-margin;marginTimer.current=setTimeout(()=>{if(strip){if(forward&&index<chapters.length-1)go(index+1);else if(forward)advance();else go(Math.max(0,index-1))}else if(forward)advance();else previous()},220)}}}
  onScroll={e=>{const v=e.currentTarget;if(strip&&v.scrollTop>20&&v.scrollTop+v.clientHeight>=v.scrollHeight-3&&ready.current.has(chapters.length-1)&&!advanceLock.current){finishUnit(chapters.length-1);if(next){advanceLock.current=true;onNext?.(next)}}}}>
  {loading&&<p role="status">Opening book content…</p>}{error&&<p role="alert">{error}</p>}{progressError&&<p role="status">{progressError}</p>}
- {archive&&!loading&&!error&&<div className="reader-surface" style={{zoom:settings.zoom/100,direction:comic&&settings.layout==='double'?settings.direction:'ltr'}}>{(strip?chapters.map((_,i)=>i):members).map(page=><ReaderPage key={chapters[page].path} archive={archive} path={chapters[page].path} index={page} comic={comic} settings={settings} onReady={pageReady} onVisible={strip?visible:undefined} onCozy={toggleCozy} lazy={strip&&page!==index}/>)}</div>}
+ {archive&&!loading&&!error&&<div className={spread?'reader-surface reader-spread':'reader-surface'} style={{
+   ...(spread?{width:`calc(${fittedSpreadWidth} * ${settings.zoom/100})`,gridTemplateColumns:`minmax(0, ${first.width}fr) minmax(0, ${second.width}fr)`}:{zoom:settings.zoom/100}),
+   direction:comic&&settings.layout==='double'?settings.direction:'ltr'}}>{(strip?chapters.map((_,i)=>i):members).map(page=><ReaderPage key={chapters[page].path} archive={archive} path={chapters[page].path} index={page} comic={comic} settings={settings} onReady={pageReady} onVisible={strip?visible:undefined} onCozy={toggleCozy} lazy={strip&&page!==index}/>)}</div>}
  </div></div></main>
  {!cozy&&<div className="reader-related"><WatchSidebar sourceId={sourceId} path={file.relative_path}/></div>}
  </section>
