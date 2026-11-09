@@ -217,13 +217,14 @@ it('anchors zoom to the entire spread even when the cursor is over one page', as
     await act(async () => image.dispatchEvent(new Event('load')))
     const spread = host.querySelector<HTMLElement>('.reader-spread')!
     expect(spread.querySelectorAll('.reader-page')).toHaveLength(2)
-    expect(spread.style.gridTemplateColumns).toContain('600fr')
-    expect(spread.style.gridTemplateColumns).toContain('400fr')
+    // A 600 × 800 page is scaled to 525 × 700 to align with the 400 × 700 page.
+    expect(spread.style.width).toContain('925px')
+    expect(spread.style.gridTemplateColumns).toContain(`${100*.75/(.75+400/700)}fr`)
     const initialWidth = spread.style.width
     const viewport = host.querySelector<HTMLElement>('.reader-viewport')!
     const rect = (width: number, height: number) => ({ left: 0, top: 0, width, height, right: width, bottom: height }) as DOMRect
     image.getBoundingClientRect = () => rect(600, 800)
-    spread.getBoundingClientRect = () => spread.style.width === initialWidth ? rect(1000, 800) : rect(1100, 880)
+    spread.getBoundingClientRect = () => spread.style.width === initialWidth ? rect(925, 700) : rect(1017.5, 770)
     await act(async () => viewport.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, shiftKey: true, deltaY: -100, clientX: 250, clientY: 200 })))
     expect(spread.style.width).not.toBe(initialWidth)
     expect(viewport.scrollLeft).toBeCloseTo(25)

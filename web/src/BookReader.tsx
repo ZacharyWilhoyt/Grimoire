@@ -98,9 +98,13 @@ export default function BookReader({userId,sourceId,sourceName,file,onClose,onNe
  const visible=useCallback((page:number)=>{if(page>currentUnit.current)finishUnit(currentUnit.current);currentUnit.current=page;setIndex(page);save(page)},[save,finishUnit])
  const members=spreadMembers(index,chapters.length,wide,settings.layout)
  const first=pageSizes[index],second=pageSizes[index+1]
- const spread=members.length===2&&first?.width>0&&second?.width>0&&Math.max(first.height,second.height)>0
- const spreadWidth=spread?first.width+second.width:0
- const heightFitWidth=`calc(${cozy?'100dvh':'(100dvh - 76px)'} * ${spread?spreadWidth/Math.max(first.height,second.height):1})`
+ const spread=members.length===2&&first?.height>0&&second?.height>0&&first.width>0&&second.width>0
+ const firstAspect=spread?first.width/first.height:0
+ const secondAspect=spread?second.width/second.height:0
+ const spreadAspect=firstAspect+secondAspect
+ // Use the smaller native height so Original size never enlarges either page at 100%.
+ const spreadWidth=spread?Math.min(first.height,second.height)*spreadAspect:0
+ const heightFitWidth=`calc(${cozy?'100dvh':'(100dvh - 76px)'} * ${spreadAspect})`
  const fittedSpreadWidth={
    original:`${spreadWidth}px`,
    width:'100cqw',
@@ -195,7 +199,7 @@ export default function BookReader({userId,sourceId,sourceName,file,onClose,onNe
  onScroll={e=>{const v=e.currentTarget;if(strip&&v.scrollTop>20&&v.scrollTop+v.clientHeight>=v.scrollHeight-3&&ready.current.has(chapters.length-1)&&!advanceLock.current){finishUnit(chapters.length-1);if(next){advanceLock.current=true;onNext?.(next)}}}}>
  {loading&&<p role="status">Opening book content…</p>}{error&&<p role="alert">{error}</p>}{progressError&&<p role="status">{progressError}</p>}
  {archive&&!loading&&!error&&<div className={spread?'reader-surface reader-spread':'reader-surface'} style={{
-   ...(spread?{width:`calc(${fittedSpreadWidth} * ${settings.zoom/100})`,gridTemplateColumns:`minmax(0, ${first.width}fr) minmax(0, ${second.width}fr)`}:{zoom:settings.zoom/100}),
+   ...(spread?{width:`calc(${fittedSpreadWidth} * ${settings.zoom/100})`,gridTemplateColumns:`minmax(0, ${100*firstAspect/spreadAspect}fr) minmax(0, ${100*secondAspect/spreadAspect}fr)`}:{zoom:settings.zoom/100}),
    direction:comic&&settings.layout==='double'?settings.direction:'ltr'}}>{(strip?chapters.map((_,i)=>i):members).map(page=><ReaderPage key={chapters[page].path} archive={archive} path={chapters[page].path} index={page} comic={comic} settings={settings} onReady={pageReady} onVisible={strip?visible:undefined} onCozy={toggleCozy} lazy={strip&&page!==index}/>)}</div>}
  </div></div></main>
  {!cozy&&<div className="reader-related"><WatchSidebar sourceId={sourceId} path={file.relative_path}/></div>}
