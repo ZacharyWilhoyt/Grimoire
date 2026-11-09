@@ -430,12 +430,16 @@ pub struct LinkQuery {
     source_id: String,
     path: Option<String>,
     group: Option<String>,
+    season: Option<String>,
 }
 #[derive(Serialize)]
 pub struct LinkContext {
     item: Option<Item>,
     members: Vec<Item>,
     label: Option<String>,
+    artwork: crate::metadata::sidecars::SeriesArtwork,
+    seasons: Vec<crate::metadata::sidecars::Season>,
+    season: Option<String>,
 }
 // URLs identify resources, never grant access. Resolve the logged-in viewer's live catalog.
 pub async fn linked(
@@ -443,7 +447,14 @@ pub async fn linked(
     axum::Extension(identity): axum::Extension<auth::Identity>,
     Query(query): Query<LinkQuery>,
 ) -> Result<Json<LinkContext>, AppError> {
-    if query.source_id.len() > 128
+    use crate::metadata::sidecars;
+    if query.season.as_ref().is_some_and(|key| {
+        query.group.is_none()
+            || (key != "unknown"
+                && key
+                    .parse::<u32>()
+                    .map_or(true, |n| n > 100_000 || n.to_string() != *key))
+    }) || query.source_id.len() > 128
         || query.path.as_ref().is_some_and(|v| v.len() > 4096)
         || query.group.as_ref().is_some_and(|v| v.len() != 64)
         || query.path.is_some() == query.group.is_some()
@@ -462,7 +473,7 @@ pub async fn linked(
             "Media is unavailable or access has not been granted.".into(),
         ));
     }
-    let item = selected.map(|index| items.remove(index));
+    let mut item = selected.map(|index| items.remove(index));
     let group = query.group.or_else(|| {
         item.as_ref()?
             .metadata
@@ -503,10 +514,47 @@ pub async fn linked(
     let label = items
         .first()
         .and_then(|i| i.metadata.as_ref()?.group.as_ref().map(|g| g.label.clone()));
+    let root = media_root(&state, &identity.user, &query.source_id).await?;
+    let season = query.season;
+    let requested = season.clone();
+    let is_series = group.is_some();
+    let (item, items, artwork, seasons) = tokio::task::spawn_blocking(move || {
+        let (artwork, seasons) = if is_series {
+            sidecars::describe(&root, &items)
+        } else {
+            Default::default()
+        };
+        if let Some(key) = &requested {
+            items.retain(|item| item.file.kind == "video" && sidecars::season_key(item) == *key);
+        }
+        // The series overview only needs season artwork. Episode thumbnails are
+        // resolved for the selected season, an individual file, or unseasoned groups.
+        if requested.is_some()
+            || item.is_some()
+            || seasons.iter().all(|season| season.key == "unknown")
+        {
+            sidecars::attach_thumbnails(&root, &mut items);
+        }
+        if let Some(item) = &mut item {
+            sidecars::attach_thumbnails(&root, std::slice::from_mut(item));
+        }
+        (item, items, artwork, seasons)
+    })
+    .await
+    .map_err(|_| auth::unavailable())?;
+    if items.is_empty() {
+        return Err(AppError(
+            StatusCode::NOT_FOUND,
+            "This season is unavailable.".into(),
+        ));
+    }
     media_root(&state, &identity.user, &query.source_id).await?;
     Ok(Json(LinkContext {
         item,
         members: items,
         label,
+        artwork,
+        seasons,
+        season,
     }))
 }

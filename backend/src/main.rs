@@ -695,6 +695,10 @@ fn app(state: AppState) -> Router {
         .route("/api/metadata/providers", get(metadata::provider_status))
         .route("/api/metadata/artwork/{file_key}", get(metadata::artwork))
         .route(
+            "/api/sources/{source_id}/video-artwork",
+            get(metadata::sidecars::artwork),
+        )
+        .route(
             "/api/sources/{source_id}/metadata",
             get(metadata::details)
                 .put(metadata::edit)

@@ -3,6 +3,7 @@ pub mod groups;
 mod local;
 pub mod model;
 mod providers;
+pub mod sidecars;
 use crate::{auth, catalog, AppError, AppState};
 use axum::{
     extract::{Path, Query, State},
@@ -82,6 +83,8 @@ pub struct View {
     pub has_custom: bool,
     pub origin: String,
     pub artwork_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thumbnail_url: Option<String>,
     pub can_edit: bool,
     pub artwork_preference: ArtworkPreference,
     pub provider: Option<String>,
@@ -131,6 +134,7 @@ fn view(path: &str, key: &str, record: Option<&Record>, can_edit: bool, availabl
                     }
                 })
         },
+        thumbnail_url: None,
         artwork_url: available
             .then(|| {
                 record
@@ -398,9 +402,12 @@ pub async fn details(
     Query(query): Query<FileQuery>,
 ) -> Result<Json<View>, AppError> {
     let file = reference(&state, &identity.user, &source, &query.path, false).await?;
-    Ok(Json(
-        current_view(&state, &identity.user, &source, &query.path, &file.key).await?,
-    ))
+    let mut metadata =
+        current_view(&state, &identity.user, &source, &query.path, &file.key).await?;
+    if file.kind == "video" {
+        metadata.thumbnail_url = sidecars::thumbnail_url(&source, &query.path, &file.path);
+    }
+    Ok(Json(metadata))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -1,6 +1,6 @@
 export type MetadataFields = { duration?: number | null; title?: string | null; creator?: string | null; collection?: string | null; year?: number | null; season?: number | null; episode?: number | null; track?: number | null; disc?: number | null; volume?: number | null; genres?: string[] | null; description?: string | null }
 export type GroupView = { id: string; label: string; can_edit: boolean; has_custom_genres: boolean; has_custom_artwork: boolean; synopsis?: string | null; synopsis_provider?: string | null }
-export type MetadataView = { group?: GroupView | null; individual_genres?: string[] | null; credits?: string[]; fields: MetadataFields; has_custom: boolean; origin: string; artwork_url: string | null; can_edit: boolean; artwork_preference: string; provider: string | null; provider_id: string | null }
+export type MetadataView = { group?: GroupView | null; individual_genres?: string[] | null; credits?: string[]; fields: MetadataFields; has_custom: boolean; origin: string; artwork_url: string | null; thumbnail_url?: string | null; can_edit: boolean; artwork_preference: string; provider: string | null; provider_id: string | null }
 export const displayTitle = (item: { name: string; metadata?: MetadataView | null }) => item.metadata?.fields.title?.trim() || item.name
 export type GroupBy = 'none' | 'collection' | 'creator'
 export type MediaKind = 'video' | 'music' | 'book'

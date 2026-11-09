@@ -79,3 +79,35 @@ it('shows the saved group synopsis and its provider on the series page',async()=
   expect(host.querySelector('.metadata-credits')?.textContent).toContain('Sonarr')
  }finally{await act(async()=>root.unmount())}
 })
+
+it('links seasons independently and uses season posters and episode thumbnails',async()=>{
+ vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true)
+ mocked.mockImplementation(async()=>new Response(JSON.stringify({status:null,favorite:false,revision:0})))
+ const host=document.createElement('div'),root=createRoot(host),navigate=vi.fn()
+ const first=item(1,'video'),second=item(2,'video')
+ first.metadata!.fields.season=1
+ second.metadata!.fields.season=2
+ second.metadata!.thumbnail_url='/episode-two.jpg'
+ const props={
+  series:true,catalog:[],busy:false,onClose:vi.fn(),onOpen:vi.fn(),onSave:vi.fn(),
+  onDetails:vi.fn(),onSeries:vi.fn(),onMetadata:vi.fn(),onGroupMetadata:vi.fn(),onSeason:navigate,
+  artwork:{banner_url:'/series-banner.jpg',poster_url:'/series-poster.jpg'},
+  seasons:[{key:'1',count:1,poster_url:null},{key:'2',count:1,poster_url:'/season-two.jpg'}],
+ }
+ try{
+  await act(async()=>root.render(<SeriesDetails {...props} members={[first,second]}/>))
+  expect(host.querySelector('.series-banner')?.getAttribute('src')).toBe('/series-banner.jpg')
+  const cards=host.querySelectorAll<HTMLAnchorElement>('.series-season-card')
+  expect(cards).toHaveLength(2)
+  expect(cards[0].querySelector('img')?.getAttribute('src')).toBe('/series-poster.jpg')
+  expect(cards[1].querySelector('img')?.getAttribute('src')).toBe('/season-two.jpg')
+  expect(cards[1].getAttribute('href')).toContain('season=2')
+  await act(async()=>cards[1].click())
+  expect(navigate).toHaveBeenCalledWith('2')
+  await act(async()=>root.render(<SeriesDetails {...props} members={[second]} season="2"/>))
+  expect(host.querySelector('.series-season-heading')?.textContent).toBe('Season 2')
+  expect(host.querySelector('.series-sidebar img')?.getAttribute('src')).toBe('/season-two.jpg')
+  expect(host.querySelector('#series-panel-content img')?.getAttribute('src')).toBe('/episode-two.jpg')
+  expect(host.querySelector('#series-panel-content')?.textContent).not.toContain('Title 1')
+ }finally{await act(async()=>root.unmount())}
+})

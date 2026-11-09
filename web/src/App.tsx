@@ -224,21 +224,32 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
   }, [])
   const closeWatch = () => { setDetailItem(null);setVideo(null); setReading(null); setLinkedSeries(null); setLinkError(''); window.history.pushState(null, '', '/#discover') }
   const showDetails=(item:MediaItem)=>{setDetailItem(item);window.history.pushState(null,'',detailLink(item.source_id,item.relative_path))}
-  const showSeries=async(item:MediaItem)=>{
+  const showSeries=async(item:MediaItem, season?:string|null)=>{
     const group=item.metadata?.group;if(!group)return
     setLinkLoading(true);setLinkError('')
-    try{const context=await readApi<LinkContext>(`/api/media/link?${new URLSearchParams({source_id:item.source_id,group:group.id})}`);setDetailItem(null);setLinkedSeries(context);window.history.pushState(null,'',seriesLink(item.source_id,group.id))}catch(e){setLinkError(e instanceof Error?e.message:'Series unavailable.')}finally{setLinkLoading(false)}
+    const url=seriesLink(item.source_id,group.id,season)
+    try {
+      const context=await readApi<LinkContext>(linkRequest(url.slice(1))!)
+      setDetailItem(null)
+      setLinkedSeries(context)
+      window.history.pushState(null,'',url)
+    } catch(e) {
+      setLinkError(e instanceof Error?e.message:'Series unavailable.')
+    } finally { setLinkLoading(false) }
   }
   const refreshDetails = () => {
     setSourceRefresh(value=>value+1)
     const item=detailItem??linkedSeries?.members[0]
     if(!item)return
     const params=new URLSearchParams({source_id:item.source_id})
-    if(linkedSeries&&!detailItem&&item.metadata?.group)params.set('group',item.metadata.group.id)
+    if(linkedSeries&&!detailItem&&item.metadata?.group){
+      params.set('group',item.metadata.group.id)
+      if(linkedSeries.season!=null)params.set('season',linkedSeries.season)
+    }
     else params.set('path',item.relative_path)
     void readApi<LinkContext>(`/api/media/link?${params}`).then(context=>{
       if(detailItem)setDetailItem(current=>current?.file_key===item.file_key?context.item:current)
-      else setLinkedSeries(current=>current?.members[0]?.metadata?.group?.id===item.metadata?.group?.id?context:current)
+      else setLinkedSeries(current=>current?.members[0]?.metadata?.group?.id===item.metadata?.group?.id&&current?.season===linkedSeries?.season?context:current)
     }).catch(error=>setActionError(error instanceof Error?error.message:'Could not refresh details.'))
   }
   const toggleSaved = async (item: MediaItem) => {
@@ -311,7 +322,7 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
   if(linkedSeries?.members[0]?.kind==='music'&&!detailItem) return <>{musicPlayer}<section className="series-page"><header className="watch-header"><button className="watch-back" onClick={closeWatch}>Back to library</button><h1>{linkedSeries.label??'Album'}</h1></header>{actionError&&<p role="alert">{actionError}</p>}<MediaCollection items={linkedSeries.members} groupBy="none" busy={actionBusy} onOpen={(item,queue)=>{void openMedia(item,queue)}} onSave={item=>{void toggleSaved(item)}} onMetadata={setMetadataItem} onGroupMetadata={setGroupItem}/>{metadataItem&&<MetadataEditor item={metadataItem} onClose={()=>setMetadataItem(null)} onUpdated={refreshDetails}/>} {groupItem&&<GroupEditor item={groupItem} onClose={()=>setGroupItem(null)} onUpdated={refreshDetails}/>}</section></>
   if (detailItem || linkedSeries) {
     const members=detailItem?[detailItem]:linkedSeries!.members
-    return <>{musicPlayer}<SeriesDetails key={detailItem?.file_key??members[0]?.metadata?.group?.id} members={members} label={linkedSeries?.label} series={!detailItem} catalog={catalog} busy={actionBusy} error={actionError} onClose={closeWatch} onOpen={(item,queue)=>{void openMedia(item,queue)}} onSave={item=>{void toggleSaved(item)}} onDetails={showDetails} onSeries={item=>{void showSeries(item)}} onMetadata={setMetadataItem} onGroupMetadata={setGroupItem}/>{metadataItem&&<MetadataEditor item={metadataItem} onClose={()=>setMetadataItem(null)} onUpdated={refreshDetails}/>}
+    return <>{musicPlayer}<SeriesDetails key={detailItem?.file_key??`${members[0]?.metadata?.group?.id}:${linkedSeries?.season??'series'}`} members={members} season={detailItem?null:linkedSeries?.season} seasons={detailItem?undefined:linkedSeries?.seasons} artwork={detailItem?undefined:linkedSeries?.artwork} onSeason={season=>{if(members[0])void showSeries(members[0],season)}} label={linkedSeries?.label} series={!detailItem} catalog={catalog} busy={actionBusy} error={actionError} onClose={closeWatch} onOpen={(item,queue)=>{void openMedia(item,queue)}} onSave={item=>{void toggleSaved(item)}} onDetails={showDetails} onSeries={item=>{void showSeries(item)}} onMetadata={setMetadataItem} onGroupMetadata={setGroupItem}/>{metadataItem&&<MetadataEditor item={metadataItem} onClose={()=>setMetadataItem(null)} onUpdated={refreshDetails}/>}
     {groupItem&&<GroupEditor key={groupItem.metadata?.group?.id} item={groupItem} onClose={()=>setGroupItem(null)} onUpdated={refreshDetails}/>}</>
   }
   return <>{musicPlayer}{video && <VideoPlayer userId={user.id} key={`${video.source_id}:${video.relative_path}`} sourceId={video.source_id} sourceName={video.source_name} file={video} mini={miniVideo} onRestore={() => { setMiniVideo(false); window.history.pushState(null, '', mediaLink(video.source_id, video.relative_path)) }} onDismiss={() => setVideo(null)} onNext={item => { void openMedia(item, [item]) }} onClose={() => { setMiniVideo(true); window.history.pushState(null, '', '/#discover') }}/>}

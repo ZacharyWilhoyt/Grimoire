@@ -188,6 +188,21 @@ also enter a synopsis in the group editor. Bulk episode imports preserve manual
 episode edits and the current group identity. Files in other groups and files
 without exact matches stay outside the review.
 
+## Display exported artwork and browse seasons
+
+Grimoire recognizes the artwork files Sonarr exports alongside existing video
+files. Use `banner.jpg` (or `fanart.jpg`) and `poster.jpg` in the series folder,
+`season02-poster.jpg` for Season 2, and `<episode filename stem>-thumb.jpg` beside
+an episode. JPEG, PNG, and WebP are supported. Season 0 also recognizes
+`season-specials-poster.jpg`.
+
+A grouped video series lists its seasons when season numbers are available.
+Each season has a shareable URL, its own poster when present, and a list of
+matching episodes. Missing season art falls back to the series poster. Episode
+cards prefer their matching thumbnail. The link and artwork routes require
+current source access. Grimoire reads these files directly, so exported artwork
+appears without an additional Arr metadata import.
+
 ## Security and operational limits
 
 - Only the source owner can list, save, test, remove or preview its connections.
