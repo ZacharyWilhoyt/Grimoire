@@ -246,9 +246,21 @@ class Controller:
                 'LogConfig': {'Type': 'json-file', 'Config': {'max-size': '10m', 'max-file': '2'}},
                 'Tmpfs': {'/run': 'rw,exec,nosuid,nodev,size=32m,uid=10001,gid=10001', '/tmp': 'rw,nosuid,nodev,size=256m,uid=10001,gid=10001'},
                 'Mounts': [record['mount'], {'Type': 'volume', 'Source': self.policy['state_volume'], 'Target': '/config', 'VolumeOptions': {'Subpath': 'instances/' + instance + '/config'}}]}
+        group = 10001
+        if record['writable_media']:
+            root = next((root for root in self.policy['media_roots']
+                         if root['volume'] == record['mount']['Source']), None)
+            if root is None:
+                raise Failure('The media volume is no longer approved.')
+            approved = Path(root['container_path']).resolve(strict=True)
+            subpath = record['mount']['VolumeOptions'].get('Subpath', '')
+            folder = (approved / subpath).resolve(strict=True)
+            if not folder.is_relative_to(approved) or not folder.is_dir():
+                raise Failure('The selected media directory is unavailable.')
+            group = folder.stat().st_gid or 10001
         if publish:
             host['PortBindings'] = {port: [{'HostIp': '127.0.0.1', 'HostPort': ''}]}
-        return {'Image': self.policy['images'][kind], 'User': '10001:10001', 'Env': ['TZ=Etc/UTC'],
+        return {'Image': self.policy['images'][kind], 'User': f'10001:{group}', 'Env': ['TZ=Etc/UTC'],
                 'Labels': {LABEL: self.installation, LABEL + '.id': instance, LABEL + '.source': record['source_id']},
                 'ExposedPorts': {port: {}}, 'HostConfig': host}
 

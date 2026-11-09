@@ -37,8 +37,10 @@ are retained across ordinary API rebuilds.
 2. Choose the app, name, source folder, and a separate Arr login. The selected
    folder appears as `/media` inside that container. Media defaults to read-only.
    Enable write access per instance if you want Arr to import, rename, or manage
-   files there. UID 10001 needs matching host permissions for writes. Grimoire
-   leaves filesystem ownership and permissions to the operator.
+   files there. Writable instances run as UID 10001 and receive the selected
+   folder’s non-root group. The host or network share must grant that user or
+   group write access. Grimoire leaves filesystem ownership and permissions
+   to the operator.
 3. Watch the card until it reports **running**. The connection and its encrypted
    API key are already saved. **Open local Arr UI** on the server (or forward its
    loopback port through SSH) to configure the Arr library. Add `/media` as the
