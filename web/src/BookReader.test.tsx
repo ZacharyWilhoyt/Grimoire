@@ -167,3 +167,31 @@ it('preloads nearby pages and waits for an uncached jump before showing the imag
     vi.unstubAllGlobals()
   }
 })
+
+it('advances from the right margin in a right-to-left spread', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+  URL.createObjectURL = vi.fn(() => 'blob:test')
+  URL.revokeObjectURL = vi.fn()
+  localStorage.setItem('grimoire:reader:v1:margin-test:Comic', JSON.stringify({ layout: 'double', direction: 'rtl' }))
+  const host = document.createElement('div'), root = createRoot(host)
+  try {
+    await act(async () => root.render(<BookReader userId="margin-test" sourceId="s" sourceName="Test" file={{ name: 'Comic', relative_path: 'comic.cbz', extension: 'cbz' }} onClose={() => {}}/>))
+    expect(host.querySelector<HTMLElement>('.reader-surface')!.style.direction).toBe('rtl')
+    const viewport = host.querySelector<HTMLElement>('.reader-viewport')!
+    vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue({ left: 0, width: 800 } as DOMRect)
+    const page = host.querySelector<HTMLSelectElement>('[aria-label="Page"]')!
+    vi.useFakeTimers()
+    for (const [clientX, expectedPage] of [[790, '1'], [10, '0']] as const) {
+      await act(async () => {
+        viewport.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX }))
+        await vi.advanceTimersByTimeAsync(220)
+      })
+      expect(page.value).toBe(expectedPage)
+    }
+  } finally {
+    await act(async () => root.unmount())
+    vi.useRealTimers()
+    localStorage.removeItem('grimoire:reader:v1:margin-test:Comic')
+    vi.unstubAllGlobals()
+  }
+})
