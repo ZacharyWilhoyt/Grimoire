@@ -5,6 +5,11 @@ import { expect, it, vi } from 'vitest'
 import BookReader from './BookReader'
 const session = vi.hoisted(() => ({ save: vi.fn() }))
 vi.mock('./progress', () => ({ ProgressSession: class { load = async () => null; save = session.save } }))
+const comicFixture = vi.hoisted(() => ({
+  paths: ['1.png', '2.png'],
+  read: vi.fn(async (_path: string) => new Blob(['image'])),
+  retain: vi.fn(),
+}))
 const epubFiles = vi.hoisted((): Record<string, string> => ({
   'META-INF/container.xml': '<container><rootfiles><rootfile full-path="OPS/package.opf"/></rootfiles></container>',
   'OPS/package.opf': '<package><manifest><item id="chapter" href="one.xhtml" media-type="application/xhtml+xml"/><item id="nav" href="nav.xhtml" properties="nav"/></manifest><spine><itemref idref="chapter"/></spine></package>',
@@ -18,8 +23,9 @@ vi.mock('./bookArchive', async importOriginal => ({
     read: async (path: string) => ({ text: async () => epubFiles[path] ?? '' }),
     close: async () => {},
   } : {
-    entries: new Map([['1.png', {}], ['2.png', {}]]),
-    read: async () => new Blob(['image']),
+    entries: new Map(comicFixture.paths.map(path => [path, {}])),
+    read: comicFixture.read,
+    retain: comicFixture.retain,
     close: async () => {},
   },
 }))
@@ -127,4 +133,37 @@ it('keeps the content point under the cursor fixed when zooming',async()=>{
   expect(host.querySelector('[aria-label="Page navigation"]')?.closest('header')).not.toBeNull()
   expect(host.querySelector('.reader-margin')).toBeNull()
  }finally{await act(async()=>root.unmount());host.remove();localStorage.clear();vi.unstubAllGlobals()}
+})
+
+
+it('preloads nearby pages and waits for an uncached jump before showing the image', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+  URL.createObjectURL = vi.fn(() => 'blob:test')
+  URL.revokeObjectURL = vi.fn()
+  comicFixture.paths = Array.from({ length: 9 }, (_, i) => `${i+1}.png`)
+  comicFixture.read.mockClear()
+  let loadPage!: (page: Blob) => void
+  comicFixture.read.mockImplementation(path => path === '7.png'
+    ? new Promise(resolve => { loadPage = resolve })
+    : Promise.resolve(new Blob(['image'])))
+  const host = document.createElement('div'), root = createRoot(host)
+  try {
+    await act(async () => root.render(<BookReader sourceId="source" sourceName="Test" file={{ name: 'Comic', relative_path: 'comic.cbz', extension: 'cbz' }} onClose={() => {}}/>))
+    expect(comicFixture.read.mock.calls).toEqual([['1.png'], ['2.png'], ['3.png']])
+    const select = host.querySelector<HTMLSelectElement>('[aria-label="Page"]')!
+    await act(async () => { select.value = '6'; select.dispatchEvent(new Event('change', { bubbles: true })) })
+    expect(host.querySelector('.reader-page-status[role="status"]')?.textContent).toBe('Loading page 7…')
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    expect(comicFixture.retain).toHaveBeenLastCalledWith(new Set(['5.png','6.png','7.png','8.png','9.png']))
+    await act(async () => loadPage(new Blob(['image'])))
+    const image = host.querySelector<HTMLImageElement>('img[alt="Page 7"]')!
+    expect(image).not.toBeNull()
+    await act(async () => image.dispatchEvent(new Event('load')))
+    expect(host.querySelector('.reader-page-status[role="status"]')).toBeNull()
+  } finally {
+    await act(async () => root.unmount())
+    comicFixture.paths = ['1.png', '2.png']
+    comicFixture.read.mockImplementation(async () => new Blob(['image']))
+    vi.unstubAllGlobals()
+  }
 })

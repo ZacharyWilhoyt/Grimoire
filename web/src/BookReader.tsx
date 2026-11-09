@@ -92,6 +92,22 @@ export default function BookReader({userId,sourceId,sourceName,file,onClose,onNe
  },[comic,index,save])
  const visible=useCallback((page:number)=>{if(page>currentUnit.current)finishUnit(currentUnit.current);currentUnit.current=page;setIndex(page);save(page)},[save,finishUnit])
  const members=spreadMembers(index,chapters.length,wide,settings.layout)
+ const preload=useRef<Promise<void>>(Promise.resolve())
+ const spreadEnd=index+members.length
+ useEffect(()=>{
+   if(!archive||!comic)return
+   const first=Math.max(0,index-2),end=Math.min(chapters.length,spreadEnd+2)
+   archive.retain(new Set(chapters.slice(first,end).map(page=>page.path)))
+   let cancelled=false
+   // Keep one extraction slot free for a page the reader opens on demand.
+   preload.current=preload.current.then(async()=>{
+     for(const page of [spreadEnd,spreadEnd+1,index-1,index-2]){
+       if(cancelled)return
+       if(chapters[page])await archive.read(chapters[page].path).catch(()=>{})
+     }
+   })
+   return()=>{cancelled=true}
+ },[archive,chapters,comic,index,spreadEnd])
  // Decode only the next candidate to decide whether two portrait pages can pair.
  useEffect(()=>{
    if(!archive||!comic||settings.layout!=='double'||!chapters[index+1]||wide[index+1]!==undefined)return

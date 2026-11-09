@@ -22,10 +22,19 @@ export const MAX_CBZ_BYTES = 4 * 1024 ** 3
 export const MAX_CACHE_BYTES = 64 * 1024 ** 2
 const MAX_INDEX_READ = 16 * 1024 ** 2
 const RANGE_CHUNK = 512 * 1024
+class RetryableRangeError extends Error {}
+
 async function range(url:string,start:number,length:number,signal:AbortSignal,total?:number,validator?:string){
   const headers:Record<string,string>={Range:`bytes=${start}-${start+length-1}`}
   if(validator)headers['If-Range']=validator
-  const response=await fetch(url,{signal,headers,credentials:'same-origin',cache:'no-store'})
+  const response=await fetch(url,{signal,headers,credentials:'same-origin',cache:'no-store'}).catch(error=>{
+    signal.throwIfAborted()
+    throw new RetryableRangeError('The book source could not be reached.', {cause:error})
+  })
+  if([502,503,504].includes(response.status)){
+    await response.body?.cancel()
+    throw new RetryableRangeError('The book source is temporarily unavailable.')
+  }
   const contentRange=/^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('content-range')??'')
   if(response.status!==206||!response.body||!contentRange||Number(contentRange[1])!==start||Number(contentRange[2])!==start+length-1||!Number.isSafeInteger(Number(contentRange[3]))||(total!==undefined&&Number(contentRange[3])!==total)){
     await response.body?.cancel()
@@ -33,20 +42,28 @@ async function range(url:string,start:number,length:number,signal:AbortSignal,to
   }
   const bytes=new Uint8Array(length),stream=response.body.getReader()
   let received=0
-  try{while(true){const {value,done}=await stream.read();if(done)break;if(received+value.byteLength>length)throw Error('The book source returned an oversized range.');bytes.set(value,received);received+=value.byteLength}}
-  finally{await stream.cancel()}
-  if(received!==length)throw Error('The book source returned an incomplete range.')
+  try{while(true){const {value,done}=await stream.read().catch(error=>{signal.throwIfAborted();throw new RetryableRangeError('The book source interrupted the range.',{cause:error})});if(done)break;if(received+value.byteLength>length)throw Error('The book source returned an oversized range.');bytes.set(value,received);received+=value.byteLength}}
+  finally{await stream.cancel().catch(()=>{})}
+  if(received!==length)throw new RetryableRangeError('The book source returned an incomplete range.')
   return {bytes,size:Number(contentRange[3]),validator:response.headers.get('etag')?.replace(/^W\/.*$/,'')||response.headers.get('last-modified')||undefined}
 }
 class RangeReader extends Reader<undefined>{
-  constructor(private url:string,size:number,private signal:AbortSignal,private validator?:string){super(undefined);this.size=size}
+  constructor(private url:string,size:number,private signal:AbortSignal,private validator:string|undefined,private retryRanges:boolean){super(undefined);this.size=size}
   async readUint8Array(index:number,length:number){
     this.signal.throwIfAborted()
     if(!Number.isSafeInteger(index)||index<0||!Number.isSafeInteger(length)||length<0)throw Error('Invalid book byte range.')
     length=Math.min(length,Math.max(0,this.size-index))
     if(length>MAX_INDEX_READ)throw Error('This archive exceeds the ZIP index processing limit.')
     const bytes=new Uint8Array(length)
-    for(let offset=0;offset<length;offset+=RANGE_CHUNK){const chunk=await range(this.url,index+offset,Math.min(RANGE_CHUNK,length-offset),this.signal,this.size,this.validator);bytes.set(chunk.bytes,offset)}
+    for(let offset=0;offset<length;offset+=RANGE_CHUNK){
+      const readChunk=()=>range(this.url,index+offset,Math.min(RANGE_CHUNK,length-offset),this.signal,this.size,this.validator)
+      const chunk=await readChunk().catch(error=>{
+        this.signal.throwIfAborted()
+        if(!this.retryRanges||!(error instanceof RetryableRangeError))throw error
+        return readChunk()
+      })
+      bytes.set(chunk.bytes,offset)
+    }
     return bytes
   }
 }
@@ -60,7 +77,7 @@ export async function openArchive(url: string, signal: AbortSignal, format:'epub
     const initial=await range(url,0,1,lifetime.signal)
     const maxBytes=format==='cbz'?MAX_CBZ_BYTES:MAX_BOOK_BYTES
     if(initial.size>maxBytes)throw Error(format==='cbz'?'CBZ archives must be at most 4 GiB.':'EPUB books must be at most 128 MiB.')
-    reader = new ZipReader(new RangeReader(url,initial.size,lifetime.signal,initial.validator), { useWebWorkers: false })
+    reader = new ZipReader(new RangeReader(url,initial.size,lifetime.signal,initial.validator,format==='cbz'), { useWebWorkers: false })
     const entries = new Map<string, FileEntry>()
     let expanded = 0
     let entryCount = 0
@@ -74,6 +91,7 @@ export async function openArchive(url: string, signal: AbortSignal, format:'epub
       entries.set(entry.filename, entry)
     }
     let cacheBytes=0,slots=2
+    let retained: ReadonlySet<string> | undefined
     const cache = new Map<string, Blob>(),pending=new Map<string,Promise<Blob>>()
     const waiters:(()=>void)[]=[]
     const acquire=async()=>{if(slots>0){slots--;return}await new Promise<void>(resolve=>waiters.push(resolve))}
@@ -102,7 +120,7 @@ export async function openArchive(url: string, signal: AbortSignal, format:'epub
       let result=pending.get(name)
       if(!result){
         result=extract(name).then(blob=>{
-          if(!lifetime.signal.aborted){
+          if(!lifetime.signal.aborted&&(!retained||retained.has(name))){
             while(cacheBytes+blob.size>MAX_CACHE_BYTES&&cache.size){const oldest=cache.keys().next().value!;cacheBytes-=cache.get(oldest)!.size;cache.delete(oldest)}
             cache.set(name,blob);cacheBytes+=blob.size
           }
@@ -112,8 +130,16 @@ export async function openArchive(url: string, signal: AbortSignal, format:'epub
       }
       return result
     }
+    const retain = (names: ReadonlySet<string>) => {
+      retained=names
+      for(const [name,blob] of cache){
+        if(names.has(name))continue
+        cache.delete(name)
+        cacheBytes-=blob.size
+      }
+    }
     const opened=reader
-    return { entries, read, close: async()=>{stop();cache.clear();cacheBytes=0;await opened.close()} }
+    return { entries, read, retain, close: async()=>{stop();cache.clear();cacheBytes=0;await opened.close()} }
   } catch (error) { stop();await reader?.close();throw error }
 }
 export type BookArchive = Awaited<ReturnType<typeof openArchive>>
