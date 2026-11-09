@@ -118,3 +118,6 @@
 .security-section input[type=checkbox]{accent-color:var(--theme-accent)}.security-section a{color:var(--theme-accent)}
 
 .managed-arr-controls{display:grid;gap:.35rem}.arr-content .arr-add{margin-top:.75rem}.managed-arr-controls a{text-decoration:none}
+
+.series-arr-synopsis{white-space:pre-wrap}.series-arr-episodes{max-height:18rem;overflow:auto}.series-arr-episodes small{display:block;overflow-wrap:anywhere}
+.series-arr-option{display:flex;align-items:center;gap:.45rem}.metadata-form .series-arr-option input{width:auto;min-height:0;padding:0}

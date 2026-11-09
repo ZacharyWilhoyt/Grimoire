@@ -9,12 +9,16 @@ pub struct GroupView {
     pub can_edit: bool,
     pub has_custom_genres: bool,
     pub has_custom_artwork: bool,
+    pub synopsis: Option<String>,
+    pub synopsis_provider: Option<String>,
 }
 #[derive(Clone, FromRow)]
 pub(super) struct GroupRow {
     id: String,
     genres: Option<String>,
     artwork: Option<String>,
+    synopsis: Option<String>,
+    synopsis_provider: Option<String>,
 }
 fn normalize(value: &str) -> String {
     value
@@ -23,7 +27,7 @@ fn normalize(value: &str) -> String {
         .join(" ")
         .to_lowercase()
 }
-fn identity(source: &str, kind: &str, fields: &Fields) -> Option<GroupView> {
+pub(super) fn identity(source: &str, kind: &str, fields: &Fields) -> Option<GroupView> {
     let collection = fields.collection.as_deref()?.trim();
     if collection.is_empty() {
         return None;
@@ -46,6 +50,8 @@ fn identity(source: &str, kind: &str, fields: &Fields) -> Option<GroupView> {
         can_edit: false,
         has_custom_genres: false,
         has_custom_artwork: false,
+        synopsis: None,
+        synopsis_provider: None,
     })
 }
 fn image_url(source: &str, group: &str, path: &str, hash: &str) -> String {
@@ -71,7 +77,7 @@ pub(super) async fn load_for_sources(
         .collect();
     // Recheck access when loading group overrides, after the catalog scan.
     let rows = sqlx::query_as::<_, GroupRow>(
-        "SELECT g.id,g.genres,g.artwork FROM media_groups g JOIN sources s ON s.id=g.source_id WHERE g.source_id=ANY($2) AND (s.owner_id=$1 OR EXISTS(SELECT 1 FROM source_permissions p WHERE p.source_id=s.id AND p.user_id=$1 AND p.can_discover AND p.can_access_media))",
+        "SELECT g.id,g.genres,g.artwork,g.synopsis,g.synopsis_provider FROM media_groups g JOIN sources s ON s.id=g.source_id WHERE g.source_id=ANY($2) AND (s.owner_id=$1 OR EXISTS(SELECT 1 FROM source_permissions p WHERE p.source_id=s.id AND p.user_id=$1 AND p.can_discover AND p.can_access_media))",
     )
     .bind(user)
     .bind(sources)
@@ -93,6 +99,8 @@ pub(super) fn overlay(
     };
     group.can_edit = metadata.can_edit;
     if let Some(row) = rows.get(&group.id) {
+        group.synopsis = row.synopsis.clone();
+        group.synopsis_provider = row.synopsis_provider.clone();
         if let Some(genres) = row
             .genres
             .as_deref()
@@ -127,7 +135,7 @@ pub(super) async fn enrich_one(
         return Ok(());
     };
     let row = sqlx::query_as::<_, GroupRow>(
-        "SELECT id,genres,artwork FROM media_groups WHERE source_id=$1 AND id=$2",
+        "SELECT id,genres,artwork,synopsis,synopsis_provider FROM media_groups WHERE source_id=$1 AND id=$2",
     )
     .bind(source)
     .bind(&group.id)
@@ -138,7 +146,7 @@ pub(super) async fn enrich_one(
     overlay(source, kind, path, metadata, record, &rows);
     Ok(())
 }
-async fn member(
+pub(super) async fn member(
     state: &AppState,
     user: &auth::User,
     source: &str,
@@ -156,7 +164,7 @@ async fn member(
         })?;
     Ok((file, group))
 }
-async fn locked_member(
+pub(super) async fn locked_member(
     tx: &mut Transaction<'_, Postgres>,
     source: &str,
     id: &str,
@@ -184,7 +192,7 @@ pub struct Settings {
     effective_genres: Vec<String>,
     effective_artwork_url: Option<String>,
 }
-async fn settings(
+pub(super) async fn settings(
     state: &AppState,
     user: &auth::User,
     source: &str,
@@ -200,7 +208,7 @@ async fn settings(
             .await
             .map_err(|_| auth::unavailable())?;
     let row = sqlx::query_as::<_, GroupRow>(
-        "SELECT id,genres,artwork FROM media_groups WHERE source_id=$1 AND id=$2",
+        "SELECT id,genres,artwork,synopsis,synopsis_provider FROM media_groups WHERE source_id=$1 AND id=$2",
     )
     .bind(source)
     .bind(id)
@@ -215,6 +223,8 @@ async fn settings(
         .as_ref()
         .and_then(|row| row.artwork.as_ref())
         .map(|hash| image_url(source, id, path, hash));
+    group.synopsis = row.as_ref().and_then(|row| row.synopsis.clone());
+    group.synopsis_provider = row.as_ref().and_then(|row| row.synopsis_provider.clone());
     group.has_custom_genres = genres.is_some();
     group.has_custom_artwork = artwork_url.is_some();
     let effective = current_view(state, user, source, path, &file.key).await?;
@@ -236,6 +246,75 @@ pub async fn details(
         settings(&state, &identity.user, &source, &id, &query.path).await?,
     ))
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Synopsis {
+    path: String,
+    synopsis: Option<String>,
+}
+
+pub(super) async fn write_synopsis(
+    tx: &mut Transaction<'_, Postgres>,
+    source: &str,
+    group: &str,
+    owner: Uuid,
+    synopsis: Option<&str>,
+    provider: Option<&str>,
+) -> Result<(), AppError> {
+    let before: Option<String> =
+        sqlx::query_scalar("SELECT synopsis FROM media_groups WHERE id=$1 AND source_id=$2")
+            .bind(group)
+            .bind(source)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|_| auth::unavailable())?
+            .flatten();
+    sqlx::query("INSERT INTO media_groups(id,source_id,synopsis,synopsis_provider) VALUES ($1,$2,$3,$4) ON CONFLICT(id) DO UPDATE SET synopsis=$3,synopsis_provider=$4,updated_at=now() WHERE media_groups.source_id=$2")
+        .bind(group).bind(source).bind(synopsis).bind(provider).execute(&mut **tx).await.map_err(|_| auth::unavailable())?;
+    audit(
+        tx,
+        source,
+        group,
+        owner,
+        "group_synopsis_saved",
+        before,
+        synopsis.map(str::to_string),
+    )
+    .await
+}
+
+pub async fn set_synopsis(
+    State(state): State<AppState>,
+    Extension(identity): Extension<auth::Identity>,
+    Path((source, id)): Path<(String, String)>,
+    Json(body): Json<Synopsis>,
+) -> Result<Json<Settings>, AppError> {
+    let (file, _) = member(&state, &identity.user, &source, &id, &body.path, true).await?;
+    let synopsis = Fields {
+        description: body.synopsis,
+        ..Fields::default()
+    }
+    .normalize()?
+    .description
+    .filter(|text| !text.is_empty());
+    let mut tx = state.db.begin().await.map_err(|_| auth::unavailable())?;
+    owner_lock(&mut tx, &source, identity.user.id).await?;
+    locked_member(&mut tx, &source, &id, &body.path, &file).await?;
+    write_synopsis(
+        &mut tx,
+        &source,
+        &id,
+        identity.user.id,
+        synopsis.as_deref(),
+        None,
+    )
+    .await?;
+    tx.commit().await.map_err(|_| auth::unavailable())?;
+    Ok(Json(
+        settings(&state, &identity.user, &source, &id, &body.path).await?,
+    ))
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Genres {

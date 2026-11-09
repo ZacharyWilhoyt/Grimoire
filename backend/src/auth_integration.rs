@@ -2158,9 +2158,9 @@ async fn arr_connections_are_optional_owner_only_and_match_existing_files_withou
             if endpoint.starts_with("mediacover/") {return ([("content-type","image/jpeg")],jpeg).into_response();}
             let value=match (app_name,endpoint) {
                 ("radarr","movie")=>json!([{"id":1,"title":"An Arr Movie","year":2025,"overview":"Movie overview","genres":["Drama"],"path":"/movies/Movie","movieFile":{"id":2,"path":"/movies/Movie/Movie.mkv"},"images":[{"coverType":"poster","url":"/MediaCover/1/poster.jpg"}],"collection":{"title":"Movie Collection"}}]),
-                ("sonarr"|"Sonarr","series")=>json!([{"id":3,"title":"Arr Show","path":"/tv/Show","year":2024,"genres":["Animation"],"images":[{"coverType":"poster","url":"/MediaCover/3/poster.jpg"}]}]),
-                ("sonarr"|"Sonarr","episodefile")=>json!([{"id":4,"path":"/tv/Show/Season 01/ep01.mkv"}]),
-                ("sonarr"|"Sonarr","episode")=>json!([{"id":5,"episodeFileId":4,"title":"Arr Pilot","seasonNumber":1,"episodeNumber":1,"overview":"Episode overview"}]),
+                ("sonarr"|"Sonarr","series")=>json!([{"id":3,"title":"Arr Show","overview":"The whole series synopsis","path":"/tv/Show","year":2024,"genres":["Animation"],"images":[{"coverType":"poster","url":"/MediaCover/3/poster.jpg"}]}]),
+                ("sonarr"|"Sonarr","episodefile")=>json!([{"id":4,"path":"/tv/Show/Season 01/ep01.mkv"},{"id":14,"relativePath":"Season 01/ep02.mkv"},{"id":24,"relativePath":"Season 01/ep03.mkv"}]),
+                ("sonarr"|"Sonarr","episode")=>json!([{"id":5,"episodeFileId":4,"title":"Arr Pilot","seasonNumber":1,"episodeNumber":1,"overview":"Episode overview"},{"id":15,"episodeFileId":14,"title":"Arr Second","seasonNumber":1,"episodeNumber":2,"overview":"Second episode overview"},{"id":25,"episodeFileId":24,"title":"Different group","seasonNumber":1,"episodeNumber":3}]),
                 ("lidarr","artist")=>json!([{"id":6,"artistName":"Arr Artist","path":"/music/Artist","genres":["Jazz"]}]),
                 ("lidarr","trackfile")=>json!([{"id":7,"albumId":8,"path":"/music/Artist/Album/song.flac"}]),
                 ("lidarr","album/8")=>json!({"id":8,"title":"Arr Album","releaseDate":"2023-01-01","genres":[],"images":[{"coverType":"cover","url":"/MediaCover/Albums/8/cover.jpg"}]}),
@@ -2185,6 +2185,8 @@ async fn arr_connections_are_optional_owner_only_and_match_existing_files_withou
     let root = std::env::temp_dir().join(format!("grimoire-arr-{}", Uuid::new_v4()));
     for path in [
         "shows/Show/Season 01/ep01.mkv",
+        "shows/Show/Season 01/ep02.mkv",
+        "shows/Show/Season 01/ep03.mkv",
         "movies/Movie/Movie.mkv",
         "music/Artist/Album/song.flac",
         "movies/NotInArr.mkv",
@@ -2423,6 +2425,145 @@ async fn arr_connections_are_optional_owner_only_and_match_existing_files_withou
             .status(),
             StatusCode::BAD_REQUEST
         );
+        if app == "sonarr" {
+            let second = "shows/Show/Season 01/ep02.mkv";
+            let third = "shows/Show/Season 01/ep03.mkv";
+            for (member, collection) in [(second, "Arr Show"), (third, "Other group")] {
+                sqlx::query("INSERT INTO media_metadata(file_key,source_id,relative_path,local_data) VALUES($1,$2,$3,$4)")
+                    .bind(crate::catalog::file_key(&source, member)).bind(&source).bind(member)
+                    .bind(json!({"collection":collection}).to_string()).execute(&pool).await.unwrap();
+            }
+            let group = applied["metadata"]["group"]["id"].as_str().unwrap();
+            let group_url = format!("/api/sources/{source}/groups/{group}");
+            let preview_url = format!("{group_url}/arr/{id}/preview");
+            let apply_group_url = format!("{group_url}/arr/apply");
+            let series = request(
+                &state,
+                Method::POST,
+                &preview_url,
+                Some(&owner),
+                Some(&csrf),
+                Some(ORIGIN),
+                Some(json!({"path":path})),
+            )
+            .await;
+            assert_eq!(series.status(), StatusCode::OK);
+            let series = body(series).await;
+            assert_eq!(series["synopsis"], "The whole series synopsis");
+            assert_eq!(series["episodes"].as_array().unwrap().len(), 2);
+            assert_eq!(series["episodes"][1]["path"], second);
+            let file_apply = json!({"path":path,"review_token":series["review_token"]});
+            assert_eq!(
+                request(
+                    &state,
+                    Method::POST,
+                    &apply_url,
+                    Some(&owner),
+                    Some(&csrf),
+                    Some(ORIGIN),
+                    Some(file_apply)
+                )
+                .await
+                .status(),
+                StatusCode::BAD_REQUEST
+            );
+            let update = json!({"path":path,"review_token":series["review_token"],"synopsis":true,"episodes":true});
+            assert_eq!(
+                request(
+                    &state,
+                    Method::POST,
+                    &apply_group_url,
+                    Some(&viewer),
+                    Some(&viewer_csrf),
+                    Some(ORIGIN),
+                    Some(update.clone())
+                )
+                .await
+                .status(),
+                StatusCode::NOT_FOUND
+            );
+            let changed = request(
+                &state,
+                Method::POST,
+                &apply_group_url,
+                Some(&owner),
+                Some(&csrf),
+                Some(ORIGIN),
+                Some(update.clone()),
+            )
+            .await;
+            assert_eq!(changed.status(), StatusCode::OK);
+            assert_eq!(body(changed).await["episodes_updated"], 2);
+            assert_eq!(
+                request(
+                    &state,
+                    Method::POST,
+                    &apply_group_url,
+                    Some(&owner),
+                    Some(&csrf),
+                    Some(ORIGIN),
+                    Some(update)
+                )
+                .await
+                .status(),
+                StatusCode::BAD_REQUEST
+            );
+            let metadata = |member: &str| {
+                format!(
+                    "/api/sources/{source}/metadata?{}",
+                    reqwest::Url::parse_with_params("http://localhost", &[("path", member)])
+                        .unwrap()
+                        .query()
+                        .unwrap()
+                )
+            };
+            let view = body(
+                request(
+                    &state,
+                    Method::GET,
+                    &metadata(second),
+                    Some(&viewer),
+                    None,
+                    None,
+                    None,
+                )
+                .await,
+            )
+            .await;
+            assert_eq!(view["group"]["synopsis"], "The whole series synopsis");
+            assert_eq!(view["group"]["id"], group);
+            assert_eq!(view["fields"]["description"], "Second episode overview");
+            assert_eq!(view["fields"]["title"], "Arr Second");
+            let untouched = body(
+                request(
+                    &state,
+                    Method::GET,
+                    &metadata(third),
+                    Some(&owner),
+                    None,
+                    None,
+                    None,
+                )
+                .await,
+            )
+            .await;
+            assert_eq!(untouched["provider"], Value::Null);
+            let synopsis_url = format!("{group_url}/synopsis");
+            let manual = request(
+                &state,
+                Method::PUT,
+                &synopsis_url,
+                Some(&owner),
+                Some(&csrf),
+                Some(ORIGIN),
+                Some(json!({"path":path,"synopsis":"Manual synopsis"})),
+            )
+            .await;
+            assert_eq!(manual.status(), StatusCode::OK);
+            let manual = body(manual).await;
+            assert_eq!(manual["group"]["synopsis"], "Manual synopsis");
+            assert_eq!(manual["group"]["synopsis_provider"], Value::Null);
+        }
         let stale = body(
             request(
                 &state,

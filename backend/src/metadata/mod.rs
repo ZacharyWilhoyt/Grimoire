@@ -697,7 +697,7 @@ pub async fn apply(
                 "Metadata processing is busy.".into(),
             )
         })?;
-    let review=sqlx::query_as::<_,ReviewRow>("SELECT provider,provider_id,data,artwork_ref,arr_connection_id,arr_revision FROM metadata_reviews WHERE id=$1 AND owner_id=$2 AND source_id=$3 AND file_key=$4 AND expires_at>now()").bind(apply.review_token).bind(identity.user.id).bind(&source).bind(&file.key).fetch_optional(&state.db).await.map_err(|_|auth::unavailable())?.ok_or_else(||crate::bad_request("This review expired or belongs to a different file/account. Preview the match again."))?;
+    let review=sqlx::query_as::<_,ReviewRow>("SELECT provider,provider_id,data,artwork_ref,arr_connection_id,arr_revision FROM metadata_reviews WHERE id=$1 AND owner_id=$2 AND source_id=$3 AND file_key=$4 AND group_id IS NULL AND expires_at>now()").bind(apply.review_token).bind(identity.user.id).bind(&source).bind(&file.key).fetch_optional(&state.db).await.map_err(|_|auth::unavailable())?.ok_or_else(||crate::bad_request("This review expired or belongs to a different file/account. Preview the match again."))?;
     let mut warnings = Vec::new();
     let artwork = if let Some(connection) = review.arr_connection_id {
         arr::review_artwork(
@@ -741,7 +741,7 @@ pub async fn apply(
         arr::check_review(&mut tx, &source, id, review.arr_revision).await?;
     }
     ensure_row(&mut tx, &source, &apply.path, &file.key).await?;
-    let removed=sqlx::query("DELETE FROM metadata_reviews WHERE id=$1 AND owner_id=$2 AND source_id=$3 AND file_key=$4 AND expires_at>now()").bind(apply.review_token).bind(identity.user.id).bind(&source).bind(&file.key).execute(&mut *tx).await.map_err(|_|auth::unavailable())?;
+    let removed=sqlx::query("DELETE FROM metadata_reviews WHERE id=$1 AND owner_id=$2 AND source_id=$3 AND file_key=$4 AND group_id IS NULL AND expires_at>now()").bind(apply.review_token).bind(identity.user.id).bind(&source).bind(&file.key).execute(&mut *tx).await.map_err(|_|auth::unavailable())?;
     if removed.rows_affected() != 1 {
         return Err(crate::bad_request(
             "Preview this match again before applying it.",

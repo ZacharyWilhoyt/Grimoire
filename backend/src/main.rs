@@ -641,6 +641,21 @@ fn app(state: AppState) -> Router {
             get(metadata::groups::details),
         )
         .route(
+            "/api/sources/{source_id}/groups/{group_id}/synopsis",
+            axum::routing::put(metadata::groups::set_synopsis)
+                .layer(DefaultBodyLimit::max(32 * 1024)),
+        )
+        .route(
+            "/api/sources/{source_id}/groups/{group_id}/arr/{connection_id}/preview",
+            axum::routing::post(metadata::arr::series::preview)
+                .layer(DefaultBodyLimit::max(32 * 1024)),
+        )
+        .route(
+            "/api/sources/{source_id}/groups/{group_id}/arr/apply",
+            axum::routing::post(metadata::arr::series::apply)
+                .layer(DefaultBodyLimit::max(32 * 1024)),
+        )
+        .route(
             "/api/sources/{source_id}/groups/{group_id}/genres",
             axum::routing::put(metadata::groups::set_genres)
                 .delete(metadata::groups::reset_genres)

@@ -1,5 +1,6 @@
 //! Optional owner-managed Arr adapters. Only fixed read endpoints are requested.
 pub mod managed;
+pub mod series;
 
 use super::{
     model::{self, Fields},
@@ -679,6 +680,37 @@ fn cover(value: &Value, entity: &str, api: &str) -> Option<Cover> {
         api: api.into(),
     })
 }
+fn sonarr_episode_fields(series: &Value, mut episodes: Vec<&Value>) -> Result<Fields, AppError> {
+    episodes.sort_by_key(|episode| {
+        (
+            episode["seasonNumber"].as_i64(),
+            episode["episodeNumber"].as_i64(),
+        )
+    });
+    let first = episodes
+        .first()
+        .ok_or_else(|| crate::bad_request("Arr has no episodes linked to this file."))?;
+    let mut fields = fields(series);
+    fields.collection = string(series, "title", 300);
+    fields.title = Some(model::text(
+        &episodes
+            .iter()
+            .filter_map(|episode| episode["title"].as_str())
+            .take(20)
+            .collect::<Vec<_>>()
+            .join(" / "),
+        300,
+    ));
+    fields.description = string(first, "overview", 4000);
+    fields.season = first["seasonNumber"]
+        .as_u64()
+        .and_then(|number| u32::try_from(number).ok());
+    fields.episode = first["episodeNumber"]
+        .as_u64()
+        .and_then(|number| u32::try_from(number).ok());
+    Ok(fields)
+}
+
 async fn matched(
     state: &AppState,
     row: &Connection,
@@ -741,37 +773,13 @@ async fn matched(
                 ],
             )
             .await?;
-            let mut episodes: Vec<_> = array(&episodes)?
-                .iter()
-                .filter(|episode| episode["episodeFileId"].as_i64() == Some(file_id))
-                .collect();
-            episodes.sort_by_key(|episode| {
-                (
-                    episode["seasonNumber"].as_i64(),
-                    episode["episodeNumber"].as_i64(),
-                )
-            });
-            let first = episodes
-                .first()
-                .ok_or_else(|| crate::bad_request("Arr has no episodes linked to this file."))?;
-            let mut fields = fields(series);
-            fields.collection = string(series, "title", 300);
-            fields.title = Some(model::text(
-                &episodes
+            let fields = sonarr_episode_fields(
+                series,
+                array(&episodes)?
                     .iter()
-                    .filter_map(|episode| episode["title"].as_str())
-                    .take(20)
-                    .collect::<Vec<_>>()
-                    .join(" / "),
-                300,
-            ));
-            fields.description = string(first, "overview", 4000);
-            fields.season = first["seasonNumber"]
-                .as_u64()
-                .and_then(|number| u32::try_from(number).ok());
-            fields.episode = first["episodeNumber"]
-                .as_u64()
-                .and_then(|number| u32::try_from(number).ok());
+                    .filter(|episode| episode["episodeFileId"].as_i64() == Some(file_id))
+                    .collect(),
+            )?;
             Ok((
                 fields,
                 cover(series, "series", api),

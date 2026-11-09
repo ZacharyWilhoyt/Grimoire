@@ -176,6 +176,18 @@ scanning local files, browsing pages, or playing media does not contact Arr. Tes
 and previews are explicit owner actions. Changing settings does not alter prior
 metadata; future previews use the new configuration.
 
+## Preview a whole Sonarr series
+
+Open the grouped video series, choose **Edit series metadata**, and select
+**Preview series from Arr library**. Grimoire matches existing episode files by
+mapped path within that grouping. Review the synopsis and the matched files,
+then apply either update or both. Reviews support up to 1,000 matched files.
+
+The synopsis is stored on the group and displayed on its series page. You can
+also enter a synopsis in the group editor. Bulk episode imports preserve manual
+episode edits and the current group identity. Files in other groups and files
+without exact matches stay outside the review.
+
 ## Security and operational limits
 
 - Only the source owner can list, save, test, remove or preview its connections.
@@ -225,8 +237,11 @@ Origin/CSRF checks. `{id}` is a connection UUID.
 | DELETE | `/api/sources/{source}/arr/{id}` | Remove a connection and its pending previews |
 | POST | `/api/sources/{source}/arr/{id}/test` | Test stored URL/key; return app/API version |
 | POST | `/api/sources/{source}/arr/{id}/preview` | `{path}`; return canonical fields and review token |
+| POST | `/api/sources/{source}/groups/{group}/arr/{id}/preview` | Review matched Sonarr episodes and a group synopsis |
+| POST | `/api/sources/{source}/groups/{group}/arr/apply` | Apply a reviewed series synopsis, matched episodes, or both |
+| PUT | `/api/sources/{source}/groups/{group}/synopsis` | Save a manual group synopsis |
 
-Use the existing metadata apply endpoint for review tokens. The normal catalog,
+Use the file metadata apply endpoint for individual reviews and the group apply endpoint for series reviews. The normal catalog,
 metadata and delivery APIs remain unchanged. Tests use isolated simulated Arr
 services; no real Arr credentials are included. Integration tests exercise all
 three apps, Sonarr API version discovery, encryption/redaction, exact paths,
