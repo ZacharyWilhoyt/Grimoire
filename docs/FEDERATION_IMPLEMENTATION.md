@@ -49,3 +49,18 @@ browser session, origin and CSRF middleware remain on owner-facing routes.
 Strict Clippy, 33 backend unit tests and 38 integration tests passed. The
 enrollment test covers ordinary-user enrollment, CSRF, owner isolation, forged
 and replayed messages, protocol mismatch, rotation and immediate revocation.
+
+## Phase 3 catalog checkpoint
+
+Migration `0021` introduces node-bound catalog revisions, distinct item and
+representation IDs, locations and a source-level policy projection. The agent
+indexes locally configured roots and journals signed deltas. Staged and stale
+catalogs are hidden. An owner-only and policy-filtered remote catalog API is
+available for integration testing. Existing local catalog routes remain
+unchanged. Directory- and item-level policy and integration into the existing
+catalog views remain open.
+
+The scanner rename and symlink test and all 39 PostgreSQL and media integration
+tests passed. Catalog coverage includes wrong keys, another node's source,
+revision gaps and replay, staged snapshots, bilateral discovery and playback
+eligibility, tombstones and stale catalog expiry.

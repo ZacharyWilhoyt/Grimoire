@@ -29,3 +29,35 @@ Stop the agent before running `grimoire-source-agent rotate`. The command
 keeps a private pending key next to the current identity until the coordinator
 accepts it. If the connection drops, rerun the rotation command with both
 files intact. Restart the agent after rotation succeeds.
+
+## Approved media roots
+
+Set `GRIMOIRE_AGENT_CONFIG` to a private JSON file on the agent host. Each
+entry needs a UUID you generate once and keep, a display name, and an
+absolute canonical root. The agent skips symlinks and reads file metadata.
+A source is unpublished by default. Publishing without viewer grants keeps
+it owner-only.
+
+```json
+{
+  "sources": [
+    {
+      "id": "72b79051-778c-4429-8943-2b55f024cbec",
+      "name": "Living room media",
+      "root": "/srv/media",
+      "published": true,
+      "grants": []
+    }
+  ]
+}
+```
+
+The agent keeps its private revision and item IDs in a catalog directory next
+to its identity file. Back up both. Catalog updates resume after a failed
+request and replay the pending revision before scanning again. A failed or
+incomplete filesystem scan does not publish tombstones. A disconnected source
+or one removed from the local configuration expires from the remote catalog.
+
+Viewer grants currently apply at source level. To share metadata, the
+agent's grant and the coordinator's source permission must both allow discovery.
+Remote streaming and the frontend source flow are pending.

@@ -19,3 +19,4 @@ deploy/media
 
 **/grimoire-agent.json
 **/grimoire-agent.json.rotate
+**/grimoire-agent.json.catalog

@@ -92,3 +92,60 @@ pub fn verify(public_key: &[u8], message: &[u8], signature: &str) -> bool {
             .is_ok()
     })
 }
+
+pub const CATALOG_DELTA: &str = "/api/nodes/v1/catalog/delta";
+pub const CATALOG_BODY_LIMIT: usize = 256 * 1024;
+pub const CATALOG_BATCH_LIMIT: usize = 256;
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogDelta {
+    pub source_id: Uuid,
+    pub source_name: String,
+    pub revision: i64,
+    pub published: bool,
+    pub upserts: Vec<CatalogEntry>,
+    pub removed: Vec<Uuid>,
+    pub grants: Option<Vec<SourceGrant>>,
+}
+
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogEntry {
+    pub item_id: Uuid,
+    pub representation_id: Uuid,
+    pub name: String,
+    pub extension: String,
+    pub size_bytes: i64,
+}
+
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SourceGrant {
+    pub user_id: Uuid,
+    pub can_discover: bool,
+    pub can_access_media: bool,
+}
+
+pub fn body_digest(body: &[u8]) -> String {
+    hex::encode(ring::digest::digest(&ring::digest::SHA256, body))
+}
+
+pub fn catalog_signature_bytes(
+    version: u32,
+    node_id: Uuid,
+    timestamp_ms: i64,
+    digest: &str,
+) -> Vec<u8> {
+    format!("grimoire-node/catalog-delta/v{version}\n{node_id}\n{timestamp_ms}\n{digest}")
+        .into_bytes()
+}
+
+pub fn media_kind(extension: &str) -> Option<&'static str> {
+    match extension {
+        "mkv" | "mp4" | "m4v" | "mov" | "avi" | "webm" | "mpeg" | "mpg" | "ts" => Some("video"),
+        "mp3" | "flac" | "m4a" | "aac" | "ogg" | "opus" | "wav" | "aiff" | "wma" => Some("music"),
+        "epub" | "cbz" => Some("book"),
+        _ => None,
+    }
+}

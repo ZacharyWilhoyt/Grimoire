@@ -6141,3 +6141,224 @@ async fn source_node_enrollment_authenticates_owner_key_and_rejects_replay(pool:
     assert_eq!(owned[0]["online"], false);
     assert_eq!(owned[0]["revoked"], true);
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn remote_catalog_revisions_require_node_ownership_and_both_policies(pool: PgPool) {
+    use grimoire_api::node_protocol::{self, CatalogDelta, CatalogEntry, SourceGrant};
+    use ring::{
+        rand::SystemRandom,
+        signature::{Ed25519KeyPair, KeyPair},
+    };
+
+    async fn submit(
+        state: &AppState,
+        node: Uuid,
+        key: &Ed25519KeyPair,
+        delta: &CatalogDelta,
+    ) -> StatusCode {
+        let bytes = serde_json::to_vec(delta).unwrap();
+        let timestamp = node_protocol::now_ms();
+        let message = node_protocol::catalog_signature_bytes(
+            1,
+            node,
+            timestamp,
+            &node_protocol::body_digest(&bytes),
+        );
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(node_protocol::CATALOG_DELTA)
+            .extension(ConnectInfo(
+                "127.0.0.1:12345".parse::<SocketAddr>().unwrap(),
+            ))
+            .header("x-grimoire-node-version", "1")
+            .header("x-grimoire-node-id", node.to_string())
+            .header("x-grimoire-node-timestamp", timestamp.to_string())
+            .header(
+                "x-grimoire-node-signature",
+                hex::encode(key.sign(&message).as_ref()),
+            )
+            .body(Body::from(bytes))
+            .unwrap();
+        app(state.clone()).oneshot(request).await.unwrap().status()
+    }
+
+    let state = state(pool.clone());
+    let (owner_cookie, _, owner) = register_user(&state, "remote_owner").await;
+    let (viewer_cookie, _, viewer) = register_user(&state, "remote_viewer").await;
+    let owner = Uuid::parse_str(owner["id"].as_str().unwrap()).unwrap();
+    let viewer = Uuid::parse_str(viewer["id"].as_str().unwrap()).unwrap();
+    let node = Uuid::new_v4();
+    let other = Uuid::new_v4();
+    let key = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+    let key = Ed25519KeyPair::from_pkcs8(key.as_ref()).unwrap();
+    let other_key = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+    let other_key = Ed25519KeyPair::from_pkcs8(other_key.as_ref()).unwrap();
+    for (id, owner, signer) in [(node, owner, &key), (other, viewer, &other_key)] {
+        sqlx::query(
+            "INSERT INTO source_nodes(id,owner_id,public_key,last_seen) VALUES($1,$2,$3,now())",
+        )
+        .bind(id)
+        .bind(owner)
+        .bind(signer.public_key().as_ref())
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let source = Uuid::new_v4();
+    let list = format!("/api/nodes/v1/sources/{source}/catalog");
+    let item = Uuid::new_v4();
+    let mut delta = CatalogDelta {
+        source_id: source,
+        source_name: "Remote fixture".into(),
+        revision: 1,
+        published: false,
+        upserts: vec![CatalogEntry {
+            item_id: item,
+            representation_id: Uuid::new_v4(),
+            name: "Episode.mkv".into(),
+            extension: "mkv".into(),
+            size_bytes: 1234,
+        }],
+        removed: vec![],
+        grants: None,
+    };
+    assert_eq!(
+        submit(&state, node, &other_key, &delta).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        submit(&state, node, &key, &delta).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        submit(&state, node, &key, &delta).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        submit(&state, other, &other_key, &delta).await,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::GET,
+            &list,
+            Some(&owner_cookie),
+            None,
+            None,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    delta.revision = 3;
+    delta.published = true;
+    delta.upserts.clear();
+    assert_eq!(
+        submit(&state, node, &key, &delta).await,
+        StatusCode::CONFLICT
+    );
+    delta.revision = 2;
+    delta.grants = Some(vec![SourceGrant {
+        user_id: viewer,
+        can_discover: true,
+        can_access_media: false,
+    }]);
+    assert_eq!(
+        submit(&state, node, &key, &delta).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::GET,
+            &list,
+            Some(&viewer_cookie),
+            None,
+            None,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    sqlx::query("INSERT INTO source_permissions(source_id,user_id,can_discover,can_access_media) VALUES($1,$2,true,true)")
+        .bind(format!("remote:{source}")).bind(viewer).execute(&pool).await.unwrap();
+    let shown = body(
+        request(
+            &state,
+            Method::GET,
+            &list,
+            Some(&viewer_cookie),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(shown["items"][0]["name"], "Episode.mkv");
+    assert_eq!(shown["can_access_media"], false);
+    assert!(shown["items"][0].get("path").is_none());
+
+    delta.revision = 3;
+    delta.grants.as_mut().unwrap()[0].can_access_media = true;
+    assert_eq!(
+        submit(&state, node, &key, &delta).await,
+        StatusCode::NO_CONTENT
+    );
+    let allowed = body(
+        request(
+            &state,
+            Method::GET,
+            &list,
+            Some(&viewer_cookie),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(allowed["can_access_media"], true);
+    delta.revision = 4;
+    delta.removed.push(item);
+    delta.grants = None;
+    assert_eq!(
+        submit(&state, node, &key, &delta).await,
+        StatusCode::NO_CONTENT
+    );
+    let emptied = body(
+        request(
+            &state,
+            Method::GET,
+            &list,
+            Some(&viewer_cookie),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(emptied["items"], json!([]));
+    sqlx::query("UPDATE remote_catalog_state SET last_confirmed=now()-interval '91 seconds' WHERE source_id=$1")
+        .bind(format!("remote:{source}")).execute(&pool).await.unwrap();
+    assert_eq!(
+        request(
+            &state,
+            Method::GET,
+            &list,
+            Some(&viewer_cookie),
+            None,
+            None,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+}

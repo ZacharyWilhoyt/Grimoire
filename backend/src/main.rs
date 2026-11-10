@@ -16,6 +16,7 @@ mod music;
 mod nodes;
 mod permissions;
 mod progress;
+mod remote_catalog;
 mod security;
 mod sources;
 mod statistics;
@@ -442,12 +443,7 @@ fn resolve_media_path(root: &Path, relative: &str, kind: &str) -> Result<PathBuf
 }
 
 fn classify_extension(extension: &str) -> Option<&'static str> {
-    match extension {
-        "mkv" | "mp4" | "m4v" | "mov" | "avi" | "webm" | "mpeg" | "mpg" | "ts" => Some("video"),
-        "mp3" | "flac" | "m4a" | "aac" | "ogg" | "opus" | "wav" | "aiff" | "wma" => Some("music"),
-        "epub" | "cbz" => Some("book"),
-        _ => None,
-    }
+    grimoire_api::node_protocol::media_kind(extension)
 }
 
 fn modified_epoch(metadata: &fs::Metadata) -> Option<f64> {
@@ -782,6 +778,10 @@ fn app(state: AppState) -> Router {
                 .layer(DefaultBodyLimit::max(16 * 1024)),
         )
         .route("/api/statistics", get(statistics::read))
+        .route(
+            "/api/nodes/v1/sources/{id}/catalog",
+            get(remote_catalog::list),
+        )
         .route("/api/nodes/v1", get(nodes::list))
         .route(
             "/api/nodes/v1/enrollment-tokens",
@@ -827,6 +827,12 @@ fn app(state: AppState) -> Router {
                 .route(
                     grimoire_api::node_protocol::ROTATE,
                     axum::routing::post(nodes::rotate),
+                )
+                .route(
+                    grimoire_api::node_protocol::CATALOG_DELTA,
+                    axum::routing::post(remote_catalog::delta).layer(DefaultBodyLimit::max(
+                        grimoire_api::node_protocol::CATALOG_BODY_LIMIT,
+                    )),
                 )
                 .route(
                     grimoire_api::node_protocol::HEARTBEAT,

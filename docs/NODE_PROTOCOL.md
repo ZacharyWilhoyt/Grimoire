@@ -64,3 +64,39 @@ Rotation uses the heartbeat freshness rules and atomically replaces the key
 under the same node ID. The previous key immediately stops authenticating.
 Revocation permanently disables the node ID. Catalog, policy and transport
 operations will extend this document as they are implemented.
+
+## Catalog revisions
+
+`POST /api/nodes/v1/catalog/delta` uses the headers
+`X-Grimoire-Node-Version`, `X-Grimoire-Node-Id`,
+`X-Grimoire-Node-Timestamp` (Unix milliseconds) and
+`X-Grimoire-Node-Signature` (hex Ed25519 signature). Sign these lines:
+
+```text
+grimoire-node/catalog-delta/v1
+<node_id in canonical UUID form>
+<timestamp_ms as a decimal integer>
+<lowercase SHA-256 hex of the exact request body>
+```
+
+The body is bounded to 256 KiB. It contains a `source_id` UUID, `source_name`,
+positive `revision`, `published` flag, `upserts` and `removed` arrays, and
+optional `grants`. Upserts contain opaque `item_id` and `representation_id`
+UUIDs, a basename, a supported extension, and the byte length. Removed item
+IDs are tombstones. A delta can include up to 256 combined changes. An
+included grants array replaces the source-level projection. Omitted grants
+preserve it. Grants identify registered users by UUID and distinguish discovery
+and media access. New sources and changed indexes can be staged unpublished
+until the final batch.
+
+An accepted delta returns 204. The first revision is 1. Identical retries of
+the most recent revision are acknowledged without reapplying it. Skipped
+revisions or different bytes for an accepted revision return 409. A node can
+only update sources bound to its enrolled identity. The catalog is hidden
+after 90 seconds without a successful confirmation or heartbeat.
+
+`GET /api/nodes/v1/sources/{id}/catalog` uses a browser session and an optional
+`after` item UUID. It returns up to 100 items. For viewers, both coordinator
+and agent discovery policies must allow listing. Media eligibility is
+reported separately and requires both access grants. Remote catalogs are
+still separate from the existing Discover and source views.

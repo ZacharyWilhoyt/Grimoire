@@ -1,3 +1,6 @@
+#[path = "source_agent/catalog.rs"]
+mod catalog;
+
 use grimoire_api::node_protocol::{self, Enrollment, Heartbeat, Rotation};
 use reqwest::{Client, StatusCode, Url};
 use ring::{
@@ -208,6 +211,7 @@ async fn run(client: &Client, path: &Path) -> Result<(), &'static str> {
     let identity = read_identity(path)?;
     let url = coordinator(&identity.coordinator)?;
     let key = key(&identity)?;
+    let config = std::env::var_os("GRIMOIRE_AGENT_CONFIG");
     let mut retry_seconds = 2;
     let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);
@@ -216,6 +220,18 @@ async fn run(client: &Client, path: &Path) -> Result<(), &'static str> {
             _ = &mut shutdown => return Ok(()),
             result = send_heartbeat(client, &url, &identity, &key) => result,
         };
+        if status == Ok(StatusCode::NO_CONTENT) {
+            if let Some(config) = &config {
+                tokio::select! {
+                    _ = &mut shutdown => return Ok(()),
+                    result = catalog::sync(client, &url, &identity, &key, path, Path::new(config)) => {
+                        if let Err(message) = result {
+                            eprintln!("{message}");
+                        }
+                    }
+                }
+            }
+        }
         let delay = match status {
             Ok(StatusCode::NO_CONTENT) => {
                 retry_seconds = 2;

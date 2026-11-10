@@ -13,14 +13,14 @@ use uuid::Uuid;
 
 const PRIVATE: [(header::HeaderName, &str); 1] = [(header::CACHE_CONTROL, "private, no-store")];
 
-fn rejected() -> AppError {
+pub(crate) fn rejected() -> AppError {
     AppError(
         StatusCode::UNAUTHORIZED,
         "Node credentials or request rejected.".into(),
     )
 }
 
-fn version(version: u32) -> Result<(), AppError> {
+pub(crate) fn version(version: u32) -> Result<(), AppError> {
     if version == node_protocol::VERSION {
         Ok(())
     } else {

@@ -27,3 +27,4 @@ __pycache__/
 # Source Agent identity and private key
 grimoire-agent.json
 grimoire-agent.json.rotate
+grimoire-agent.json.catalog/
