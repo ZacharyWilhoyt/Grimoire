@@ -21,6 +21,12 @@ it('renders comments as text and posts a reply to the selected comment', async (
     await act(async () => root.render(<MediaComments sourceId="source" path="episode.mkv"/>))
     expect(host.querySelector('.comment-list p')?.textContent).toBe('<b>Hello</b>')
     expect(host.querySelector('.comment-list p b')).toBeNull()
+    const timestamp = host.querySelector('time')!
+    const date = new Date(existing.created_at * 1000)
+    expect(timestamp.dateTime).toBe(date.toISOString())
+    expect(timestamp.textContent).toBe(date.toLocaleString(undefined, {
+      year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit',
+    }))
     await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Reply to reader"]')!.click())
     const input = host.querySelector<HTMLTextAreaElement>('textarea')!
     expect(document.activeElement).toBe(input)

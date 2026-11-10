@@ -1,9 +1,19 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
-import { MessageSquare } from 'lucide-react'
+import { Info, MessageSquare, Reply, Trash2 } from 'lucide-react'
 import { apiFetch } from './api'
 
 type Comment = { id: string; parent_id: string | null; author: string; reply_to: string | null; body: string; created_at: number; removed: boolean }
 type Page = { comments: Comment[]; next: string | null; can_moderate: boolean }
+
+const COMMENT_LIMIT = 2000
+const timestampFormat = new Intl.DateTimeFormat(undefined, {
+  year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit',
+})
+
+function CommentTime({ seconds }: { seconds: number }) {
+  const timestamp = new Date(seconds * 1000)
+  return <time dateTime={timestamp.toISOString()}>{timestampFormat.format(timestamp)}</time>
+}
 
 async function commentRequest<T>(url: string, init: RequestInit) {
   const response = await apiFetch(url, init)
@@ -109,25 +119,36 @@ export default function MediaComments({ sourceId, path }: { sourceId: string; pa
     }
   }
 
+  const visibleCount = comments.filter(comment => !comment.removed).length
   const removedIds = new Set(comments.filter(comment => comment.removed).map(comment => comment.id))
 
   return <section className="watch-comments" aria-labelledby={id}>
-    <h2 id={id}><MessageSquare size={19}/> Comments</h2>
+    <header className="comment-panel-header">
+      <h2 id={id}><MessageSquare size={17}/> Comments</h2>
+      {loaded && <span className="comment-count" aria-label={`${visibleCount} comments loaded`}>({visibleCount}{next ? '+' : ''})</span>}
+    </header>
     <form className="watch-comment-form" onSubmit={post}>
       {reply && <div className="comment-reply-context"><span>Replying to {reply.author}</span><button type="button" onClick={() => setReply(null)} disabled={posting}>Cancel reply</button></div>}
-      <textarea ref={field} aria-label={reply ? 'Write a reply' : 'Write a comment'} placeholder={reply ? 'Write a reply…' : 'Write a comment…'} value={draft} maxLength={2000} disabled={!loaded || posting} onChange={event => setDraft(event.target.value)}/>
+      <textarea ref={field} aria-label={reply ? 'Write a reply' : 'Write a comment'} placeholder={reply ? 'Write a reply…' : 'Write a comment…'} value={draft} maxLength={COMMENT_LIMIT} disabled={!loaded || posting} onChange={event => setDraft(event.target.value)}/>
       {postError && <p role="alert">{postError}</p>}
-      <button type="submit" disabled={!loaded || posting || removing === reply?.id || !draft.trim()}>{posting ? 'Posting…' : reply ? 'Post reply' : 'Post comment'}</button>
+      <div className="comment-form-footer">
+        <span className="comment-form-note"><Info size={13} aria-hidden="true"/> Plain text</span>
+        <span className="comment-character-count" aria-label={`${draft.length} of ${COMMENT_LIMIT} characters`}>{draft.length}/{COMMENT_LIMIT}</span>
+        <button type="submit" disabled={!loaded || posting || removing === reply?.id || !draft.trim()}>{posting ? 'Posting…' : reply ? 'Post reply' : 'Post'}</button>
+      </div>
     </form>
     {removeError && <p role="alert" className="comment-list-status">{removeError}</p>}
     {comments.length > 0 && <ol className="comment-list">
       {comments.map(comment => <li key={comment.id} id={`${id}-${comment.id}`} className={comment.parent_id ? 'comment-reply' : undefined}>
-        <div className="comment-byline"><strong>{comment.removed ? 'Removed comment' : comment.author}</strong><time dateTime={new Date(comment.created_at * 1000).toISOString()}>{new Date(comment.created_at * 1000).toLocaleString()}</time></div>
-        {comment.parent_id && <a className="comment-parent" href={`#${id}-${comment.parent_id}`} onClick={event => { event.preventDefault(); document.getElementById(`${id}-${comment.parent_id}`)?.scrollIntoView({ block: 'nearest' }) }}>In reply to {removedIds.has(comment.parent_id) ? 'Removed comment' : comment.reply_to}</a>}
-        {!comment.removed && <><p>{comment.body}</p><div className="comment-actions">
-          <button type="button" className="comment-reply-button" aria-label={`Reply to ${comment.author}`} disabled={posting || removing === comment.id} onClick={() => { setReply(comment); field.current?.focus() }}>Reply</button>
-          {canModerate && <button type="button" className="comment-reply-button" aria-label={`Delete comment by ${comment.author}`} disabled={removing !== null || posting} onClick={() => { void remove(comment) }}>{removing === comment.id ? 'Deleting…' : 'Delete'}</button>}
-        </div></>}
+        <span className="comment-avatar" aria-hidden="true">{comment.removed ? '–' : comment.author.charAt(0).toUpperCase()}</span>
+        <div className="comment-content">
+          <div className="comment-byline"><strong>{comment.removed ? 'Removed comment' : comment.author}</strong><CommentTime seconds={comment.created_at}/></div>
+          {comment.parent_id && <a className="comment-parent" href={`#${id}-${comment.parent_id}`} onClick={event => { event.preventDefault(); document.getElementById(`${id}-${comment.parent_id}`)?.scrollIntoView({ block: 'nearest' }) }}>In reply to {removedIds.has(comment.parent_id) ? 'Removed comment' : comment.reply_to}</a>}
+          {!comment.removed && <><p>{comment.body}</p><div className="comment-actions">
+            <button type="button" className="comment-reply-button" aria-label={`Reply to ${comment.author}`} disabled={posting || removing === comment.id} onClick={() => { setReply(comment); field.current?.focus() }}><Reply size={13} aria-hidden="true"/> Reply</button>
+            {canModerate && <button type="button" className="comment-reply-button" aria-label={`Delete comment by ${comment.author}`} disabled={removing !== null || posting} onClick={() => { void remove(comment) }}><Trash2 size={13} aria-hidden="true"/> {removing === comment.id ? 'Deleting…' : 'Delete'}</button>}
+          </div></>}
+        </div>
       </li>)}
     </ol>}
     {loading && <p role="status" className="comment-list-status">Loading comments…</p>}
