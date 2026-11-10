@@ -13,6 +13,7 @@ mod catalog;
 mod comments;
 mod metadata;
 mod music;
+mod nodes;
 mod permissions;
 mod progress;
 mod security;
@@ -781,6 +782,12 @@ fn app(state: AppState) -> Router {
                 .layer(DefaultBodyLimit::max(16 * 1024)),
         )
         .route("/api/statistics", get(statistics::read))
+        .route("/api/nodes/v1", get(nodes::list))
+        .route(
+            "/api/nodes/v1/enrollment-tokens",
+            axum::routing::post(nodes::issue),
+        )
+        .route("/api/nodes/v1/{id}", delete(nodes::revoke))
         .route("/api/sources", get(list_sources).post(add_source))
         .route("/api/sources/{source_id}", delete(remove_source))
         .route(
@@ -806,11 +813,27 @@ fn app(state: AppState) -> Router {
         .route("/api/auth/register", axum::routing::post(auth::register))
         .route("/api/auth/login", axum::routing::post(auth::login))
         .fallback(frontend)
-        .layer(DefaultBodyLimit::max(4096))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::origin_and_limits,
         ))
+        // Machine routes authenticate signed messages and never use browser cookies.
+        .merge(
+            Router::new()
+                .route(
+                    grimoire_api::node_protocol::ENROLL,
+                    axum::routing::post(nodes::enroll),
+                )
+                .route(
+                    grimoire_api::node_protocol::ROTATE,
+                    axum::routing::post(nodes::rotate),
+                )
+                .route(
+                    grimoire_api::node_protocol::HEARTBEAT,
+                    axum::routing::post(nodes::heartbeat),
+                ),
+        )
+        .layer(DefaultBodyLimit::max(4096))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             security::enforce,

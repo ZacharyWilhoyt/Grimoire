@@ -15,7 +15,7 @@ Scope comes from the Federated Backend and Source Agent Implementation Specifica
 
 - [x] **0. Audit and baseline.** Record the checks and the pre-existing Clippy finding below.
 - [x] **1. Provider seam and additive schema.** Add `backend/src/sources.rs` for authorized source lookup and local listing, wire it into `main.rs`, and move one read-only catalog path in `catalog.rs` through the local provider first. Keep the range-serving implementation intact. Add the node registry, source-kind constraints and node binding in a new migration under `backend/migrations/`. Preserve the unique local path constraint and enforce the remote/local shape in the database. Add an upgrade fixture in `auth_integration.rs` that verifies existing rows and identifiers after migrating. Adopt the seam in other routes only when they need it.
-- [ ] **2. Identity and enrollment.** Add a separate Rust agent binary and shared versioned wire types under `backend/src/`. Add coordinator node registration, enrollment and heartbeat routes to `main.rs` with node-specific authentication. Define the wire contract in `docs/NODE_PROTOCOL.md` and operator setup in `docs/SOURCE_AGENT.md`. Test short-lived, single-use enrollment; owner binding; key replacement and revocation; replay handling; and incompatible protocol versions.
+- [x] **2. Identity and enrollment.** Add a separate Rust agent binary and shared versioned wire types under `backend/src/`. Add coordinator node registration, enrollment and heartbeat routes to `main.rs` with node-specific authentication. Define the wire contract in `docs/NODE_PROTOCOL.md` and operator setup in `docs/SOURCE_AGENT.md`. Test short-lived, single-use enrollment; owner binding; key replacement and revocation; replay handling; and incompatible protocol versions.
 - [ ] **3. Remote index and policy.** Add catalog persistence for remote items, representations and locations. Integrate a remote catalog provider in `catalog.rs`; adapt `permissions.rs`, metadata and artwork lookups, and the permission documentation to use acknowledged policy revisions. Keep local Arr behavior and acquisition permissions intact. Test incremental replay, partial scans, tombstones, offline sources, and leakage through search, artwork, activity and comments.
 - [ ] **4. Delivery.** Add a coordinator delivery broker and agent range handler, with playback grants scoped to the node, representation and operation. Introduce an outbound authenticated relay with per-node and per-session budgets so a NAT-bound agent can serve media. Add direct HTTPS for verified endpoints. Keep the agent's policy check on each request and ensure client IP policy remains effective on both routes. Update the media playback components and API client only where remote URLs or capabilities need an additive contract. Cover seeking, range requests, cancellation, books, subtitles, expiry, local deny, relay limits and disconnects.
 - [ ] **5. UI and operations.** Add enrollment, status, local-root setup instructions, policy acknowledgments and diagnostics to the existing source screens. Extend `Dockerfile`, `deploy/`, `docs/DEPLOYMENT.md` and the backup/recovery guidance with an independent agent deployment and key lifecycle. Add deployment tests alongside `scripts/test-compose-deployment.py`.
@@ -37,3 +37,15 @@ Delivery, trust and revocation details belong in the protocol design before remo
 Migration `0019` adds the registry and a database-enforced owner match between a remote source and its node. The existing local path constraint, local IDs, and permission records stay in place. The local source listing now uses `LocalSource`, and filesystem-only routes exclude remote rows until a remote provider is wired in. Existing byte-range serving is unchanged.
 
 The pre-existing Arr test lock was scoped to its assertions. Formatting, strict Clippy, 33 unit tests, and 37 integration tests passed. The upgrade fixture applied migrations `0001`–`0018`, seeded a local source, grant and progress, then applied the current migrations twice and verified that the records remained usable.
+
+## Phase 2 identity gate
+
+Migration `0020` adds short-lived enrollment tokens, owner-bound Ed25519
+keys, and lifecycle audit events. The standalone agent persists its identity,
+signs heartbeats, and supports dual-signed key rotation. Machine routes share
+the instance IP middleware and use their own credential checks. The existing
+browser session, origin and CSRF middleware remain on owner-facing routes.
+
+Strict Clippy, 33 backend unit tests and 38 integration tests passed. The
+enrollment test covers ordinary-user enrollment, CSRF, owner isolation, forged
+and replayed messages, protocol mismatch, rotation and immediate revocation.

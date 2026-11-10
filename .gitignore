@@ -23,3 +23,7 @@ __pycache__/
 
 /deploy/.env.setup.*
 /deploy/.env.import-*
+
+# Source Agent identity and private key
+grimoire-agent.json
+grimoire-agent.json.rotate

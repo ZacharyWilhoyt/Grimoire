@@ -5895,3 +5895,249 @@ async fn source_provider_upgrade_preserves_local_identity_and_grants(pool: PgPoo
     );
     fs::remove_dir_all(root).unwrap();
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn source_node_enrollment_authenticates_owner_key_and_rejects_replay(pool: PgPool) {
+    use grimoire_api::node_protocol::{self, Enrollment, Heartbeat, Rotation};
+    use ring::{
+        rand::SystemRandom,
+        signature::{Ed25519KeyPair, KeyPair},
+    };
+
+    let app_state = state(pool.clone());
+    let (owner, owner_csrf, user) = register_user(&app_state, "node_owner").await;
+    let (other, other_csrf, _) = register_user(&app_state, "node_other").await;
+    assert_eq!(user["is_admin"], false);
+    let tokens = "/api/nodes/v1/enrollment-tokens";
+    let missing_csrf = request(
+        &app_state,
+        Method::POST,
+        tokens,
+        Some(&owner),
+        None,
+        Some(ORIGIN),
+        None,
+    )
+    .await;
+    assert_eq!(missing_csrf.status(), StatusCode::FORBIDDEN);
+    let issued = request(
+        &app_state,
+        Method::POST,
+        tokens,
+        Some(&owner),
+        Some(&owner_csrf),
+        Some(ORIGIN),
+        None,
+    )
+    .await;
+    assert_eq!(issued.status(), StatusCode::CREATED);
+    assert_eq!(issued.headers()["cache-control"], "private, no-store");
+    let token = body(issued).await["token"].as_str().unwrap().to_owned();
+    let key_bytes = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+    let key = Ed25519KeyPair::from_pkcs8(key_bytes.as_ref()).unwrap();
+    let mut enrollment = Enrollment {
+        version: node_protocol::VERSION,
+        node_id: Uuid::new_v4(),
+        public_key: hex::encode(key.public_key().as_ref()),
+        label: "Test agent".into(),
+        token,
+        signature: String::new(),
+    };
+    enrollment.signature = hex::encode(key.sign(&enrollment.signed_bytes()).as_ref());
+    let valid = serde_json::to_value(&enrollment).unwrap();
+    let mut forged = valid.clone();
+    forged["label"] = json!("Forged label");
+    for (message, status) in [
+        (forged, StatusCode::UNAUTHORIZED),
+        (valid.clone(), StatusCode::CREATED),
+        (valid, StatusCode::UNAUTHORIZED),
+    ] {
+        assert_eq!(
+            request(
+                &app_state,
+                Method::POST,
+                node_protocol::ENROLL,
+                None,
+                None,
+                None,
+                Some(message)
+            )
+            .await
+            .status(),
+            status
+        );
+    }
+    let node_list = "/api/nodes/v1";
+    let owned = body(
+        request(
+            &app_state,
+            Method::GET,
+            node_list,
+            Some(&owner),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(owned[0]["id"], enrollment.node_id.to_string());
+    assert_eq!(owned[0]["online"], true);
+    let unrelated = body(
+        request(
+            &app_state,
+            Method::GET,
+            node_list,
+            Some(&other),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(unrelated, json!([]));
+    assert!(owned[0].get("public_key").is_none());
+
+    let mut heartbeat = Heartbeat {
+        version: node_protocol::VERSION,
+        node_id: enrollment.node_id,
+        timestamp_ms: node_protocol::now_ms(),
+        signature: String::new(),
+    };
+    heartbeat.signature = hex::encode(key.sign(&heartbeat.signed_bytes()).as_ref());
+    let pulse = serde_json::to_value(&heartbeat).unwrap();
+    let mut unsupported = pulse.clone();
+    unsupported["version"] = json!(node_protocol::VERSION + 1);
+    for (message, status) in [
+        (unsupported, StatusCode::UPGRADE_REQUIRED),
+        (pulse.clone(), StatusCode::NO_CONTENT),
+        (pulse, StatusCode::UNAUTHORIZED),
+    ] {
+        assert_eq!(
+            request(
+                &app_state,
+                Method::POST,
+                node_protocol::HEARTBEAT,
+                None,
+                None,
+                None,
+                Some(message)
+            )
+            .await
+            .status(),
+            status
+        );
+    }
+
+    let replacement = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+    let replacement = Ed25519KeyPair::from_pkcs8(replacement.as_ref()).unwrap();
+    let mut rotation = Rotation {
+        version: node_protocol::VERSION,
+        node_id: enrollment.node_id,
+        timestamp_ms: heartbeat.timestamp_ms + 1,
+        new_public_key: hex::encode(replacement.public_key().as_ref()),
+        signature: String::new(),
+        new_signature: String::new(),
+    };
+    let signed = rotation.signed_bytes();
+    rotation.signature = hex::encode(key.sign(&signed).as_ref());
+    rotation.new_signature = hex::encode(replacement.sign(&signed).as_ref());
+    let valid = serde_json::to_value(rotation).unwrap();
+    let mut forged = valid.clone();
+    forged["new_signature"] = forged["signature"].clone();
+    for (message, expected) in [
+        (forged, StatusCode::UNAUTHORIZED),
+        (valid.clone(), StatusCode::NO_CONTENT),
+        (valid, StatusCode::UNAUTHORIZED),
+    ] {
+        assert_eq!(
+            request(
+                &app_state,
+                Method::POST,
+                node_protocol::ROTATE,
+                None,
+                None,
+                None,
+                Some(message)
+            )
+            .await
+            .status(),
+            expected
+        );
+    }
+    heartbeat.timestamp_ms += 2;
+    for (signer, expected) in [
+        (&key, StatusCode::UNAUTHORIZED),
+        (&replacement, StatusCode::NO_CONTENT),
+    ] {
+        heartbeat.signature = hex::encode(signer.sign(&heartbeat.signed_bytes()).as_ref());
+        assert_eq!(
+            request(
+                &app_state,
+                Method::POST,
+                node_protocol::HEARTBEAT,
+                None,
+                None,
+                None,
+                Some(serde_json::to_value(&heartbeat).unwrap())
+            )
+            .await
+            .status(),
+            expected
+        );
+    }
+
+    let node_url = format!("{node_list}/{}", enrollment.node_id);
+    for (cookie, csrf, status) in [
+        (&other, &other_csrf, StatusCode::NOT_FOUND),
+        (&owner, &owner_csrf, StatusCode::NO_CONTENT),
+    ] {
+        assert_eq!(
+            request(
+                &app_state,
+                Method::DELETE,
+                &node_url,
+                Some(cookie),
+                Some(csrf),
+                Some(ORIGIN),
+                None
+            )
+            .await
+            .status(),
+            status
+        );
+    }
+    heartbeat.timestamp_ms += 1;
+    heartbeat.signature = hex::encode(replacement.sign(&heartbeat.signed_bytes()).as_ref());
+    assert_eq!(
+        request(
+            &app_state,
+            Method::POST,
+            node_protocol::HEARTBEAT,
+            None,
+            None,
+            None,
+            Some(serde_json::to_value(heartbeat).unwrap())
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let owned = body(
+        request(
+            &app_state,
+            Method::GET,
+            node_list,
+            Some(&owner),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(owned[0]["online"], false);
+    assert_eq!(owned[0]["revoked"], true);
+}
