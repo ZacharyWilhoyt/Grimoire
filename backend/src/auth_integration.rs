@@ -5515,3 +5515,170 @@ async fn ip_access_is_admin_only_allow_over_deny_global_and_recoverable(pool: Pg
     );
     assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM auth_events WHERE event IN ('ip_policy_changed','operator_ip_policy_reset')").fetch_one(&pool).await.unwrap(),3);
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn media_comments_and_replies_follow_item_permissions(pool: PgPool) {
+    let state = state(pool.clone());
+    let (owner, owner_csrf, owner_user) = register_user(&state, "comment_owner").await;
+    let (viewer, viewer_csrf, viewer_user) = register_user(&state, "comment_viewer").await;
+    let root = shared_media_fixture();
+    let source = Uuid::new_v4().to_string();
+    let owner_id = Uuid::parse_str(owner_user["id"].as_str().unwrap()).unwrap();
+    let viewer_id = Uuid::parse_str(viewer_user["id"].as_str().unwrap()).unwrap();
+    sqlx::query("INSERT INTO sources(id,owner_id,name,path) VALUES ($1,$2,'Discussion',$3)")
+        .bind(&source)
+        .bind(owner_id)
+        .bind(root.to_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO source_permissions(source_id,user_id,can_discover) VALUES($1,$2,true)",
+    )
+    .bind(&source)
+    .bind(viewer_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let endpoint = "/api/media/comments";
+    let list = format!("{endpoint}?source_id={source}&path=clip.mp4");
+    let comment = json!({"source_id":source,"path":"clip.mp4","body":" <b>Hello</b> "});
+    for (cookie, expected) in [
+        (None, StatusCode::UNAUTHORIZED),
+        (Some(viewer.as_str()), StatusCode::NOT_FOUND),
+    ] {
+        assert_eq!(
+            request(&state, Method::GET, &list, cookie, None, None, None)
+                .await
+                .status(),
+            expected
+        );
+    }
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            endpoint,
+            Some(&owner),
+            None,
+            Some(ORIGIN),
+            Some(comment.clone())
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            endpoint,
+            Some(&viewer),
+            Some(&viewer_csrf),
+            Some(ORIGIN),
+            Some(comment.clone())
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    let posted = request(
+        &state,
+        Method::POST,
+        endpoint,
+        Some(&owner),
+        Some(&owner_csrf),
+        Some(ORIGIN),
+        Some(comment),
+    )
+    .await;
+    assert_eq!(posted.status(), StatusCode::CREATED);
+    let posted = body(posted).await;
+    assert_eq!(posted["body"], "<b>Hello</b>");
+    assert_eq!(posted["author"], "comment_owner");
+
+    sqlx::query(
+        "UPDATE source_permissions SET can_access_media=true WHERE source_id=$1 AND user_id=$2",
+    )
+    .bind(&source)
+    .bind(viewer_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut reply =
+        json!({"source_id":source,"path":"story.epub","body":"A reply","parent_id":posted["id"]});
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            endpoint,
+            Some(&viewer),
+            Some(&viewer_csrf),
+            Some(ORIGIN),
+            Some(reply.clone())
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    reply["path"] = json!("clip.mp4");
+    let response = request(
+        &state,
+        Method::POST,
+        endpoint,
+        Some(&viewer),
+        Some(&viewer_csrf),
+        Some(ORIGIN),
+        Some(reply.clone()),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let response = body(response).await;
+    assert_eq!(response["parent_id"], posted["id"]);
+    assert_eq!(response["author"], "comment_viewer");
+    assert_eq!(response["reply_to"], "comment_owner");
+
+    sqlx::query("INSERT INTO media_comments(source_id,file_key,author_id,body) SELECT $1,$2,$3,'More comments' FROM generate_series(1,29)")
+        .bind(&source).bind(catalog::file_key(&source,"clip.mp4")).bind(owner_id).execute(&pool).await.unwrap();
+    let first = request(&state, Method::GET, &list, Some(&viewer), None, None, None).await;
+    assert_eq!(first.headers()["cache-control"], "private, no-store");
+    let first = body(first).await;
+    assert_eq!(first["comments"].as_array().unwrap().len(), 30);
+    assert_eq!(first["comments"][0], posted);
+    assert_eq!(first["comments"][1], response);
+    let after = format!("{list}&after={}", first["next"].as_str().unwrap());
+    let last =
+        body(request(&state, Method::GET, &after, Some(&viewer), None, None, None).await).await;
+    assert_eq!(last["comments"].as_array().unwrap().len(), 1);
+    assert!(last["next"].is_null());
+
+    sqlx::query("DELETE FROM source_permissions WHERE source_id=$1 AND user_id=$2")
+        .bind(&source)
+        .bind(viewer_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        request(&state, Method::GET, &list, Some(&viewer), None, None, None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            endpoint,
+            Some(&viewer),
+            Some(&viewer_csrf),
+            Some(ORIGIN),
+            Some(reply)
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    fs::remove_dir_all(root).unwrap();
+}

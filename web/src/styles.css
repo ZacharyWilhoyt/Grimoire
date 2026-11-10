@@ -138,3 +138,19 @@
 .reader-paged .reader-spread{display:grid;min-height:0;margin-inline:auto;justify-content:normal}
 .reader-paged .reader-spread .reader-page{width:100%;max-width:100%;overflow:clip}
 .reader-paged .reader-spread .reader-page img{width:100%;max-width:100%;height:auto;max-height:none}
+
+.watch-comment-form textarea{color:#eee;resize:vertical;min-height:68px}
+.comment-reply-context,.comment-byline,.music-comment-dialog>header{display:flex;align-items:center;justify-content:space-between;gap:9px}
+.comment-reply-context,.comment-byline,.comment-parent,.comment-list-status{font-size:12px}
+.comment-list{list-style:none;padding:0;margin:0}
+.comment-list>li{padding:12px 16px;border-top:1px solid #ffffff15;scroll-margin:12px}
+.comment-list>li.comment-reply{margin-inline-start:16px;border-inline-start:2px solid #ffffff22}
+.comment-byline time,.comment-parent{color:#aaa4b3}
+.comment-list p{white-space:pre-wrap;overflow-wrap:anywhere;margin:7px 0;font-size:13px}
+.comment-reply-button,.comment-more{font-size:12px}
+.comment-more{align-self:center;margin:8px}
+.comment-list-status{padding:8px 16px}
+.music-comment-dialog{width:min(510px,calc(100% - 24px));max-height:85dvh;overflow:auto;padding:0;background:#19181e;color:#eee;border:1px solid #ffffff26;border-radius:12px}
+.music-comment-dialog::backdrop{background:#0009}
+.music-comment-dialog>header{padding:12px 16px}
+.music-comment-dialog>header h2{font-size:16px;margin:0;overflow-wrap:anywhere}

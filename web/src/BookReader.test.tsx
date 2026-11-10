@@ -3,6 +3,7 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { expect, it, vi } from 'vitest'
 import BookReader from './BookReader'
+vi.mock('./MediaComments', () => ({ default: () => null }))
 const session = vi.hoisted(() => ({ save: vi.fn() }))
 vi.mock('./progress', () => ({ ProgressSession: class { load = async () => null; save = session.save } }))
 const comicFixture = vi.hoisted(() => ({

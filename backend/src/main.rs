@@ -10,6 +10,7 @@ mod auth;
 #[cfg(test)]
 mod auth_integration;
 mod catalog;
+mod comments;
 mod metadata;
 mod music;
 mod permissions;
@@ -623,6 +624,12 @@ fn app(state: AppState) -> Router {
         .route(
             "/api/sources/{source_id}/subtitle-font",
             get(subtitles::read_font),
+        )
+        .route(
+            "/api/media/comments",
+            get(comments::list)
+                .post(comments::post)
+                .layer(DefaultBodyLimit::max(24 * 1024)),
         )
         .route(
             "/api/progress",

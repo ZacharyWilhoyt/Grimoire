@@ -1,0 +1,39 @@
+// @vitest-environment jsdom
+import { act } from 'react'
+import { createRoot } from 'react-dom/client'
+import { expect, it, vi } from 'vitest'
+import * as api from './api'
+import MediaComments from './MediaComments'
+
+it('renders comments as text and posts a reply to the selected comment', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+  const existing = { id: '1', parent_id: null, author: 'reader', reply_to: null, body: '<b>Hello</b>', created_at: 1700000000 }
+  const reply = { ...existing, id: '2', parent_id: '1', reply_to: 'reader', author: 'viewer', body: 'My reply' }
+  const fetch = vi.spyOn(api, 'apiFetch')
+    .mockResolvedValueOnce(Response.json({ comments: [existing], next: null }))
+    .mockResolvedValueOnce(Response.json(reply, { status: 201 }))
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  try {
+    await act(async () => root.render(<MediaComments sourceId="source" path="episode.mkv"/>))
+    expect(host.querySelector('.comment-list p')?.textContent).toBe('<b>Hello</b>')
+    expect(host.querySelector('.comment-list p b')).toBeNull()
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Reply to reader"]')!.click())
+    const input = host.querySelector<HTMLTextAreaElement>('textarea')!
+    expect(document.activeElement).toBe(input)
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'My reply')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })))
+    expect(JSON.parse(fetch.mock.calls[1][1]?.body as string)).toEqual({ source_id: 'source', path: 'episode.mkv', body: 'My reply', parent_id: '1' })
+    expect(host.querySelector('.comment-reply p')?.textContent).toBe('My reply')
+    expect(host.querySelector('.comment-parent')?.textContent).toBe('In reply to reader')
+  } finally {
+    await act(async () => root.unmount())
+    host.remove()
+    fetch.mockRestore()
+    vi.unstubAllGlobals()
+  }
+})
