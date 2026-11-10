@@ -152,11 +152,12 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
       if (controller.signal.aborted) return
       if (result.continuing) {
         setContinuing(result.continuing.items)
-        if (result.continuing.unavailable_items) notes.push('Some items with saved progress are unavailable.')
       }
       if (result.recent) {
         setRecent(result.recent.items)
-        if (result.recent.unavailable_items) notes.push('Some recently opened files are currently unavailable.')
+      }
+      if (result.continuing?.unavailable_items || result.recent?.unavailable_items) {
+        notes.push('Some files in your history are missing from their saved locations. Your progress and history are retained.')
       }
       if (result.library) {
         const library = result.library

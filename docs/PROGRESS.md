@@ -55,3 +55,14 @@ entries are retained by the API but omitted from the playable Continue section.
 The UI shows the first six available entries from the loaded page; refresh or
 revisit For you to refresh saved-position labels. Continue uses individual cards
 for direct resume; other sections retain the album/series folder presentation.
+
+## Recover history after a rename
+
+For a Compose deployment with bind-mounted media, preview a repair with
+`python3 scripts/repair-media-history.py` from the Docker host. Add `--apply`
+to move the matched saved items, recent activity, and progress to their current
+paths. The script uses the running API's database and matches only a unique
+file of the same extension, byte size, and nanosecond modification time within
+the original source. The old path must be missing and have an extraction
+fingerprint. Unmatched and ambiguous entries are retained for later recovery.
+If the new path already has progress, the newer position wins.
