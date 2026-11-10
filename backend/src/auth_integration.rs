@@ -26,6 +26,7 @@ pub(super) fn state(pool: PgPool) -> AppState {
         catalog_scans: Arc::new(tokio::sync::Semaphore::new(2)),
         metadata: Arc::new(metadata::Runtime::new()),
         video_audio: Arc::new(crate::video_audio::Runtime::new()),
+        relay: Arc::new(crate::relay::Runtime::new()),
         transcode: Arc::new(crate::transcode::Runtime::new()),
     }
 }
@@ -5818,8 +5819,49 @@ async fn source_provider_upgrade_preserves_local_identity_and_grants(pool: PgPoo
     sqlx::query("INSERT INTO media_progress(user_id,file_key,source_id,relative_path,position,revision) VALUES($1,$2,$3,'clip.mp4',42,1)")
         .bind(viewer).bind(&key).bind(source).execute(&pool).await.unwrap();
 
+    let arr = Uuid::new_v4();
+    sqlx::query("INSERT INTO arr_connections(id,source_id,name,kind,base_url,remote_root,api_key_encrypted,revision,managed)
+                 VALUES($1,$2,'Existing Arr','sonarr','http://localhost:8989','/media',$3,$4,true)")
+        .bind(arr).bind(source).bind(b"encrypted fixture".as_slice()).bind(Uuid::new_v4())
+        .execute(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO media_metadata(file_key,source_id,relative_path,local_data)
+                 VALUES($1,$2,'clip.mp4',$3)",
+    )
+    .bind(&key)
+    .bind(source)
+    .bind(r#"{"title":"Existing title"}"#)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO media_comments(source_id,file_key,author_id,body)
+                 VALUES($1,$2,$3,'Existing comment')",
+    )
+    .bind(source)
+    .bind(&key)
+    .bind(owner)
+    .execute(&pool)
+    .await
+    .unwrap();
+
     all.run(&pool).await.unwrap();
     all.run(&pool).await.unwrap();
+    assert!(
+        sqlx::query_scalar::<_, bool>("SELECT managed FROM arr_connections WHERE id=$1")
+            .bind(arr)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT body FROM media_comments WHERE file_key=$1")
+            .bind(&key)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        "Existing comment"
+    );
     let node = Uuid::new_v4();
     sqlx::query("INSERT INTO source_nodes(id,owner_id) VALUES($1,$2)")
         .bind(node)
@@ -5864,6 +5906,7 @@ async fn source_provider_upgrade_preserves_local_identity_and_grants(pool: PgPoo
         .find(|item| item["relative_path"] == "clip.mp4")
         .unwrap();
     assert_eq!(clip["file_key"], key);
+    assert_eq!(clip["metadata"]["fields"]["title"], "Existing title");
     assert_eq!(clip["progress"]["position"], 42.0);
     let sources = body(
         request(
@@ -6324,6 +6367,67 @@ async fn remote_catalog_revisions_require_node_ownership_and_both_policies(pool:
     )
     .await;
     assert_eq!(allowed["can_access_media"], true);
+    let representation = allowed["items"][0]["representation_id"].as_str().unwrap();
+    let delivery = format!("/api/nodes/v1/sources/{source}/representations/{representation}");
+    let browser_range = Request::builder()
+        .uri(&delivery)
+        .header("cookie", &viewer_cookie)
+        .header("range", "bytes=10-13")
+        .extension(ConnectInfo(
+            "127.0.0.1:12345".parse::<SocketAddr>().unwrap(),
+        ))
+        .body(Body::empty())
+        .unwrap();
+    let browser = tokio::spawn(app(state.clone()).oneshot(browser_range));
+    let signed = |url: &str, operation: &str, payload: &str| {
+        let timestamp = node_protocol::now_ms();
+        let signature = key.sign(&node_protocol::relay_signature_bytes(
+            operation, node, timestamp, payload,
+        ));
+        Request::builder()
+            .method(Method::POST)
+            .uri(url)
+            .extension(ConnectInfo(
+                "127.0.0.1:12345".parse::<SocketAddr>().unwrap(),
+            ))
+            .header("x-grimoire-node-version", "1")
+            .header("x-grimoire-node-id", node.to_string())
+            .header("x-grimoire-node-timestamp", timestamp.to_string())
+            .header("x-grimoire-node-signature", hex::encode(signature.as_ref()))
+    };
+    let poll = signed(node_protocol::RELAY_POLL, "poll", "")
+        .body(Body::empty())
+        .unwrap();
+    let grant = app(state.clone()).oneshot(poll).await.unwrap();
+    assert_eq!(grant.status(), StatusCode::OK);
+    let grant: node_protocol::SignedRelayGrant = serde_json::from_value(body(grant).await).unwrap();
+    assert_eq!(grant.grant.offset, 10);
+    assert_eq!(grant.grant.length, 4);
+    assert_eq!(grant.grant.viewer_id, viewer);
+    assert!(node_protocol::verify(
+        &hex::decode(grant.coordinator_key).unwrap(),
+        &grant.grant.signed_bytes(),
+        &grant.signature
+    ));
+    let bytes = b"test";
+    let digest = node_protocol::body_digest(bytes);
+    let upload = format!("{}/{}", node_protocol::RELAY_UPLOAD, grant.grant.id);
+    let proof = format!("{}:{digest}", grant.grant.id);
+    for status in [StatusCode::NO_CONTENT, StatusCode::NOT_FOUND] {
+        let upload = signed(&upload, "upload", &proof)
+            .header("x-grimoire-content-digest", &digest)
+            .body(Body::from(&bytes[..]))
+            .unwrap();
+        assert_eq!(
+            app(state.clone()).oneshot(upload).await.unwrap().status(),
+            status
+        );
+    }
+    let response = browser.await.unwrap().unwrap();
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(response.headers()["content-range"], "bytes 10-13/1234");
+    assert_eq!(to_bytes(response.into_body(), 4).await.unwrap(), &bytes[..]);
+
     delta.revision = 4;
     delta.removed.push(item);
     delta.grants = None;

@@ -1,5 +1,7 @@
 #[path = "source_agent/catalog.rs"]
 mod catalog;
+#[path = "source_agent/relay.rs"]
+mod relay;
 
 use grimoire_api::node_protocol::{self, Enrollment, Heartbeat, Rotation};
 use reqwest::{Client, StatusCode, Url};
@@ -212,23 +214,37 @@ async fn run(client: &Client, path: &Path) -> Result<(), &'static str> {
     let url = coordinator(&identity.coordinator)?;
     let key = key(&identity)?;
     let config = std::env::var_os("GRIMOIRE_AGENT_CONFIG");
+    let configuration = config.as_deref().map(Path::new);
+    let maintenance = maintain(client, &url, &identity, &key, path, configuration);
+    let delivery = async {
+        if let Some(config) = configuration {
+            relay::run(client, &url, &identity, &key, path, config).await;
+        }
+        std::future::pending::<()>().await
+    };
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => Ok(()),
+        result = maintenance => result,
+        _ = delivery => Ok(()),
+    }
+}
+
+async fn maintain(
+    client: &Client,
+    url: &Url,
+    identity: &Identity,
+    key: &Ed25519KeyPair,
+    path: &Path,
+    config: Option<&Path>,
+) -> Result<(), &'static str> {
     let mut retry_seconds = 2;
-    let shutdown = tokio::signal::ctrl_c();
-    tokio::pin!(shutdown);
     loop {
-        let status = tokio::select! {
-            _ = &mut shutdown => return Ok(()),
-            result = send_heartbeat(client, &url, &identity, &key) => result,
-        };
+        let status = send_heartbeat(client, url, identity, key).await;
         if status == Ok(StatusCode::NO_CONTENT) {
-            if let Some(config) = &config {
-                tokio::select! {
-                    _ = &mut shutdown => return Ok(()),
-                    result = catalog::sync(client, &url, &identity, &key, path, Path::new(config)) => {
-                        if let Err(message) = result {
-                            eprintln!("{message}");
-                        }
-                    }
+            if let Some(config) = config {
+                if let Err(message) = catalog::sync(client, url, identity, key, path, config).await
+                {
+                    eprintln!("{message}");
                 }
             }
         }
@@ -247,10 +263,7 @@ async fn run(client: &Client, path: &Path) -> Result<(), &'static str> {
                 delay
             }
         };
-        tokio::select! {
-            _ = &mut shutdown => return Ok(()),
-            _ = tokio::time::sleep(Duration::from_secs(delay)) => {}
-        }
+        tokio::time::sleep(Duration::from_secs(delay)).await;
     }
 }
 
@@ -258,10 +271,23 @@ async fn execute() -> Result<(), &'static str> {
     let path =
         std::env::var_os("GRIMOIRE_AGENT_STATE").unwrap_or_else(|| "grimoire-agent.json".into());
     let path = Path::new(&path);
-    let client = Client::builder()
+    let mut client = Client::builder()
         .https_only(true)
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(10));
+    if let Some(ca) = std::env::var_os("GRIMOIRE_AGENT_CA_FILE") {
+        let path = Path::new(&ca);
+        let metadata =
+            fs::metadata(path).map_err(|_| "Could not inspect the coordinator CA file.")?;
+        if !metadata.is_file() || metadata.len() > 128 * 1024 {
+            return Err("The coordinator CA file is invalid.");
+        }
+        let bytes = fs::read(path).map_err(|_| "Could not read the coordinator CA file.")?;
+        let certificate = reqwest::Certificate::from_pem(&bytes)
+            .map_err(|_| "Invalid coordinator CA certificate.")?;
+        client = client.add_root_certificate(certificate);
+    }
+    let client = client
         .build()
         .map_err(|_| "Could not initialize the HTTPS client.")?;
     let args: Vec<String> = std::env::args().skip(1).collect();

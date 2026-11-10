@@ -156,7 +156,7 @@ pub async fn heartbeat(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn active_key(state: &AppState, id: Uuid) -> Result<Vec<u8>, AppError> {
+pub(crate) async fn active_key(state: &AppState, id: Uuid) -> Result<Vec<u8>, AppError> {
     sqlx::query_scalar(
         "SELECT n.public_key FROM source_nodes n JOIN users u ON u.id=n.owner_id
          WHERE n.id=$1 AND n.revoked_at IS NULL AND n.public_key IS NOT NULL AND NOT u.disabled",

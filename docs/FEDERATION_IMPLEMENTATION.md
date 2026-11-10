@@ -64,3 +64,32 @@ The scanner rename and symlink test and all 39 PostgreSQL and media integration
 tests passed. Catalog coverage includes wrong keys, another node's source,
 revision gaps and replay, staged snapshots, bilateral discovery and playback
 eligibility, tombstones and stale catalog expiry.
+
+## Relay and UI preview checkpoint
+
+- The outbound relay serves authenticated ranges without an inbound agent
+  port. It applies per-node and process concurrency limits, pacing, scoped
+  signed grants, one-use uploads and administrator counters.
+- The agent uses Linux descriptor-relative file opens, checks local grants
+  for every relay chunk, and rejects stale file identities and symlinks.
+- Source Agents provides enrollment, status, revoke, remote browsing,
+  central permissions, browser audio/video playback and the EPUB/CBZ reader.
+  The standalone Compose service runs as a non-root user with a private
+  state volume and read-only media.
+- `scripts/test-source-agent-relay.py` runs two independent processes with
+  a disposable PostgreSQL cluster and HTTPS proxy. It checks enrollment,
+  catalog sync, a multi-chunk range and immediate local unpublish.
+
+The preview does not satisfy the final federation gate. Remaining work
+includes direct HTTPS with verified destination binding and global access
+policy enforcement, directory and item policy scopes, remote playback
+feature parity, and the full deployment acceptance suite. The preview
+has not been deployed to the live coordinator.
+
+The preview compatibility checks passed with 119 frontend tests and a
+production build, 34 coordinator unit tests, 2 agent tests, 39 backend
+integration tests, and 17 operations tests. Strict Clippy, the Caddy proxy
+smoke test, and both Compose config checks passed. The standalone image
+built and ran with UID 10001 and writable private state under a read-only
+root filesystem. The disposable HTTPS relay smoke test passed with the
+actual coordinator and Source Agent binaries.

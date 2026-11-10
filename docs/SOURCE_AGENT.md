@@ -1,7 +1,7 @@
 # Source Agent
 
-The standalone Rust agent currently supports enrollment and heartbeat. Remote
-indexing and playback are pending. Existing server-local sources need no agent.
+The standalone Rust agent supports enrollment, catalog sync and outbound
+relay playback. Existing server-local sources need no agent.
 
 Build on the agent host with
 `cargo build --locked --release --manifest-path backend/Cargo.toml --bin grimoire-source-agent`.
@@ -10,9 +10,8 @@ in a directory accessible only to that account. The default file is
 `grimoire-agent.json` in the working directory. Protect and back it up as a
 private signing key.
 
-Create a short-lived token using the signed-in coordinator enrollment API in
-[NODE_PROTOCOL.md](NODE_PROTOCOL.md). The enrollment UI is planned for the
-operations phase. On the agent host run:
+Create a short-lived token from **Source Agents** in the coordinator sidebar.
+On the agent host run:
 
 ```sh
 grimoire-source-agent enroll https://grimoire.example.com "Living room"
@@ -60,4 +59,51 @@ or one removed from the local configuration expires from the remote catalog.
 
 Viewer grants currently apply at source level. To share metadata, the
 agent's grant and the coordinator's source permission must both allow discovery.
-Remote streaming and the frontend source flow are pending.
+The Source Agents panel lists remote catalogs separately from Discover.
+
+## Outbound playback preview
+
+Use **Source Agents** in the coordinator sidebar to generate an enrollment
+token, view status, revoke your agent or browse remote sources. A source
+owner can grant central access using **Permissions**. The agent's local
+configuration must grant the same user access. Copy the UUID shown in the
+central permissions roster into the source’s local `grants` array. Apply local configuration
+changes with an atomic file rename. The agent rereads the configuration
+before every file range, so unpublishing takes effect for new reads even
+before catalog sync.
+
+Relay file access currently requires Linux with `openat2` support. It opens
+the indexed file beneath an approved root without following symlinks. Remote
+audio and video use browser-compatible originals. EPUB and CBZ use the
+existing range-based reader. Remote saved progress, subtitles, transcoding,
+direct delivery and per-directory or item sharing rules remain pending.
+
+For private HTTPS, set `GRIMOIRE_AGENT_CA_FILE` to the trusted coordinator
+CA certificate. Verify the certificate through a trusted operator channel
+before installing it. Keep the identity, pending key during rotation, and
+catalog journal private.
+
+### Separate Compose deployment
+
+Create `deploy/agent-config/sources.json` on the agent host and use `/media`
+as the approved root inside the container. Make the configuration readable
+by UID 10001. Set `GRIMOIRE_AGENT_MEDIA_ROOT` to the directory on the host
+and grant that UID read and directory traversal access. Run:
+
+```sh
+docker compose -f deploy/compose.source-agent.yaml build
+docker compose -f deploy/compose.source-agent.yaml run --rm agent enroll https://grimoire.example.com "My agent"
+docker compose -f deploy/compose.source-agent.yaml up -d
+```
+
+This service has no published port or Docker socket. Back up its private
+state volume and configuration before moving or reinstalling it.
+
+### Relay smoke test
+
+After building the debug binaries, run
+`scripts/test-source-agent-relay.py` with Python and `pexpect` installed.
+Set `GRIMOIRE_TEST_CADDY_BIN` to a verified Caddy binary and
+`GRIMOIRE_TEST_POSTGRES_BIN` to the PostgreSQL server bin directory.
+The test starts its own loopback-only coordinator, CA, proxy, agent and
+temporary database. It does not use the running Grimoire database.

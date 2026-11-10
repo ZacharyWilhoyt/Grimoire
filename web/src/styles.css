@@ -168,3 +168,17 @@
 .music-comment-dialog::backdrop{background:#0009}
 .music-comment-dialog>header{padding:12px 16px}
 .music-comment-dialog>header h2{font-size:16px;margin:0;overflow-wrap:anywhere}
+
+.source-agent-dialog{width:min(660px,calc(100% - 24px));max-height:85dvh;overflow:auto;padding:0;background:#19181e;color:#eee;border:1px solid #ffffff26;border-radius:12px}
+.source-agent-dialog::backdrop{background:#0009}
+.source-agent-dialog>header,.source-agent-actions,.source-agent-list li{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.source-agent-dialog>header{padding:14px 18px;border-bottom:1px solid #ffffff18}
+.source-agent-dialog h2{display:flex;align-items:center;gap:8px;font-size:18px;margin:0}
+.source-agent-body{padding:18px}
+.source-agent-body h3{margin:20px 0 6px;font-size:15px}
+.source-agent-list{padding:0;margin:0;list-style:none}
+.source-agent-list li{padding:8px 0;border-bottom:1px solid #ffffff14}
+.source-agent-list span,.source-agent-list strong{min-width:0;overflow-wrap:anywhere}
+.source-agent-list small{display:block;color:#aaa4b3}
+.source-agent-token{margin-top:12px;overflow-wrap:anywhere}
+.source-agent-token label,.source-agent-token input,.source-agent-body video,.source-agent-body audio{display:block;width:100%}

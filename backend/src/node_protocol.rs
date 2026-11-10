@@ -149,3 +149,59 @@ pub fn media_kind(extension: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+
+pub const RELAY_POLL: &str = "/api/nodes/v1/relay/poll";
+pub const RELAY_UPLOAD: &str = "/api/nodes/v1/relay/upload";
+pub const RELAY_CHUNK_BYTES: usize = 2 * 1024 * 1024;
+pub const RELAY_GRANT_MS: i64 = 15_000;
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelayGrant {
+    pub id: Uuid,
+    pub node_id: Uuid,
+    pub source_id: Uuid,
+    pub representation_id: Uuid,
+    pub viewer_id: Uuid,
+    pub owner: bool,
+    pub offset: u64,
+    pub length: u64,
+    pub size_bytes: u64,
+    pub expires_ms: i64,
+}
+
+impl RelayGrant {
+    pub fn signed_bytes(&self) -> Vec<u8> {
+        format!(
+            "grimoire-node/relay-read/v1\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+            self.id,
+            self.node_id,
+            self.source_id,
+            self.representation_id,
+            self.viewer_id,
+            self.owner,
+            self.offset,
+            self.length,
+            self.size_bytes,
+            self.expires_ms
+        )
+        .into_bytes()
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignedRelayGrant {
+    pub grant: RelayGrant,
+    pub coordinator_key: String,
+    pub signature: String,
+}
+
+pub fn relay_signature_bytes(
+    operation: &str,
+    node: Uuid,
+    timestamp: i64,
+    payload: &str,
+) -> Vec<u8> {
+    format!("grimoire-node/relay-{operation}/v1\n{node}\n{timestamp}\n{payload}").into_bytes()
+}

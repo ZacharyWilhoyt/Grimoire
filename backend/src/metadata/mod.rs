@@ -1134,6 +1134,7 @@ mod scan_tests {
             catalog_scans: Arc::new(Semaphore::new(1)),
             metadata: runtime,
             video_audio: Arc::new(crate::video_audio::Runtime::new()),
+            relay: Arc::new(crate::relay::Runtime::new()),
             transcode: Arc::new(crate::transcode::Runtime::new()),
         };
         let worker =

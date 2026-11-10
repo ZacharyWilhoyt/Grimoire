@@ -395,6 +395,25 @@ async fn sync_source(
     }
 }
 
+fn configuration(path: &Path) -> Result<Configuration, &'static str> {
+    let config: Configuration = read(path, 128 * 1024)?;
+    let mut ids = HashSet::new();
+    if config.sources.len() > MAX_SOURCES
+        || config.sources.iter().any(|source| {
+            source.id.is_nil() || source.root == Path::new("/") || !ids.insert(source.id)
+        })
+    {
+        return Err("Set a unique UUID for each approved media source, with at most 32 sources.");
+    }
+    Ok(config)
+}
+
+fn state_folder(path: &Path) -> PathBuf {
+    let mut folder = path.as_os_str().to_owned();
+    folder.push(".catalog");
+    PathBuf::from(folder)
+}
+
 pub(super) async fn sync(
     client: &Client,
     url: &Url,
@@ -403,19 +422,9 @@ pub(super) async fn sync(
     state_path: &Path,
     config_path: &Path,
 ) -> Result<(), &'static str> {
-    let config: Configuration = read(config_path, 128 * 1024)?;
-    let mut ids = HashSet::new();
-    if config.sources.len() > MAX_SOURCES
-        || config
-            .sources
-            .iter()
-            .any(|source| source.id.is_nil() || !ids.insert(source.id))
-    {
-        return Err("Set a unique UUID for each approved media source, with at most 32 sources.");
-    }
-    let mut folder = state_path.as_os_str().to_owned();
-    folder.push(".catalog");
-    let folder = Path::new(&folder);
+    let config = configuration(config_path)?;
+    let folder = state_folder(state_path);
+    let folder = folder.as_path();
     if !folder.exists() {
         let mut options = fs::DirBuilder::new();
         #[cfg(unix)]
@@ -436,6 +445,106 @@ pub(super) async fn sync(
         }
     }
     Ok(())
+}
+
+pub(super) fn read_grant(
+    state_path: &Path,
+    config_path: &Path,
+    grant: &node_protocol::RelayGrant,
+) -> Result<Vec<u8>, &'static str> {
+    use std::io::{Seek, SeekFrom};
+    let denied = "The source declined the requested range.";
+    let config = configuration(config_path)?;
+    let source = config
+        .sources
+        .iter()
+        .find(|source| source.id == grant.source_id && source.published)
+        .ok_or(denied)?;
+    if !grant.owner
+        && !source.grants.iter().any(|rule| {
+            rule.user_id == grant.viewer_id && rule.can_discover && rule.can_access_media
+        })
+    {
+        return Err(denied);
+    }
+    if grant.length == 0
+        || grant.length > node_protocol::RELAY_CHUNK_BYTES as u64
+        || grant
+            .offset
+            .checked_add(grant.length)
+            .is_none_or(|end| end > grant.size_bytes)
+        || grant.expires_ms <= node_protocol::now_ms()
+    {
+        return Err(denied);
+    }
+    let index: Index = read(
+        &state_folder(state_path).join(format!("{}.json", source.id)),
+        STATE_LIMIT,
+    )?;
+    let item = index
+        .files
+        .values()
+        .find(|item| item.entry.representation_id == grant.representation_id)
+        .ok_or(denied)?;
+    let mut file = open_beneath(&source.root, Path::new(&item.path)).map_err(|_| denied)?;
+    let metadata = file.metadata().map_err(|_| denied)?;
+    if !metadata.is_file()
+        || metadata.len() != grant.size_bytes
+        || fingerprint(&metadata, &item.path)? != item.fingerprint
+    {
+        return Err(denied);
+    }
+    file.seek(SeekFrom::Start(grant.offset))
+        .map_err(|_| denied)?;
+    let mut bytes = vec![0; grant.length as usize];
+    file.read_exact(&mut bytes).map_err(|_| denied)?;
+    let current = file.metadata().map_err(|_| denied)?;
+    if fingerprint(&current, &item.path)? != item.fingerprint
+        || grant.expires_ms <= node_protocol::now_ms()
+    {
+        return Err(denied);
+    }
+    Ok(bytes)
+}
+
+#[cfg(target_os = "linux")]
+fn open_beneath(root: &Path, relative: &Path) -> std::io::Result<fs::File> {
+    use rustix::fs::{open, openat2, Mode, OFlags, ResolveFlags};
+    let flags = ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS;
+    let root = root.strip_prefix("/").map_err(std::io::Error::other)?;
+    if relative
+        .components()
+        .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        return Err(std::io::Error::other("Invalid indexed path."));
+    }
+    let base = open(
+        "/",
+        OFlags::DIRECTORY | OFlags::RDONLY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    let root = openat2(
+        base,
+        root,
+        OFlags::DIRECTORY | OFlags::RDONLY | OFlags::CLOEXEC,
+        Mode::empty(),
+        flags,
+    )?;
+    let file = openat2(
+        root,
+        relative,
+        OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+        flags,
+    )?;
+    Ok(file.into())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn open_beneath(_root: &Path, _relative: &Path) -> std::io::Result<fs::File> {
+    Err(std::io::Error::other(
+        "Relay delivery requires Linux safe file opening.",
+    ))
 }
 
 #[cfg(all(test, unix))]
@@ -460,6 +569,63 @@ mod tests {
             before["before.mkv"].entry.item_id,
             after["Season 1/after.mkv"].entry.item_id
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn relay_uses_local_policy_and_refuses_replaced_symlinks() {
+        let root = std::env::temp_dir().join(format!("grimoire-agent-relay-{}", Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let media = root.join("media");
+        fs::create_dir(&media).unwrap();
+        let media_file = media.join("track.mp3");
+        fs::write(&media_file, b"abcdefgh").unwrap();
+        let identity = root.join("identity.json");
+        let config = root.join("config.json");
+        let folder = state_folder(&identity);
+        fs::create_dir(&folder).unwrap();
+        let source = Uuid::new_v4();
+        let viewer = Uuid::new_v4();
+        let files = scan(&media, &BTreeMap::new()).unwrap();
+        let representation = files["track.mp3"].entry.representation_id;
+        persist(
+            &folder.join(format!("{source}.json")),
+            &Index {
+                files,
+                ..Index::default()
+            },
+        )
+        .unwrap();
+        let configure = |allow| {
+            let content = serde_json::json!({"sources":[{
+                "id":source, "name":"Music", "root":media, "published":true,
+                "grants":[{"user_id":viewer,"can_discover":true,"can_access_media":allow}]
+            }]});
+            fs::write(&config, serde_json::to_vec(&content).unwrap()).unwrap();
+        };
+        configure(true);
+        let grant = node_protocol::RelayGrant {
+            id: Uuid::new_v4(),
+            node_id: Uuid::new_v4(),
+            source_id: source,
+            representation_id: representation,
+            viewer_id: viewer,
+            owner: false,
+            offset: 2,
+            length: 3,
+            size_bytes: 8,
+            expires_ms: node_protocol::now_ms() + 10_000,
+        };
+        assert_eq!(read_grant(&identity, &config, &grant).unwrap(), b"cde");
+        configure(false);
+        assert!(read_grant(&identity, &config, &grant).is_err());
+        configure(true);
+        let outside = root.join("outside.mp3");
+        fs::rename(&media_file, &outside).unwrap();
+        std::os::unix::fs::symlink(&outside, &media_file).unwrap();
+        assert!(read_grant(&identity, &config, &grant).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 }

@@ -212,3 +212,14 @@ Primary references: [Caddy API and atomic reloads](https://caddyserver.com/docs/
 [automatic HTTPS modes](https://caddyserver.com/docs/caddyfile/options#auto-https),
 [explicit TLS certificates and issuers](https://caddyserver.com/docs/caddyfile/directives/tls),
 [HTTPS validation requirements](https://caddyserver.com/docs/automatic-https).
+
+## Source Agent preview
+
+The independent agent deployment uses
+`deploy/compose.source-agent.yaml` on the source host. It connects outbound
+over HTTPS and stores its identity and scan journal in a private volume.
+The coordinator remains responsible for browser authentication and applies
+instance IP rules to both browser and agent connections. Keep the agent's
+state outside public backups and keep its media mounts read-only.
+See [Source Agent setup](SOURCE_AGENT.md) and the
+[node protocol](NODE_PROTOCOL.md) for the current relay and its limits.

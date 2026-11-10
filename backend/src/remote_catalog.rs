@@ -361,3 +361,33 @@ pub async fn list(
         }),
     ))
 }
+
+#[derive(Serialize, sqlx::FromRow)]
+struct SourceSummary {
+    id: String,
+    name: String,
+    is_owner: bool,
+    available: bool,
+}
+
+pub async fn sources(
+    State(state): State<AppState>,
+    Extension(identity): Extension<auth::Identity>,
+) -> Result<impl IntoResponse, AppError> {
+    let rows = sqlx::query_as::<_, SourceSummary>(
+        "SELECT substring(s.id FROM 8) AS id,s.name,s.owner_id=$1 AS is_owner,
+         COALESCE(c.published AND n.revoked_at IS NULL AND n.last_seen>now()-interval '90 seconds'
+            AND c.last_confirmed>now()-interval '90 seconds',false) AS available
+         FROM sources s JOIN source_nodes n ON n.id=s.node_id
+         JOIN users u ON u.id=s.owner_id AND NOT u.disabled
+         JOIN remote_catalog_state c ON c.source_id=s.id
+         LEFT JOIN source_permissions p ON p.source_id=s.id AND p.user_id=$1
+         LEFT JOIN remote_source_grants g ON g.source_id=s.id AND g.user_id=$1
+         WHERE s.kind='remote_agent' AND (s.owner_id=$1 OR
+             (p.can_discover AND g.can_discover AND c.published AND n.revoked_at IS NULL
+              AND n.last_seen>now()-interval '90 seconds' AND c.last_confirmed>now()-interval '90 seconds'))
+         ORDER BY s.name,s.id LIMIT 100",
+    )
+    .bind(identity.user.id).fetch_all(&state.db).await.map_err(|_| auth::unavailable())?;
+    Ok(([(header::CACHE_CONTROL, "private, no-store")], Json(rows)))
+}

@@ -100,3 +100,37 @@ after 90 seconds without a successful confirmation or heartbeat.
 and agent discovery policies must allow listing. Media eligibility is
 reported separately and requires both access grants. Remote catalogs are
 still separate from the existing Discover and source views.
+
+## Outbound range relay
+
+The authenticated browser uses
+`GET /api/nodes/v1/sources/{source_id}/representations/{representation_id}`.
+The coordinator supports single byte ranges, suffix ranges and HEAD. It
+checks the browser session, both sharing policies, and source liveness.
+The agent keeps an outbound HTTPS poll open for up to eight seconds at
+`POST /api/nodes/v1/relay/poll`. No listening port is required at the agent.
+
+Poll and upload use the signed node headers from catalog sync. Sign the
+lines `grimoire-node/relay-<operation>/v1`, node UUID, timestamp milliseconds,
+and payload, joined by LF. For poll the payload is empty. For
+`POST /api/nodes/v1/relay/upload/{job_id}` it is
+`<job_id>:<lowercase SHA-256 of the exact body>`. Send that hash in
+`X-Grimoire-Content-Digest` as well. An empty upload declines a range.
+Only the node named in the pending job may complete it, and a job is
+consumed at most once.
+
+A successful poll returns a signed grant. The signature is made with the
+coordinator's ephemeral Ed25519 key and the key is delivered over the same
+trusted HTTPS connection. The signed payload binds the job, node, source,
+representation, viewer, owner flag, offset, length, file size and expiration.
+Grants last 15 seconds and allow at most 2 MiB per job. The agent reopens
+the current local policy and checks the file identity before each range.
+The coordinator rechecks the session and permissions before releasing bytes.
+
+The relay carries media bytes through the coordinator. It limits concurrent
+streams to 16 globally and four per node, paces each stream, and applies
+separate poll and upload rate limits. Instance administrators can read
+process-local counters at `GET /api/admin/relay`. Operational tuning beyond
+these fixed limits is pending. The coordinator does not fetch agent-supplied
+URLs or run FFmpeg against relayed originals. Direct HTTPS delivery is a
+separate pending transport.

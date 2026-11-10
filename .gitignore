@@ -28,3 +28,5 @@ __pycache__/
 grimoire-agent.json
 grimoire-agent.json.rotate
 grimoire-agent.json.catalog/
+
+deploy/agent-config/

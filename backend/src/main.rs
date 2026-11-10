@@ -16,6 +16,7 @@ mod music;
 mod nodes;
 mod permissions;
 mod progress;
+mod relay;
 mod remote_catalog;
 mod security;
 mod sources;
@@ -50,6 +51,7 @@ struct AppState {
     catalog_scans: Arc<tokio::sync::Semaphore>,
     metadata: Arc<metadata::Runtime>,
     video_audio: Arc<video_audio::Runtime>,
+    relay: Arc<relay::Runtime>,
     transcode: Arc<transcode::Runtime>,
 }
 
@@ -264,12 +266,13 @@ async fn remove_source(
     RoutePath(source_id): RoutePath<String>,
 ) -> Result<StatusCode, AppError> {
     let mut tx = state.db.begin().await.map_err(|_| auth::unavailable())?;
-    let owner: Option<uuid::Uuid> =
-        sqlx::query_scalar("SELECT owner_id FROM sources WHERE id=$1 FOR UPDATE")
-            .bind(&source_id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|_| auth::unavailable())?;
+    let owner: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT owner_id FROM sources WHERE id=$1 AND kind='local_directory' FOR UPDATE",
+    )
+    .bind(&source_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|_| auth::unavailable())?;
     if owner != Some(identity.user.id) {
         return Err(AppError(StatusCode::NOT_FOUND, "Source not found.".into()));
     }
@@ -779,6 +782,12 @@ fn app(state: AppState) -> Router {
         )
         .route("/api/statistics", get(statistics::read))
         .route(
+            "/api/nodes/v1/sources/{source}/representations/{id}",
+            get(relay::read),
+        )
+        .route("/api/admin/relay", get(relay::stats))
+        .route("/api/nodes/v1/sources", get(remote_catalog::sources))
+        .route(
             "/api/nodes/v1/sources/{id}/catalog",
             get(remote_catalog::list),
         )
@@ -832,6 +841,16 @@ fn app(state: AppState) -> Router {
                     grimoire_api::node_protocol::CATALOG_DELTA,
                     axum::routing::post(remote_catalog::delta).layer(DefaultBodyLimit::max(
                         grimoire_api::node_protocol::CATALOG_BODY_LIMIT,
+                    )),
+                )
+                .route(
+                    grimoire_api::node_protocol::RELAY_POLL,
+                    axum::routing::post(relay::poll),
+                )
+                .route(
+                    "/api/nodes/v1/relay/upload/{id}",
+                    axum::routing::post(relay::upload).layer(DefaultBodyLimit::max(
+                        grimoire_api::node_protocol::RELAY_CHUNK_BYTES,
                     )),
                 )
                 .route(
@@ -907,6 +926,7 @@ async fn main() {
         catalog_scans: Arc::new(tokio::sync::Semaphore::new(2)),
         metadata: Arc::new(metadata::Runtime::new()),
         video_audio: Arc::new(crate::video_audio::Runtime::new()),
+        relay: Arc::new(crate::relay::Runtime::new()),
         transcode: Arc::new(crate::transcode::Runtime::new()),
     };
     if state.tls.managed.is_some() && !state.network.require_proxy {

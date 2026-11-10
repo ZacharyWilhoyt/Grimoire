@@ -187,7 +187,7 @@ fn remote_error() -> AppError {
 }
 async fn owned(state: &AppState, source: &str, user: Uuid) -> Result<(), AppError> {
     let owned: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sources WHERE id=$1 AND owner_id=$2)")
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sources WHERE id=$1 AND owner_id=$2 AND kind='local_directory')")
             .bind(source)
             .bind(user)
             .fetch_one(&state.db)

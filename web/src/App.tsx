@@ -1,4 +1,5 @@
 import { linkRequest, mediaLink, detailLink, seriesLink, type LinkContext } from './mediaLinks'
+import SourceAgents, { type RemoteBook } from './SourceAgents'
 import SourceTranscoding from './SourceTranscoding'
 import ConnectDirectory from './ConnectDirectory'
 import { loadCatalogPage, type PersonalPage } from './catalogLoader'
@@ -22,7 +23,7 @@ import VideoPlayer from './VideoPlayer'
 import MusicPlayer from './MusicPlayer'
 import MusicPage from './MusicPage'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { BookOpen, ChevronDown, Compass, Film, FolderOpen, Headphones, Library, Menu, Plus, Search, Settings2, ShieldCheck, RefreshCw, Sparkles, Trash2 } from 'lucide-react'
+import { BookOpen, ChevronDown, Compass, Film, FolderOpen, Headphones, Library, Menu, Plus, Search, Server, Settings2, ShieldCheck, RefreshCw, Sparkles, Trash2 } from 'lucide-react'
 
 type MediaKind = 'All' | 'Video' | 'Music' | 'Books'
 type Source = { id: string; name: string; available: boolean; is_owner: boolean; can_access_media: boolean; acquisition_policy: AcquisitionPolicy }
@@ -34,6 +35,8 @@ async function readApi<T>(url: string, signal?: AbortSignal): Promise<T> {
 }
 
 function Workspace({ user, logout }: { user: User; logout: () => void }) {
+  const [agentsOpen, setAgentsOpen] = useState(false)
+  const [remoteBook, setRemoteBook] = useState<RemoteBook | null>(null)
   const [detailItem,setDetailItem]=useState<MediaItem|null>(null)
   const [linkedSeries, setLinkedSeries] = useState<LinkContext | null>(null)
   const [linkLoading, setLinkLoading] = useState(false)
@@ -317,6 +320,7 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
 
   const musicPlayer = playback && <MusicPlayer key="music" tracks={playback.tracks} index={playback.index} busy={actionBusy} onIndex={index => { void openMedia(playback.tracks[index], playback.tracks) }} onClose={() => setPlayback(null)}/>
   if (linkLoading || linkError) return <>{musicPlayer}<section className="watch-page"><main className="watch-main"><button className="watch-back" onClick={closeWatch}>Back to library</button><p role={linkError ? 'alert' : 'status'}>{linkError || 'Opening media link…'}</p></main></section></>
+  if (remoteBook) return <BookReader mediaUrl={remoteBook.url} userId={user.id} key={remoteBook.url} sourceId={remoteBook.sourceId} sourceName={remoteBook.sourceName} file={{ ...remoteBook.item, relative_path: remoteBook.item.id }} onClose={() => { setRemoteBook(null); setAgentsOpen(true) }}/>
   if (reading) return <BookReader userId={user.id} key={`${reading.source_id}:${reading.relative_path}`} sourceId={reading.source_id} sourceName={reading.source_name} file={reading} onClose={closeWatch} onNext={item=>{void openMedia(item,[item])}}/>
 
 
@@ -337,6 +341,7 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
       {sources.map(source => <button key={source.id} className={`source-row ${selectedSource?.id === source.id ? 'source-selected' : ''}`} onClick={() => { setSelectedSource(source); setGenre(''); setFilter('All'); setQuery(''); setMenuOpen(false); setActionError('') }}><span className="source-icon owner"><FolderOpen size={16} /></span><span className="source-copy"><strong>{source.name}</strong><small>{source.is_owner ? 'Owned source' : 'Shared with you'}</small></span><span className={`source-dot ${source.available ? 'online' : ''}`} /></button>)}
       {sourcesError && <p className="source-error no-sources" role="alert">{sourcesError}</p>}
       {sources.length === 0 && <p className="no-sources">No sources available yet.</p>}
+      <button className="add-source" onClick={() => setAgentsOpen(true)}><Server size={15}/> Source Agents</button>
       {user.is_admin && <button className="add-source" onClick={() => setConnectOpen(true)}><Plus size={15} /> Connect a directory</button>}
       <div className="sidebar-bottom">{user.is_admin&&<button className="nav-item" onClick={()=>setAdminSecurityOpen(true)}><Settings2 size={18}/>Administrator security</button>}<button className="nav-item" onClick={() => setSettingsOpen(true)}><Settings2 size={18} />Account settings</button><button className="nav-item" onClick={logout}>Sign out</button><div className="connection"><span className={`connection-dot ${apiStatus}`} />{apiStatus === 'connected' ? 'Connected to Grimoire' : apiStatus === 'offline' ? 'API not connected' : 'Connecting…'}</div></div>
     </aside>
@@ -363,6 +368,7 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
         {!musicActive&&<><MetadataCredits/><footer className="footer"><span>MADE FOR THE MOMENTS BETWEEN</span><span>GRIMOIRE <b>·</b> EARLY ACCESS</span></footer></>}
       </div>
     </main>
+    {agentsOpen && <SourceAgents onClose={() => setAgentsOpen(false)} onPermissions={source => setPermissionsSource({ ...source, available: true, is_owner: true, can_access_media: true, acquisition_policy: 'auto_deny' })} onBook={book => { setAgentsOpen(false); setPlayback(null); setVideo(null); setRemoteBook(book) }}/>}
     {permissionsSource && <SourcePermissions source={permissionsSource} ownerUsername={user.username} onClose={() => setPermissionsSource(null)} onSaved={() => setSourceRefresh(value => value + 1)}/>}
     {adminSecurityOpen&&user.is_admin&&<AdminSecurity onClose={()=>setAdminSecurityOpen(false)}/>}
     {settingsOpen && <AccountSettings onClose={() => setSettingsOpen(false)} />}
