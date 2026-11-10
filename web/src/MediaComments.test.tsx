@@ -7,11 +7,13 @@ import MediaComments from './MediaComments'
 
 it('renders comments as text and posts a reply to the selected comment', async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
-  const existing = { id: '1', parent_id: null, author: 'reader', reply_to: null, body: '<b>Hello</b>', created_at: 1700000000 }
+  const existing = { id: '1', parent_id: null, author: 'reader', reply_to: null, body: '<b>Hello</b>', created_at: 1700000000, removed: false }
   const reply = { ...existing, id: '2', parent_id: '1', reply_to: 'reader', author: 'viewer', body: 'My reply' }
   const fetch = vi.spyOn(api, 'apiFetch')
-    .mockResolvedValueOnce(Response.json({ comments: [existing], next: null }))
+    .mockResolvedValueOnce(Response.json({ comments: [existing], next: null, can_moderate: true }))
     .mockResolvedValueOnce(Response.json(reply, { status: 201 }))
+    .mockResolvedValueOnce(new Response(null, { status: 204 }))
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
   const host = document.createElement('div')
   document.body.append(host)
   const root = createRoot(host)
@@ -30,9 +32,16 @@ it('renders comments as text and posts a reply to the selected comment', async (
     expect(JSON.parse(fetch.mock.calls[1][1]?.body as string)).toEqual({ source_id: 'source', path: 'episode.mkv', body: 'My reply', parent_id: '1' })
     expect(host.querySelector('.comment-reply p')?.textContent).toBe('My reply')
     expect(host.querySelector('.comment-parent')?.textContent).toBe('In reply to reader')
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Delete comment by reader"]')!.click())
+    expect(fetch.mock.calls[2][0]).toBe('/api/media/comments/1?source_id=source&path=episode.mkv')
+    expect(fetch.mock.calls[2][1]?.method).toBe('DELETE')
+    expect(host.textContent).not.toContain('<b>Hello</b>')
+    expect(host.querySelector('.comment-reply p')?.textContent).toBe('My reply')
+    expect(host.querySelector('.comment-parent')?.textContent).toBe('In reply to Removed comment')
   } finally {
     await act(async () => root.unmount())
     host.remove()
+    confirm.mockRestore()
     fetch.mockRestore()
     vi.unstubAllGlobals()
   }

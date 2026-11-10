@@ -1,7 +1,7 @@
 //! Per-item discussions use the same access policy as playback and reading.
 use crate::{auth, catalog, progress, AppError, AppState};
 use axum::{
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::{header, StatusCode},
     response::IntoResponse,
     Extension, Json,
@@ -35,12 +35,14 @@ struct Comment {
     reply_to: Option<String>,
     body: String,
     created_at: f64,
+    removed: bool,
 }
 
 #[derive(Serialize)]
 struct Page {
     comments: Vec<Comment>,
     next: Option<String>,
+    can_moderate: bool,
 }
 
 pub async fn list(
@@ -55,8 +57,9 @@ pub async fn list(
     }
     let mut comments = sqlx::query_as::<_, Comment>(
         "SELECT c.id::text, c.parent_id::text, COALESCE(u.username, 'Deleted account') AS author,
-                CASE WHEN c.parent_id IS NOT NULL THEN COALESCE(pu.username, 'Deleted account') END AS reply_to,
-                c.body, EXTRACT(EPOCH FROM c.created_at)::float8 AS created_at
+                CASE WHEN p.removed_at IS NOT NULL THEN 'Removed comment'
+                     WHEN c.parent_id IS NOT NULL THEN COALESCE(pu.username, 'Deleted account') END AS reply_to,
+                c.body, EXTRACT(EPOCH FROM c.created_at)::float8 AS created_at, c.removed_at IS NOT NULL AS removed
          FROM media_comments c
          LEFT JOIN users u ON u.id=c.author_id
          LEFT JOIN media_comments p ON p.id=c.parent_id
@@ -80,8 +83,55 @@ pub async fn list(
     };
     Ok((
         [(header::CACHE_CONTROL, "private, no-store")],
-        Json(Page { comments, next }),
+        Json(Page {
+            comments,
+            next,
+            can_moderate: identity.user.is_admin,
+        }),
     ))
+}
+
+async fn lock_discussion(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    key: &str,
+) -> Result<(), AppError> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+        .bind(format!("comments:{key}"))
+        .execute(&mut **tx)
+        .await
+        .map_err(|_| auth::unavailable())?;
+    Ok(())
+}
+
+async fn authorized_write<'a>(
+    state: &'a AppState,
+    user_id: uuid::Uuid,
+    source_id: &str,
+) -> Result<sqlx::Transaction<'a, sqlx::Postgres>, AppError> {
+    let mut tx = state.db.begin().await.map_err(|_| auth::unavailable())?;
+    // Lock before checking access again, so a concurrent permission change cannot race the insert.
+    sqlx::query("SELECT id FROM sources WHERE id=$1 FOR SHARE")
+        .bind(source_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| auth::unavailable())?;
+    let allowed: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sources s WHERE s.id=$1 AND
+            (s.owner_id=$2 OR EXISTS(SELECT 1 FROM source_permissions p
+             WHERE p.source_id=s.id AND p.user_id=$2 AND p.can_discover AND p.can_access_media)))",
+    )
+    .bind(source_id)
+    .bind(user_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|_| auth::unavailable())?;
+    if !allowed {
+        return Err(AppError(
+            StatusCode::NOT_FOUND,
+            "Media access not granted.".into(),
+        ));
+    }
+    Ok(tx)
 }
 
 pub async fn post(
@@ -112,46 +162,21 @@ pub async fn post(
     )
     .await?;
 
-    let mut tx = state.db.begin().await.map_err(|_| auth::unavailable())?;
-    // Lock before checking access again, so a concurrent permission change cannot race the insert.
-    sqlx::query("SELECT id FROM sources WHERE id=$1 FOR SHARE")
-        .bind(&input.source_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|_| auth::unavailable())?;
-    let allowed: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM sources s WHERE s.id=$1 AND
-            (s.owner_id=$2 OR EXISTS(SELECT 1 FROM source_permissions p
-             WHERE p.source_id=s.id AND p.user_id=$2 AND p.can_discover AND p.can_access_media)))",
-    )
-    .bind(&input.source_id)
-    .bind(identity.user.id)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(|_| auth::unavailable())?;
-    if !allowed {
-        return Err(AppError(
-            StatusCode::NOT_FOUND,
-            "Media access not granted.".into(),
-        ));
-    }
+    let mut tx = authorized_write(&state, identity.user.id, &input.source_id).await?;
     let key = catalog::file_key(&input.source_id, &input.path);
     // Allocate IDs in commit order for each item, so cursor pagination cannot miss a late insert.
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
-        .bind(format!("comments:{key}"))
-        .execute(&mut *tx)
-        .await
-        .map_err(|_| auth::unavailable())?;
+    lock_discussion(&mut tx, &key).await?;
     let comment = sqlx::query_as::<_, Comment>(
         "WITH inserted AS (
              INSERT INTO media_comments(source_id,file_key,author_id,parent_id,body)
              SELECT $1,$2,$3,$4,$5 WHERE $4::bigint IS NULL OR EXISTS(
-                 SELECT 1 FROM media_comments WHERE source_id=$1 AND file_key=$2 AND id=$4)
+                 SELECT 1 FROM media_comments WHERE source_id=$1 AND file_key=$2 AND id=$4 AND removed_at IS NULL)
              RETURNING *
          )
          SELECT c.id::text,c.parent_id::text,$6::text AS author,
-                CASE WHEN c.parent_id IS NOT NULL THEN COALESCE(pu.username, 'Deleted account') END AS reply_to,
-                c.body, EXTRACT(EPOCH FROM c.created_at)::float8 AS created_at
+                CASE WHEN p.removed_at IS NOT NULL THEN 'Removed comment'
+                     WHEN c.parent_id IS NOT NULL THEN COALESCE(pu.username, 'Deleted account') END AS reply_to,
+                c.body, EXTRACT(EPOCH FROM c.created_at)::float8 AS created_at, c.removed_at IS NOT NULL AS removed
          FROM inserted c LEFT JOIN media_comments p ON p.id=c.parent_id
          LEFT JOIN users pu ON pu.id=p.author_id",
     )
@@ -171,4 +196,43 @@ pub async fn post(
         [(header::CACHE_CONTROL, "private, no-store")],
         Json(comment),
     ))
+}
+
+pub async fn remove(
+    State(state): State<AppState>,
+    Extension(identity): Extension<auth::Identity>,
+    Path(id): Path<i64>,
+    Query(item): Query<Listing>,
+) -> Result<StatusCode, AppError> {
+    if !identity.user.is_admin {
+        return Err(AppError(
+            StatusCode::FORBIDDEN,
+            "Only administrators can remove comments.".into(),
+        ));
+    }
+    progress::validate_media(&state, &identity.user, &item.source_id, &item.path).await?;
+    let mut tx = authorized_write(&state, identity.user.id, &item.source_id).await?;
+    let key = catalog::file_key(&item.source_id, &item.path);
+    lock_discussion(&mut tx, &key).await?;
+    let result = sqlx::query(
+        "UPDATE media_comments SET
+            removed_at=COALESCE(removed_at,now()), removed_by=CASE WHEN removed_at IS NULL THEN $4 ELSE removed_by END,
+            author_id=NULL, body='[Comment removed]'
+         WHERE source_id=$1 AND file_key=$2 AND id=$3",
+    )
+    .bind(&item.source_id)
+    .bind(key)
+    .bind(id)
+    .bind(identity.user.id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| auth::unavailable())?;
+    if result.rows_affected() == 0 {
+        return Err(AppError(
+            StatusCode::NOT_FOUND,
+            "Comment not found for this item.".into(),
+        ));
+    }
+    tx.commit().await.map_err(|_| auth::unavailable())?;
+    Ok(StatusCode::NO_CONTENT)
 }

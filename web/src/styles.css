@@ -154,3 +154,4 @@
 .music-comment-dialog::backdrop{background:#0009}
 .music-comment-dialog>header{padding:12px 16px}
 .music-comment-dialog>header h2{font-size:16px;margin:0;overflow-wrap:anywhere}
+.comment-actions{display:flex;gap:8px}

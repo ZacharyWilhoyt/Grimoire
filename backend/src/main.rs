@@ -631,6 +631,7 @@ fn app(state: AppState) -> Router {
                 .post(comments::post)
                 .layer(DefaultBodyLimit::max(24 * 1024)),
         )
+        .route("/api/media/comments/{id}", delete(comments::remove))
         .route(
             "/api/progress",
             get(progress::get)

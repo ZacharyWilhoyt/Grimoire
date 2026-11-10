@@ -5654,6 +5654,93 @@ async fn media_comments_and_replies_follow_item_permissions(pool: PgPool) {
     assert_eq!(last["comments"].as_array().unwrap().len(), 1);
     assert!(last["next"].is_null());
 
+    let comment_id = posted["id"].as_str().unwrap();
+    let remove = format!("{endpoint}/{comment_id}?source_id={source}&path=clip.mp4");
+    let wrong_item = format!("{endpoint}/{comment_id}?source_id={source}&path=story.epub");
+    assert_eq!(
+        request(
+            &state,
+            Method::DELETE,
+            &remove,
+            Some(&viewer),
+            Some(&viewer_csrf),
+            Some(ORIGIN),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    sqlx::query("UPDATE users SET is_admin=true WHERE id=$1 OR id=$2")
+        .bind(owner_id)
+        .bind(viewer_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        request(
+            &state,
+            Method::DELETE,
+            &remove,
+            Some(&owner),
+            None,
+            Some(ORIGIN),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::DELETE,
+            &wrong_item,
+            Some(&owner),
+            Some(&owner_csrf),
+            Some(ORIGIN),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::DELETE,
+            &remove,
+            Some(&owner),
+            Some(&owner_csrf),
+            Some(ORIGIN),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    let moderated =
+        body(request(&state, Method::GET, &list, Some(&owner), None, None, None).await).await;
+    assert_eq!(moderated["can_moderate"], true);
+    assert_eq!(moderated["comments"][0]["removed"], true);
+    assert_eq!(moderated["comments"][0]["body"], "[Comment removed]");
+    assert_eq!(moderated["comments"][1]["body"], "A reply");
+    assert_eq!(moderated["comments"][1]["reply_to"], "Removed comment");
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            endpoint,
+            Some(&owner),
+            Some(&owner_csrf),
+            Some(ORIGIN),
+            Some(reply.clone())
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+
     sqlx::query("DELETE FROM source_permissions WHERE source_id=$1 AND user_id=$2")
         .bind(&source)
         .bind(viewer_id)
@@ -5675,6 +5762,20 @@ async fn media_comments_and_replies_follow_item_permissions(pool: PgPool) {
             Some(&viewer_csrf),
             Some(ORIGIN),
             Some(reply)
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::DELETE,
+            &remove,
+            Some(&viewer),
+            Some(&viewer_csrf),
+            Some(ORIGIN),
+            None
         )
         .await
         .status(),

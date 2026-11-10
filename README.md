@@ -557,6 +557,8 @@ Use **Comments** in the video or book sidebar, or the speech-bubble button next
 to a track on the Music page. Comments and replies belong to that specific item.
 Accounts need media access to read or post. Comment text is displayed as plain
 text, and each account can post up to 12 comments or replies per minute.
+Instance administrators with media access can delete abusive comments. The comment
+text is erased and existing replies stay in the discussion.
 
 ### Personal media pages
 
