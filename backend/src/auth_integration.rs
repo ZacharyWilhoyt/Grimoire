@@ -5783,3 +5783,115 @@ async fn media_comments_and_replies_follow_item_permissions(pool: PgPool) {
     );
     fs::remove_dir_all(root).unwrap();
 }
+
+#[sqlx::test(migrations = false)]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn source_provider_upgrade_preserves_local_identity_and_grants(pool: PgPool) {
+    let all = sqlx::migrate!();
+    let baseline = sqlx::migrate::Migrator {
+        migrations: std::borrow::Cow::Owned(
+            all.iter()
+                .filter(|migration| migration.version <= 18)
+                .cloned()
+                .collect(),
+        ),
+        ..sqlx::migrate::Migrator::DEFAULT
+    };
+    baseline.run(&pool).await.unwrap();
+    let app_state = state(pool.clone());
+    let (owner_cookie, _, owner) = register_user(&app_state, "upgrade_owner").await;
+    let (viewer_cookie, _, viewer) = register_user(&app_state, "upgrade_viewer").await;
+    let owner = Uuid::parse_str(owner["id"].as_str().unwrap()).unwrap();
+    let viewer = Uuid::parse_str(viewer["id"].as_str().unwrap()).unwrap();
+    let root = shared_media_fixture();
+    let source = "existing-local-source";
+    let key = catalog::file_key(source, "clip.mp4");
+    sqlx::query("INSERT INTO sources(id,owner_id,name,path) VALUES($1,$2,'Existing',$3)")
+        .bind(source)
+        .bind(owner)
+        .bind(root.to_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO source_permissions(source_id,user_id,can_discover,can_access_media,acquisition_policy) VALUES($1,$2,true,true,'manual_approval')")
+        .bind(source).bind(viewer).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO media_progress(user_id,file_key,source_id,relative_path,position,revision) VALUES($1,$2,$3,'clip.mp4',42,1)")
+        .bind(viewer).bind(&key).bind(source).execute(&pool).await.unwrap();
+
+    all.run(&pool).await.unwrap();
+    all.run(&pool).await.unwrap();
+    let node = Uuid::new_v4();
+    sqlx::query("INSERT INTO source_nodes(id,owner_id) VALUES($1,$2)")
+        .bind(node)
+        .bind(owner)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let remote = "unpublished-remote-source";
+    let insert = "INSERT INTO sources(id,owner_id,name,kind,node_id) VALUES($1,$2,'Remote','remote_agent',$3)";
+    assert!(sqlx::query(insert)
+        .bind(remote)
+        .bind(viewer)
+        .bind(node)
+        .execute(&pool)
+        .await
+        .is_err());
+    sqlx::query(insert)
+        .bind(remote)
+        .bind(owner)
+        .bind(node)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let catalog = body(
+        request(
+            &app_state,
+            Method::GET,
+            &format!("/api/sources/{source}/media"),
+            Some(&viewer_cookie),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    let clip = catalog
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["relative_path"] == "clip.mp4")
+        .unwrap();
+    assert_eq!(clip["file_key"], key);
+    assert_eq!(clip["progress"]["position"], 42.0);
+    let sources = body(
+        request(
+            &app_state,
+            Method::GET,
+            "/api/sources",
+            Some(&viewer_cookie),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(sources[0]["acquisition_policy"], "manual_approval");
+    assert_eq!(
+        request(
+            &app_state,
+            Method::GET,
+            &format!("/api/sources/{remote}/media"),
+            Some(&owner_cookie),
+            None,
+            None,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    fs::remove_dir_all(root).unwrap();
+}

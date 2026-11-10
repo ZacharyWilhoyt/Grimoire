@@ -280,7 +280,7 @@ async fn reference(
         return Err(crate::bad_request("Invalid file path."));
     }
     let root = if owner {
-        let path:Option<String>=sqlx::query_scalar("SELECT s.path FROM sources s JOIN users u ON u.id=s.owner_id WHERE s.id=$1 AND s.owner_id=$2 AND NOT u.disabled").bind(source).bind(user.id).fetch_optional(&state.db).await.map_err(|_|auth::unavailable())?;
+        let path:Option<String>=sqlx::query_scalar("SELECT s.path FROM sources s JOIN users u ON u.id=s.owner_id WHERE s.id=$1 AND s.kind='local_directory' AND s.owner_id=$2 AND NOT u.disabled").bind(source).bind(user.id).fetch_optional(&state.db).await.map_err(|_|auth::unavailable())?;
         PathBuf::from(path.ok_or_else(not_found)?)
     } else {
         crate::media_root(state, user, source).await?
@@ -958,7 +958,7 @@ async fn run_scan(
     let mut skipped = 0;
     let mut warnings = 0;
     for (index, file) in files.into_iter().enumerate() {
-        let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sources s JOIN users u ON u.id=s.owner_id WHERE s.id=$1 AND s.owner_id=$2 AND NOT u.disabled)").bind(source).bind(user.id).fetch_one(&state.db).await.map_err(|_|auth::unavailable())?;
+        let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sources s JOIN users u ON u.id=s.owner_id WHERE s.id=$1 AND s.kind='local_directory' AND s.owner_id=$2 AND NOT u.disabled)").bind(source).bind(user.id).fetch_one(&state.db).await.map_err(|_|auth::unavailable())?;
         if !active {
             return Err(not_found());
         }

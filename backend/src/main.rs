@@ -16,6 +16,7 @@ mod music;
 mod permissions;
 mod progress;
 mod security;
+mod sources;
 mod statistics;
 mod subtitles;
 mod subtitles_mkv;
@@ -157,7 +158,7 @@ async fn list_sources(
     axum::Extension(identity): axum::Extension<auth::Identity>,
 ) -> Result<Json<Vec<SourceSummary>>, AppError> {
     let sources = sqlx::query_as::<_, Source>(
-        "SELECT s.id,s.name,s.path,(s.owner_id=$1) AS is_owner,(s.owner_id=$1 OR COALESCE(p.can_discover AND p.can_access_media,false)) AS can_access_media,COALESCE(p.acquisition_policy,'auto_deny') AS acquisition_policy FROM sources s LEFT JOIN source_permissions p ON p.source_id=s.id AND p.user_id=$1 WHERE s.owner_id=$1 OR p.can_discover ORDER BY s.created_at,s.id",
+        "SELECT s.id,s.name,s.path,(s.owner_id=$1) AS is_owner,(s.owner_id=$1 OR COALESCE(p.can_discover AND p.can_access_media,false)) AS can_access_media,COALESCE(p.acquisition_policy,'auto_deny') AS acquisition_policy FROM sources s LEFT JOIN source_permissions p ON p.source_id=s.id AND p.user_id=$1 WHERE s.kind='local_directory' AND (s.owner_id=$1 OR p.can_discover) ORDER BY s.created_at,s.id",
     )
     .bind(identity.user.id)
     .fetch_all(&state.db)
@@ -250,15 +251,9 @@ async fn media_root(
     user: &auth::User,
     source_id: &str,
 ) -> Result<PathBuf, AppError> {
-    let path: Option<String> = sqlx::query_scalar(
-        "SELECT s.path FROM sources s WHERE s.id=$1 AND (s.owner_id=$2 OR EXISTS(SELECT 1 FROM source_permissions p WHERE p.source_id=s.id AND p.user_id=$2 AND p.can_discover AND p.can_access_media))",
-    ).bind(source_id).bind(user.id).fetch_optional(&state.db).await.map_err(|_| auth::unavailable())?;
-    path.map(PathBuf::from).ok_or_else(|| {
-        AppError(
-            StatusCode::NOT_FOUND,
-            "Source not found or media access not granted.".into(),
-        )
-    })
+    Ok(sources::LocalSource::authorized(state, user.id, source_id)
+        .await?
+        .path)
 }
 
 async fn remove_source(

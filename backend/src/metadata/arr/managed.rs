@@ -177,11 +177,12 @@ pub async fn create(
     let subpath = subpath(&input.source_subpath)?;
     let mut tx = state.db.begin().await.map_err(|_| auth::unavailable())?;
     owner_lock(&mut tx, &source, identity.user.id).await?;
-    let source_path: String = sqlx::query_scalar("SELECT path FROM sources WHERE id=$1")
-        .bind(&source)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|_| auth::unavailable())?;
+    let source_path: String =
+        sqlx::query_scalar("SELECT path FROM sources WHERE id=$1 AND kind='local_directory'")
+            .bind(&source)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|_| auth::unavailable())?;
     let root = tokio::fs::canonicalize(&source_path)
         .await
         .map_err(|_| crate::bad_request("The source directory is unavailable."))?;
@@ -487,11 +488,12 @@ mod tests {
             one.secret(&state.metadata.arr).unwrap(),
             two.secret(&state.metadata.arr).unwrap()
         );
-        let calls = calls.lock().unwrap();
-        assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0]["writable_media"], false);
-        assert_eq!(calls[1]["writable_media"], true);
-        drop(calls);
+        {
+            let calls = calls.lock().unwrap();
+            assert_eq!(calls.len(), 2);
+            assert_eq!(calls[0]["writable_media"], false);
+            assert_eq!(calls[1]["writable_media"], true);
+        }
         server.abort();
         tokio::fs::remove_dir_all(root).await.unwrap();
     }

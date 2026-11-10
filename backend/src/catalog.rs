@@ -1,5 +1,8 @@
 //! Live, bounded catalog scans plus per-account saved items and open history.
-use crate::{auth, media_root, resolve_media_path, scan_directory, AppError, AppState, MediaFile};
+use crate::{
+    auth, media_root, resolve_media_path, scan_directory, sources::LocalSource, AppError, AppState,
+    MediaFile,
+};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -79,11 +82,11 @@ struct PersonalRow {
 pub fn file_key(source: &str, path: &str) -> String {
     auth::digest(&format!("{source}\0{path}"))
 }
-fn item(source: &MediaSource, file: MediaFile) -> Item {
+fn item(source_id: &str, source_name: &str, file: MediaFile) -> Item {
     Item {
-        file_key: file_key(&source.id, &file.relative_path),
-        source_id: source.id.clone(),
-        source_name: source.name.clone(),
+        file_key: file_key(source_id, &file.relative_path),
+        source_id: source_id.into(),
+        source_name: source_name.into(),
         file,
         saved_at: None,
         last_opened_at: None,
@@ -145,7 +148,7 @@ pub async fn discover(
     State(state): State<AppState>,
     Extension(identity): Extension<auth::Identity>,
 ) -> Result<Json<Catalog>, AppError> {
-    let sources = sqlx::query_as::<_, MediaSource>("SELECT s.id,s.name,s.path FROM sources s WHERE s.owner_id=$1 OR EXISTS(SELECT 1 FROM source_permissions p WHERE p.source_id=s.id AND p.user_id=$1 AND p.can_discover AND p.can_access_media) ORDER BY s.created_at,s.id LIMIT 33")
+    let sources = sqlx::query_as::<_, MediaSource>("SELECT s.id,s.name,s.path FROM sources s WHERE s.kind='local_directory' AND (s.owner_id=$1 OR EXISTS(SELECT 1 FROM source_permissions p WHERE p.source_id=s.id AND p.user_id=$1 AND p.can_discover AND p.can_access_media)) ORDER BY s.created_at,s.id LIMIT 33")
         .bind(identity.user.id).fetch_all(&state.db).await.map_err(|_| auth::unavailable())?;
     let permit = scan_permit(&state).await?;
     let mut result = tokio::task::spawn_blocking(move || {
@@ -169,7 +172,7 @@ pub async fn discover(
                     result.truncated = true;
                     break;
                 }
-                result.items.push(item(&source, file));
+                result.items.push(item(&source.id, &source.name, file));
             }
             if result.items.len() >= MAX_ITEMS {
                 result.truncated = true;
@@ -190,32 +193,20 @@ pub async fn source_items(
     user: &auth::User,
     source_id: &str,
 ) -> Result<Vec<Item>, AppError> {
-    let root = media_root(state, user, source_id).await?;
-    let name: String = sqlx::query_scalar("SELECT name FROM sources WHERE id=$1")
-        .bind(source_id)
-        .fetch_one(&state.db)
-        .await
-        .map_err(|_| auth::unavailable())?;
-    if std::fs::read_dir(&root).is_err() {
-        return Err(AppError(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "This source is currently unavailable.".into(),
-        ));
-    }
+    let source = LocalSource::authorized(state, user.id, source_id).await?;
     let permit = scan_permit(state).await?;
-    let files = tokio::task::spawn_blocking(move || {
+    let mut items = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        scan_directory(&root)
+        Ok::<_, AppError>(
+            source
+                .list()?
+                .into_iter()
+                .map(|file| item(&source.id, &source.name, file))
+                .collect::<Vec<_>>(),
+        )
     })
     .await
-    .map_err(|_| auth::unavailable())?
-    .map_err(|_| auth::unavailable())?;
-    let source = MediaSource {
-        id: source_id.into(),
-        name,
-        path: String::new(),
-    };
-    let mut items: Vec<_> = files.into_iter().map(|file| item(&source, file)).collect();
+    .map_err(|_| auth::unavailable())??;
     media_root(state, user, source_id).await?;
     enrich(state, user.id, &mut items).await?;
     Ok(items)
@@ -235,9 +226,9 @@ async fn personal_page(
     } else {
         ("saved_at", "m.saved_at")
     };
-    let sql = format!("SELECT m.file_key,m.source_id,s.name AS source_name,s.path,m.relative_path,extract(epoch from m.saved_at)::float8 AS saved_at,extract(epoch from m.last_opened_at)::float8 AS last_opened_at FROM user_media m JOIN sources s ON s.id=m.source_id WHERE m.user_id=$1 AND m.{column} IS NOT NULL AND (s.owner_id=$1 OR EXISTS(SELECT 1 FROM source_permissions p WHERE p.source_id=s.id AND p.user_id=$1 AND p.can_discover AND p.can_access_media)) ORDER BY {order} DESC,m.file_key LIMIT 101 OFFSET $2");
+    let sql = format!("SELECT m.file_key,m.source_id,s.name AS source_name,s.path,m.relative_path,extract(epoch from m.saved_at)::float8 AS saved_at,extract(epoch from m.last_opened_at)::float8 AS last_opened_at FROM user_media m JOIN sources s ON s.id=m.source_id WHERE m.user_id=$1 AND s.kind='local_directory' AND m.{column} IS NOT NULL AND (s.owner_id=$1 OR EXISTS(SELECT 1 FROM source_permissions p WHERE p.source_id=s.id AND p.user_id=$1 AND p.can_discover AND p.can_access_media)) ORDER BY {order} DESC,m.file_key LIMIT 101 OFFSET $2");
     let sql = if mode == 2 {
-        "SELECT m.file_key,m.source_id,s.name AS source_name,s.path,m.relative_path,extract(epoch from u.saved_at)::float8 AS saved_at,extract(epoch from u.last_opened_at)::float8 AS last_opened_at FROM media_progress m JOIN sources s ON s.id=m.source_id LEFT JOIN user_media u ON u.user_id=m.user_id AND u.file_key=m.file_key WHERE m.user_id=$1 AND (NOT m.completed OR (lower(m.relative_path) NOT LIKE '%.epub' AND lower(m.relative_path) NOT LIKE '%.cbz')) AND (m.position>0 OR m.locator IS NOT NULL) AND (m.total IS NULL OR m.position<m.total) AND (s.owner_id=$1 OR EXISTS(SELECT 1 FROM source_permissions p WHERE p.source_id=s.id AND p.user_id=$1 AND p.can_discover AND p.can_access_media)) ORDER BY m.updated_at DESC,m.file_key LIMIT 101 OFFSET $2".to_string()
+        "SELECT m.file_key,m.source_id,s.name AS source_name,s.path,m.relative_path,extract(epoch from u.saved_at)::float8 AS saved_at,extract(epoch from u.last_opened_at)::float8 AS last_opened_at FROM media_progress m JOIN sources s ON s.id=m.source_id LEFT JOIN user_media u ON u.user_id=m.user_id AND u.file_key=m.file_key WHERE m.user_id=$1 AND s.kind='local_directory' AND (NOT m.completed OR (lower(m.relative_path) NOT LIKE '%.epub' AND lower(m.relative_path) NOT LIKE '%.cbz')) AND (m.position>0 OR m.locator IS NOT NULL) AND (m.total IS NULL OR m.position<m.total) AND (s.owner_id=$1 OR EXISTS(SELECT 1 FROM source_permissions p WHERE p.source_id=s.id AND p.user_id=$1 AND p.can_discover AND p.can_access_media)) ORDER BY m.updated_at DESC,m.file_key LIMIT 101 OFFSET $2".to_string()
     } else {
         sql
     };
