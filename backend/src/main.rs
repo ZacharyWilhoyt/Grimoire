@@ -18,6 +18,7 @@ mod metadata;
 mod music;
 mod nodes;
 mod permissions;
+mod playback;
 mod progress;
 mod relay;
 mod remote_catalog;
@@ -57,6 +58,7 @@ struct AppState {
     metadata: Arc<metadata::Runtime>,
     video_audio: Arc<video_audio::Runtime>,
     relay: Arc<relay::Runtime>,
+    playback: Arc<playback::Runtime>,
     transcode: Arc<transcode::Runtime>,
 }
 
@@ -592,6 +594,7 @@ fn app(state: AppState) -> Router {
     use axum::{extract::DefaultBodyLimit, middleware};
     let protected = Router::new()
         .merge(catalog_matching::routes())
+        .merge(playback::routes())
         .route(
             "/api/sources/{source_id}/metadata/group-membership",
             axum::routing::post(metadata::groups::join).layer(DefaultBodyLimit::max(16 * 1024)),
@@ -945,6 +948,7 @@ async fn main() {
         metadata: Arc::new(metadata::Runtime::new()),
         video_audio: Arc::new(crate::video_audio::Runtime::new()),
         relay: Arc::new(crate::relay::Runtime::new()),
+        playback: Arc::new(crate::playback::Runtime::default()),
         transcode: Arc::new(crate::transcode::Runtime::new()),
     };
     if state.tls.managed.is_some() && !state.network.require_proxy {

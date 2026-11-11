@@ -1,3 +1,4 @@
+import {PlaybackSource, resolvePlayback, switchPlayback, type PlaybackRoute, type ResumePoint} from './playbackRouting'
 import { linkRequest, mediaLink, detailLink, seriesLink, type LinkContext } from './mediaLinks'
 import SourceAgents, { type RemoteBook, type RemoteSource, type SourceAgent } from './SourceAgents'
 import SourceTranscoding from './SourceTranscoding'
@@ -57,6 +58,19 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
   const [reading, setReading] = useState<MediaItem | null>(null)
   const [video, setVideo] = useState<MediaItem | null>(null)
   const [miniVideo, setMiniVideo] = useState(false)
+  const [route, setRoute] = useState<PlaybackRoute>()
+  const routeRef = useRef<PlaybackRoute | undefined>(undefined)
+  const attempt = useRef(0)
+  const switching = useRef(false)
+  const opening = useRef(false)
+  const capture = useRef<(() => ResumePoint) | null>(null)
+  const [routeBusy, setRouteBusy] = useState(false)
+  const [routeMessage, setRouteMessage] = useState('')
+  const [resumePoint, setResumePoint] = useState<ResumePoint>()
+  const clearRoute = () => {
+    attempt.current++; routeRef.current=undefined; switching.current=false; opening.current=false
+    setRoute(undefined); setRouteBusy(false); setRouteMessage(''); setResumePoint(undefined);setActionBusy(false)
+  }
   const [playback, setPlayback] = useState<{ tracks: MediaItem[]; index: number } | null>(null)
   const [filter, setFilter] = useState<MediaKind>('All')
   const [query, setQuery] = useState('')
@@ -210,23 +224,75 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
     setSaved(items => personal.saved_at === null ? items.filter(old => old.file_key !== item.file_key) : [updated, ...items.filter(old => old.file_key !== item.file_key)])
     if (personal.last_opened_at !== null) setRecent(items => [updated, ...items.filter(old => old.file_key !== item.file_key)])
   }
-  const openMedia = async (item: MediaItem, queue: MediaItem[], updateUrl = true, signal?: AbortSignal) => {
-    if (!item.available) { setActionError('This media is currently unavailable for playback.'); return }
+  const openMedia = async (requested: MediaItem, queue: MediaItem[], updateUrl = true, signal?: AbortSignal) => {
+    if (!requested.available && !requested.logical_id) { setActionError('This media is currently unavailable for playback.'); return }
+    const generation = ++attempt.current
+    opening.current=true;switching.current=false;setRouteBusy(false);setRouteMessage('')
     setActionBusy(true); setActionError('')
     try {
-      const response = await apiFetch('/api/activity/open', { signal, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source_id: item.source_id, relative_path: item.relative_path }) })
-      const data = await response.json()
-      if (!response.ok) throw new Error(data.error ?? 'Could not open this media.')
-      if (signal?.aborted) return
+      let resolved:PlaybackRoute|undefined
+      if(requested.logical_id) {
+        try {resolved=await resolvePlayback(requested,signal)}
+        catch(error) {if(requested.remote||!requested.available||signal?.aborted)throw error}
+      }
+      if (signal?.aborted || generation!==attempt.current) return
+      let item=resolved?.item??requested
+      let response:Response
+      for(let retry=0;;retry++) {
+        response=await apiFetch('/api/activity/open',{signal,method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source_id:item.source_id,relative_path:item.relative_path})})
+        if(response.ok||!resolved||retry>=3||![404,502,503,504].includes(response.status))break
+        resolved=await switchPlayback(resolved)
+        if(signal?.aborted||generation!==attempt.current)return
+        item=resolved.item
+      }
+      const data=await response.json()
+      if(!response.ok)throw new Error(data.error??'Could not open this media.')
+      if(signal?.aborted||generation!==attempt.current)return
+      routeRef.current=resolved;setRoute(resolved)
+      const previous=requested.progress
+      setResumePoint(resolved && previous && item.file_key!==requested.file_key && item.kind!=='music'
+        ? {position:previous.position,total:previous.total??undefined,exact:resolved.exact}
+        : undefined)
       patchPersonal(item, data as PersonalState)
       setDetailItem(null);setReading(null); setVideo(null); setPlayback(null); setLinkedSeries(null)
       if (updateUrl) window.history.pushState(null, '', item.kind==='music'?'/#music':mediaLink(item.source_id, item.relative_path))
       if (item.kind === 'book') setReading(item)
       else if (item.kind === 'video') { setMiniVideo(false); setVideo(item) }
-      else { const tracks = queue.some(track => track.file_key === item.file_key) ? queue : [item]; setPlayback({ tracks, index: tracks.findIndex(track => track.file_key === item.file_key) }) }
-    } catch (error) { if (signal?.aborted) return; setActionError(error instanceof Error ? error.message : 'Could not open media.'); setPlayback(null) }
-    finally { setActionBusy(false) }
+      else {
+        const matchingFile = queue.findIndex(track=>track.file_key===requested.file_key)
+        const index = matchingFile>=0?matchingFile:queue.findIndex(track => logicalKey(track) === logicalKey(requested))
+        setPlayback(index<0?{tracks:[item],index:0}:{tracks:queue.map((track,i)=>i===index?item:track),index})
+      }
+    } catch (error) {
+      if (!signal?.aborted && generation===attempt.current) setActionError(error instanceof Error ? error.message : 'Could not open media.')
+    } finally { if(generation===attempt.current){opening.current=false;setActionBusy(false)} }
   }
+  const changeSource = async (point: ResumePoint, prefer?: string) => {
+    const current=routeRef.current
+    if(!current||opening.current||switching.current||prefer===current.location)return
+    const generation=attempt.current
+    switching.current=true;setRouteBusy(true);setRouteMessage('')
+    try {
+      const next=await switchPlayback(current,prefer)
+      if(generation!==attempt.current)return
+      routeRef.current=next;setRoute(next)
+      setResumePoint(next.item.kind==='book'&&!next.exact?undefined:{...point,exact:next.exact})
+      if(next.item.kind==='book')setReading(next.item)
+      else if(next.item.kind==='video')setVideo(next.item)
+      else setPlayback(previous=>previous?{...previous,tracks:previous.tracks.map((track,i)=>i===previous.index?next.item:track)}:previous)
+      if(next.item.kind!=='music'&&!miniVideo)window.history.replaceState(null,'',mediaLink(next.item.source_id,next.item.relative_path))
+      void apiFetch('/api/activity/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source_id:next.item.source_id,relative_path:next.item.relative_path})}).catch(()=>{})
+    } catch(error) {
+      if(generation===attempt.current)setRouteMessage(error instanceof Error?error.message:'No compatible playback source is available. Your progress is retained.')
+    } finally {if(generation===attempt.current){switching.current=false;setRouteBusy(false)}}
+  }
+  const registerCapture = (read: (()=>ResumePoint)|null) => {capture.current=read}
+  const routeControls = route ? {
+    resume:resumePoint,
+    sourceControl:<PlaybackSource route={route} busy={routeBusy} message={routeMessage} onSelect={source=>{void changeSource(capture.current?.()??{position:0},source)}}/>,
+    onSourceFailure:(point:ResumePoint)=>{void changeSource(point)},
+    onCapture:registerCapture,
+  } : {}
   useEffect(() => {
     let controller = new AbortController()
     let initializing=true
@@ -235,6 +301,7 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
       controller.abort(); controller = new AbortController()
       const signal = controller.signal
       const url = linkRequest(window.location.search)
+      if(routeRef.current?.item.kind!=='music')clearRoute()
       setDetailItem(null);setVideo(null); setReading(null); setLinkedSeries(null); setLinkError('')
       if (!url) { setLinkLoading(false); return }
       setLinkLoading(true)
@@ -251,7 +318,7 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
     return () => { controller.abort(); window.removeEventListener('popstate', load) }
     // Resolve URLs only on entry/browser navigation. Ordinary item selection updates history directly.
   }, [])
-  const closeWatch = () => { setDetailItem(null);setVideo(null); setReading(null); setLinkedSeries(null); setLinkError(''); window.history.pushState(null, '', '/#discover') }
+  const closeWatch = () => { clearRoute();setDetailItem(null);setVideo(null); setReading(null); setLinkedSeries(null); setLinkError(''); window.history.pushState(null, '', '/#discover') }
   const showDetails=(item:MediaItem)=>{setDetailItem(item);window.history.pushState(null,'',detailLink(item.source_id,item.relative_path))}
   const showSeries=async(item:MediaItem, season?:string|null, reference?: {source: string; group: string})=>{
     const group=reference?.group??item.metadata?.group?.id;if(!group)return
@@ -345,10 +412,10 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
     { label: 'For you' as PageName, icon: Sparkles }, { label: 'Discover' as PageName, icon: Compass }, { label: 'My library' as PageName, icon: Library }, {label:'Music' as PageName,icon:Headphones},
   ]
 
-  const musicPlayer = playback && <MusicPlayer key="music" tracks={playback.tracks} index={playback.index} busy={actionBusy} onIndex={index => { void openMedia(playback.tracks[index], playback.tracks) }} onClose={() => setPlayback(null)}/>
+  const musicPlayer = playback && <MusicPlayer {...routeControls} key="music" tracks={playback.tracks} index={playback.index} busy={actionBusy} onIndex={index => { void openMedia(playback.tracks[index], playback.tracks) }} onClose={() => {clearRoute();setPlayback(null)}}/>
   if (linkLoading || linkError) return <>{musicPlayer}<section className="watch-page"><main className="watch-main"><button className="watch-back" onClick={closeWatch}>Back to library</button><p role={linkError ? 'alert' : 'status'}>{linkError || 'Opening media link…'}</p></main></section></>
   if (remoteBook) return <BookReader mediaUrl={remoteBook.url} userId={user.id} key={remoteBook.url} sourceId={remoteBook.sourceId} sourceName={remoteBook.sourceName} file={{ ...remoteBook.item, relative_path: remoteBook.item.id }} onClose={() => { setRemoteBook(null); setAgentsOpen(true) }}/>
-  if (reading) return <BookReader mediaUrl={reading.media_url} remoteProgress={reading.remote} userId={user.id} key={`${reading.source_id}:${reading.relative_path}`} sourceId={reading.source_id} sourceName={reading.source_name} file={reading} onClose={closeWatch} onNext={item=>{void openMedia(item,[item])}}/>
+  if (reading) return <BookReader {...routeControls} mediaUrl={reading.media_url} remoteProgress={reading.remote} userId={user.id} key={`${reading.source_id}:${reading.relative_path}`} sourceId={reading.source_id} sourceName={reading.source_name} file={reading} onClose={closeWatch} onNext={item=>{void openMedia(item,[item])}}/>
 
 
   if(linkedSeries?.members[0]?.kind==='music'&&!detailItem) return <>{musicPlayer}<section className="series-page"><header className="watch-header"><button className="watch-back" onClick={closeWatch}>Back to library</button><h1>{linkedSeries.label??'Album'}</h1></header>{actionError&&<p role="alert">{actionError}</p>}<MediaCollection items={linkedSeries.members} groupBy="none" busy={actionBusy} onOpen={(item,queue)=>{void openMedia(item,queue)}} onSave={item=>{void toggleSaved(item)}} onMetadata={item=>item.remote?showDetails(item):setMetadataItem(item)} onGroupMetadata={setGroupItem}/>{metadataItem&&<MetadataEditor item={metadataItem} onClose={()=>setMetadataItem(null)} onUpdated={refreshDetails}/>} {groupItem&&<GroupEditor item={groupItem} onClose={()=>setGroupItem(null)} onUpdated={refreshDetails}/>}</section></>
@@ -358,7 +425,7 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
       onSeason={season=>{if(members[0])void showSeries(members[0],season,linkedSeries?.series_source_id&&linkedSeries.series_group_id?{source:linkedSeries.series_source_id,group:linkedSeries.series_group_id}:undefined)}} label={linkedSeries?.label} series={!detailItem} catalog={catalog} busy={actionBusy} error={actionError} onClose={closeWatch} onOpen={(item,queue)=>{void openMedia(item,queue)}} onSave={item=>{void toggleSaved(item)}} onDetails={showDetails} onSeries={item=>{void showSeries(item)}} onMetadata={item=>item.remote?showDetails(item):setMetadataItem(item)} onGroupMetadata={setGroupItem}/>{metadataItem&&<MetadataEditor item={metadataItem} onClose={()=>setMetadataItem(null)} onUpdated={refreshDetails}/>}
     {groupItem&&<GroupEditor key={groupItem.metadata?.group?.id} item={groupItem} onClose={()=>setGroupItem(null)} onUpdated={refreshDetails}/>}</>
   }
-  return <>{musicPlayer}{video && <VideoPlayer mediaUrl={video.media_url} userId={user.id} key={`${video.source_id}:${video.relative_path}`} sourceId={video.source_id} sourceName={video.source_name} file={video} mini={miniVideo} onRestore={() => { setMiniVideo(false); window.history.pushState(null, '', mediaLink(video.source_id, video.relative_path)) }} onDismiss={() => setVideo(null)} onNext={item => { void openMedia(item, [item]) }} onClose={() => { setMiniVideo(true); window.history.pushState(null, '', '/#discover') }}/>}
+  return <>{musicPlayer}{video && <VideoPlayer {...routeControls} mediaUrl={video.media_url} userId={user.id} key={`${video.source_id}:${video.relative_path}`} sourceId={video.source_id} sourceName={video.source_name} file={video} mini={miniVideo} onRestore={() => { setMiniVideo(false); window.history.pushState(null, '', mediaLink(video.source_id, video.relative_path)) }} onDismiss={() => {clearRoute();setVideo(null)}} onNext={item => { void openMedia(item, [item]) }} onClose={() => { setMiniVideo(true); window.history.pushState(null, '', '/#discover') }}/>}
   <div className={`app-shell ${musicActive?'music-shell':''}`} style={video && !miniVideo ? {display:'none'} : undefined}>
     <aside className={`sidebar ${menuOpen ? 'open' : ''}`}>
       <a className="brand" href="#for-you" onClick={event => { event.preventDefault(); navigate('For you') }}><img className="brand-logo" src="/logo.svg" alt="" aria-hidden="true" width="38" height="38" /><span>grimoire<span className="brand-dot">.</span></span></a>

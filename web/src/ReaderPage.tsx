@@ -1,8 +1,8 @@
 import {useEffect,useRef,useState} from 'react'
-import {archivePath,isImage,parseXml,type BookArchive} from './bookArchive'
+import {archivePath,isImage,parseXml,BookDeliveryError,type BookArchive} from './bookArchive'
 import {sanitizeChapter,chapterDocument} from './epubContent'
 import type {ReaderSettings} from './readerSettings'
-export default function ReaderPage({archive,path,index,comic,settings,onReady,onVisible,onCozy,lazy=false}:{archive:BookArchive;path:string;index:number;comic:boolean;settings:ReaderSettings;onReady:(index:number,width:number,height:number)=>void;onVisible?:(index:number)=>void;onCozy:()=>void;lazy?:boolean}){
+export default function ReaderPage({archive,path,index,comic,settings,onReady,onVisible,onCozy,onDeliveryFailure,lazy=false}:{archive:BookArchive;path:string;index:number;comic:boolean;settings:ReaderSettings;onReady:(index:number,width:number,height:number)=>void;onVisible?:(index:number)=>void;onCozy:()=>void;onDeliveryFailure?:()=>void;lazy?:boolean}){
  const root=useRef<HTMLDivElement>(null),iframe=useRef<HTMLIFrameElement>(null)
  const [near,setNear]=useState(!lazy),[src,setSrc]=useState(''),[html,setHtml]=useState(''),[error,setError]=useState('')
  const [attempt,setAttempt]=useState(0),[imageLoaded,setImageLoaded]=useState(false)
@@ -41,7 +41,7 @@ export default function ReaderPage({archive,path,index,comic,settings,onReady,on
      for(const link of fragment.querySelectorAll('a'))link.removeAttribute('href')
      const wrapper=document.createElement('div');wrapper.append(fragment)
      if(!cancelled){setHtml(wrapper.innerHTML);onReady(index,0,0)}
-   })().catch(e=>{if(!cancelled)setError(e instanceof Error?e.message:'Page could not load.')})
+   })().catch(e=>{if(!cancelled){if(e instanceof BookDeliveryError)onDeliveryFailure?.();setError(e instanceof Error?e.message:'Page could not load.')}})
    return()=>{cancelled=true;urls.forEach(URL.revokeObjectURL)}
  },[archive,path,comic,shouldLoad,attempt])
  const attachFrame=()=>{

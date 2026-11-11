@@ -1136,6 +1136,7 @@ mod scan_tests {
             metadata: runtime,
             video_audio: Arc::new(crate::video_audio::Runtime::new()),
             relay: Arc::new(crate::relay::Runtime::new()),
+            playback: Arc::new(crate::playback::Runtime::default()),
             transcode: Arc::new(crate::transcode::Runtime::new()),
         };
         let worker =

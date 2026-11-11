@@ -22,7 +22,8 @@ export const MAX_CBZ_BYTES = 4 * 1024 ** 3
 export const MAX_CACHE_BYTES = 64 * 1024 ** 2
 const MAX_INDEX_READ = 16 * 1024 ** 2
 const RANGE_CHUNK = 512 * 1024
-class RetryableRangeError extends Error {}
+export class BookDeliveryError extends Error {}
+class RetryableRangeError extends BookDeliveryError {}
 
 async function range(url:string,start:number,length:number,signal:AbortSignal,total?:number,validator?:string){
   const headers:Record<string,string>={Range:`bytes=${start}-${start+length-1}`}
@@ -38,7 +39,7 @@ async function range(url:string,start:number,length:number,signal:AbortSignal,to
   const contentRange=/^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('content-range')??'')
   if(response.status!==206||!response.body||!contentRange||Number(contentRange[1])!==start||Number(contentRange[2])!==start+length-1||!Number.isSafeInteger(Number(contentRange[3]))||(total!==undefined&&Number(contentRange[3])!==total)){
     await response.body?.cancel()
-    throw Error('This book could not be read with byte ranges. Its source may be unavailable, the file may have changed, or a proxy may be stripping Range headers.')
+    throw new BookDeliveryError('This book could not be read with byte ranges. Its source may be unavailable, the file may have changed, or a proxy may be stripping Range headers.')
   }
   const bytes=new Uint8Array(length),stream=response.body.getReader()
   let received=0

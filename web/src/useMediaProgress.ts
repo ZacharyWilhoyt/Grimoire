@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ProgressSession } from './progress'
-export function useMediaProgress<T extends HTMLMediaElement>(sourceId: string, path: string, resourceKey = '', restorePosition = true) {
+import type { ResumePoint } from './playbackRouting'
+export function useMediaProgress<T extends HTMLMediaElement>(sourceId: string, path: string, resourceKey = '', restorePosition = true, resume?: ResumePoint) {
   const media = useRef<T | null>(null)
   const [error, setError] = useState('')
   const [retryKey, setRetryKey] = useState(0)
@@ -15,14 +16,19 @@ export function useMediaProgress<T extends HTMLMediaElement>(sourceId: string, p
     const element = media.current
     if (!element) return
     if (retrySettings.current) { Object.assign(element, retrySettings.current); retrySettings.current = null }
+    if (resume?.volume!==undefined) element.volume=resume.volume
+    if (resume?.muted!==undefined) element.muted=resume.muted
     let active = true, loaded = false, restored = false, savedPosition = 0, lastSave = 0, interacted = false, pausedEarly = false
     setError('')
     const session = new ProgressSession(sourceId, path, message => { if (active) setError(message) })
     const restore = () => {
       if (!active || !loaded || restored || element.readyState < 1) return
       restored = true
-      if (restorePosition && !interacted && savedPosition > 0 && Number.isFinite(element.duration) && savedPosition < element.duration) element.currentTime = savedPosition
-      if (!pausedEarly) void element.play().catch(() => { /* Browser autoplay policy; native Play remains available. */ })
+      const compatible = resume && (resume.exact || resume.total !== undefined &&
+        Math.abs(resume.total - element.duration) <= 1)
+      const position = compatible ? resume.position : restorePosition ? savedPosition : 0
+      if (!interacted && position > 0 && Number.isFinite(element.duration) && position < element.duration) element.currentTime = position
+      if (!pausedEarly && resume?.paused !== true) void element.play().catch(() => { /* Browser autoplay policy; native Play remains available. */ })
     }
     let played=0,sampledAt=performance.now(),sampledPosition=element.currentTime,wasPlaying=!element.paused
     const sample=()=>{
@@ -59,6 +65,6 @@ export function useMediaProgress<T extends HTMLMediaElement>(sourceId: string, p
       element.removeEventListener('seeking', earlyInteraction); element.removeEventListener('loadedmetadata', restore); element.removeEventListener('timeupdate', tick); element.removeEventListener('pause', paused); element.removeEventListener('seeked', save); element.removeEventListener('ended', save)
       document.removeEventListener('visibilitychange', hidden); window.removeEventListener('pagehide', save)
     }
-  }, [sourceId, path, retryKey, resourceKey, restorePosition])
+  }, [sourceId, path, retryKey, resourceKey, restorePosition, resume])
   return { media, progressError: error, retry, retryKey }
 }

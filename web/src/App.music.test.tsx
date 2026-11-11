@@ -31,3 +31,49 @@ it('keeps one audio element through internal navigation and starts idle after fr
   expect(host.querySelector('audio')).toBeNull()
  }finally{await act(async()=>root.unmount());host.remove();vi.unstubAllGlobals();window.history.replaceState(null,'','/')}
 })
+
+it('switches an interrupted track without replacing the rest of the queue',async()=>{
+ vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true)
+ vi.spyOn(HTMLMediaElement.prototype,'play').mockResolvedValue()
+ window.history.replaceState(null,'','/#music')
+ const remote:MediaItem={...song,file_key:'b'.repeat(64),logical_id:'logical-track',remote:true,source_id:'remote:test',source_name:'Remote',media_url:'/api/nodes/v1/sources/test/representations/song'}
+ const local:MediaItem={...song,logical_id:remote.logical_id}
+ const following:MediaItem={...song,file_key:'c'.repeat(64),name:'Z following song',relative_path:'following.mp3'}
+ const locations=[{id:'first',source:'Remote',extension:'mp3',size_bytes:1},{id:'second',source:'Source',extension:'mp3',size_bytes:1}]
+ const fetch=vi.mocked(apiFetch)
+ fetch.mockImplementation(async(url,options)=>{
+  const data=url==='/api/sources'?[{id:'s',name:'Source',can_access_media:true,available:true}]
+    :url==='/api/catalog'?{items:[remote,following],truncated:false,unavailable_sources:0}
+    :url==='/api/music/library'?{revision:1,library:{favorites:[],playlists:[]}}
+    :url==='/api/playback/v1'?{session:'fixture',location:'first',item:remote,options:locations,exact:true}
+    :url==='/api/playback/v1/fixture/switch'?{session:'fixture',location:'second',item:local,options:locations.slice(1),exact:true}
+    :url==='/api/activity/open'?{file_key:remote.file_key,saved_at:null,last_opened_at:1}
+    :url.startsWith('/api/progress')?(options?.method==='PUT'?{revision:1}:null)
+    :{items:[],has_more:false,next_offset:0,unavailable_items:0}
+  return new Response(JSON.stringify(data))
+ })
+ const host=document.createElement('div'),root=createRoot(host)
+ const load=async(audio:HTMLAudioElement)=>{
+  Object.defineProperties(audio,{readyState:{value:1},duration:{value:100}})
+  await act(async()=>audio.dispatchEvent(new Event('loadedmetadata')))
+ }
+ try{
+  await act(async()=>root.render(<App/>))
+  const play=[...host.querySelectorAll('button')].find(button=>button.textContent==='Test song')!
+  await act(async()=>play.click())
+  const first=host.querySelector('audio')!
+  expect(first.getAttribute('src')).toBe(remote.media_url)
+  await load(first)
+  first.currentTime=37
+  await act(async()=>first.dispatchEvent(new Event('error')))
+  const second=host.querySelector('audio')!
+  expect(second.getAttribute('src')).toBe('/api/sources/s/audio?path=song.mp3')
+  await load(second)
+  expect(second.currentTime).toBe(37)
+  expect(host.textContent).toContain('1 of 2')
+  expect(fetch.mock.calls.filter(([url])=>url==='/api/playback/v1/fixture/switch')).toHaveLength(1)
+ }finally{
+  await act(async()=>root.unmount())
+  vi.restoreAllMocks();vi.unstubAllGlobals();window.history.replaceState(null,'','/')
+ }
+})

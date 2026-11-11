@@ -91,7 +91,7 @@ struct PersonalRow {
 pub fn file_key(source: &str, path: &str) -> String {
     auth::digest(&format!("{source}\0{path}"))
 }
-fn item(source_id: &str, source_name: &str, file: MediaFile) -> Item {
+pub(crate) fn item(source_id: &str, source_name: &str, file: MediaFile) -> Item {
     Item {
         file_key: file_key(source_id, &file.relative_path),
         source_id: source_id.into(),
@@ -132,7 +132,11 @@ pub(crate) async fn enrich_personal(
     crate::progress::enrich(state, user, items).await?;
     Ok(())
 }
-async fn enrich(state: &AppState, user: Uuid, items: &mut [Item]) -> Result<(), AppError> {
+pub(crate) async fn enrich(
+    state: &AppState,
+    user: Uuid,
+    items: &mut [Item],
+) -> Result<(), AppError> {
     enrich_personal(state, user, items).await?;
     crate::metadata::enrich(state, user, items).await?;
     Ok(())

@@ -1,3 +1,4 @@
+import {mediaPoint,monitorRelayStall,type PlaybackControls} from './playbackRouting'
 import {PlayerPreferences} from './playerPreferences'
 import { useFullscreen } from './useFullscreen'
 import { useMediaProgress } from './useMediaProgress'
@@ -11,7 +12,7 @@ import type { MediaItem } from './media'
 import type { LinkContext } from './mediaLinks'
 import { ArrowLeft, Maximize2, X, Play, Pause } from 'lucide-react'
 
-type Props = {
+type Props = PlaybackControls & {
   mediaUrl?: string
   mini?: boolean
   onRestore?: () => void
@@ -25,9 +26,9 @@ type Props = {
 }
 
 export default function VideoPlayer(props:Props){return <PlayerPreferences key={props.userId} userId={props.userId}><Player {...props}/></PlayerPreferences>}
-function Player({ mediaUrl, sourceId, sourceName, file, onClose, mini, onRestore, onDismiss, onNext }: Props) {
+function Player({ mediaUrl, sourceControl, resume, onSourceFailure, onCapture, sourceId, sourceName, file, onClose, mini, onRestore, onDismiss, onNext }: Props) {
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
-  const { media, progressError, retry, retryKey } = useMediaProgress<HTMLVideoElement>(sourceId, file.relative_path, mediaUrl ?? audioUrl ?? '')
+  const { media, progressError, retry, retryKey } = useMediaProgress<HTMLVideoElement>(sourceId, file.relative_path, mediaUrl ?? audioUrl ?? '', true, resume)
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null)
   const attachVideo = useCallback((element: HTMLVideoElement | null) => { media.current = element; setVideoElement(element) }, [media])
   const stage = useRef<HTMLDivElement>(null)
@@ -36,6 +37,19 @@ function Player({ mediaUrl, sourceId, sourceName, file, onClose, mini, onRestore
   const closeButton = useRef<HTMLButtonElement>(null)
   const url = mediaUrl ?? audioUrl ?? ''
 
+  const failure = useRef(onSourceFailure)
+  failure.current=onSourceFailure
+  const failedAttempt=useRef(false)
+  const reportFailure=()=>{
+    if(failedAttempt.current)return
+    failedAttempt.current=true
+    failure.current?.(mediaPoint(media.current))
+  }
+  useEffect(()=>{onCapture?.(()=>mediaPoint(media.current));return()=>onCapture?.(null)},[onCapture,media])
+  useEffect(()=>{
+    if(!mediaUrl||!videoElement)return
+    return monitorRelayStall(videoElement,reportFailure)
+  },[mediaUrl,videoElement])
   const [streamError,setStreamError]=useState('')
   const segmented = url.includes('/manifest.m3u8')
   useEffect(()=>{
@@ -46,7 +60,7 @@ function Player({ mediaUrl, sourceId, sourceName, file, onClose, mini, onRestore
       if(!active)return
       if(Hls.isSupported()){
         const hls=new Hls({maxBufferLength:36,maxMaxBufferLength:60,backBufferLength:12,fragLoadingTimeOut:100000})
-        hls.on(Hls.Events.ERROR,(_event,data)=>{if(data.fatal&&active)setStreamError('Segmented playback failed. Try a lower quality, restart playback, or ask the source owner to check its encoder. Access may have expired.')})
+        hls.on(Hls.Events.ERROR,(_event,data)=>{if(data.fatal&&active){reportFailure();setStreamError('Segmented playback failed. Try a lower quality, restart playback, or ask the source owner to check its encoder. Access may have expired.')}})
         hls.loadSource(url);hls.attachMedia(videoElement);dispose=()=>hls.destroy()
       }else if(videoElement.canPlayType('application/vnd.apple.mpegurl'))videoElement.src=url
       else setStreamError('This browser does not support HLS playback.')
@@ -90,16 +104,17 @@ function Player({ mediaUrl, sourceId, sourceName, file, onClose, mini, onRestore
     <main className="watch-main">
       {!cozy && <header className="watch-header"><button ref={closeButton} className="watch-back" aria-label="Close video player" onClick={minimize}><ArrowLeft size={23}/> Back</button><div><h1 id="video-title">{displayTitle(file)}</h1><span>{sourceName}</span></div></header>}
       <div className="video-stage watch-stage" ref={stage}>
-        <video key={`${url}:${retryKey}`} ref={attachVideo} src={mediaUrl} controls={!!mediaUrl && !mini} playsInline preload="metadata" onLoadedData={() => setFailed(false)} onError={() => setFailed(true)} />
-        {!mediaUrl && <VideoToolbar onNext={next && onNext ? () => onNext(next) : undefined} onClose={minimize} video={videoElement} sourceId={sourceId} path={file.relative_path} onAudio={setAudioUrl} cozy={cozy} onCozy={() => setCozy(value=>!value)} fullscreen={fullscreen} onFullscreen={() => { if(mini)onRestore?.(); void toggle() }}/>}
+        <video key={`${url}:${retryKey}`} ref={attachVideo} src={mediaUrl} controls={!!mediaUrl && !mini} playsInline preload="metadata" onLoadedData={() => setFailed(false)} onError={() => {setFailed(true);reportFailure()}} />
+        {!mediaUrl && <VideoToolbar onSourceFailure={onSourceFailure?reportFailure:undefined} onNext={next && onNext ? () => onNext(next) : undefined} onClose={minimize} video={videoElement} sourceId={sourceId} path={file.relative_path} onAudio={setAudioUrl} cozy={cozy} onCozy={() => setCozy(value=>!value)} fullscreen={fullscreen} onFullscreen={() => { if(mini)onRestore?.(); void toggle() }}/>}
         {mini && <div className={`mini-controls ${miniVisible ? 'mini-visible' : ''}`} onPointerMove={revealMini} onPointerDown={revealMini} onFocus={revealMini} onBlur={revealMini} onPointerLeave={()=>{clearTimeout(miniTimer.current);miniTimer.current=setTimeout(()=>setMiniVisible(false),2500)}}><button className="mini-restore" aria-label="Restore video player" onClick={onRestore}><Maximize2/></button><button className="mini-close" aria-label="Stop video" onClick={onDismiss}><X/></button><button className="mini-play" aria-label={playing?'Pause video':'Play video'} onClick={()=>{if(videoElement?.paused) void videoElement.play().catch(()=>{});else videoElement?.pause()}}>{playing?<Pause/>:<Play/>}</button><progress aria-label="Video progress" max={1} value={position}/></div>}
       </div>
+      {!mini && sourceControl}
       {mediaUrl && next && !mini && <button className="track-play" onClick={() => onNext?.(next)}>Next episode</button>}
       {!mediaUrl && !audioUrl && <p className="video-error" role="status">Preparing transcoded playback. Open Settings to retry or change quality.</p>}
       {streamError && <p role="alert" className="video-error">{streamError}</p>}
       {fullscreenError && <p className="video-error" role="status">{fullscreenError}</p>}
       {progressError && <p className="video-error" role="status">{progressError}</p>}
-      {failed && <p className="video-error" role="alert">This video could not be played. Check that the source is available and the video codec is supported. <button className="track-play" onClick={() => { setFailed(false); retry() }}>Retry video</button></p>}
+      {failed && <p className="video-error" role="alert">This video could not be played. Check that the source is available and the video codec is supported. <button className="track-play" onClick={() => { setFailed(false); failedAttempt.current=false; retry() }}>Retry video</button></p>}
       <MetadataCredits credits={file.metadata?.credits ?? []}/>
     </main>
     {!cozy && <WatchSidebar sourceId={sourceId} path={file.relative_path}/>}

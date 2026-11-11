@@ -45,6 +45,13 @@ pub struct Runtime {
     chunks_delivered: AtomicU64,
     total: Arc<Semaphore>,
     nodes: Mutex<HashMap<Uuid, Weak<Semaphore>>>,
+    delivery: Mutex<HashMap<Uuid, DeliverySample>>,
+}
+
+struct DeliverySample {
+    observed: Instant,
+    micros_per_mib: u64,
+    failed: bool,
 }
 
 impl Runtime {
@@ -60,7 +67,44 @@ impl Runtime {
             chunks_delivered: AtomicU64::new(0),
             total: Arc::new(Semaphore::new(16)),
             nodes: Mutex::new(HashMap::new()),
+            delivery: Mutex::new(HashMap::new()),
         }
+    }
+
+    pub(crate) fn delivery_health(&self, node: Uuid) -> Option<(u64, bool)> {
+        let samples = self.delivery.lock().unwrap();
+        let sample = samples
+            .get(&node)
+            .filter(|sample| sample.observed.elapsed() < Duration::from_secs(120))?;
+        Some((sample.micros_per_mib, sample.failed))
+    }
+
+    fn observe_delivery(&self, node: Uuid, elapsed: Duration, bytes: Option<u64>) {
+        let mut samples = self.delivery.lock().unwrap();
+        if samples.len() >= 1024 && !samples.contains_key(&node) {
+            samples.retain(|_, sample| sample.observed.elapsed() < Duration::from_secs(120));
+            if samples.len() >= 1024 {
+                return;
+            }
+        }
+        // Ignore tiny seeks when estimating throughput. Successful reads
+        // still clear a recent delivery failure.
+        let previous = samples.get(&node).map(|sample| sample.micros_per_mib);
+        let measured = bytes
+            .filter(|bytes| *bytes >= 64 * 1024)
+            .map(|bytes| (elapsed.as_micros() * 1_048_576 / bytes as u128).min(120_000_000) as u64);
+        let cost = match (previous, measured) {
+            (Some(old), Some(new)) => (old * 3 + new) / 4,
+            (old, new) => new.or(old).unwrap_or(120_000_000),
+        };
+        samples.insert(
+            node,
+            DeliverySample {
+                observed: Instant::now(),
+                micros_per_mib: cost,
+                failed: bytes.is_none(),
+            },
+        );
     }
 
     fn reserve(
@@ -241,11 +285,25 @@ impl Stream {
                 },
             );
         }
+        let started = Instant::now();
         relay.changed.notify_waiters();
-        let result = time::timeout(Duration::from_millis(wire::RELAY_GRANT_MS as u64), receive)
-            .await
-            .map_err(|_| upstream())?
-            .map_err(|_| missing())?;
+        let received =
+            time::timeout(Duration::from_millis(wire::RELAY_GRANT_MS as u64), receive).await;
+        let result = match received {
+            Ok(Ok(bytes)) => {
+                relay.observe_delivery(
+                    current.node_id,
+                    started.elapsed(),
+                    Some(bytes.len() as u64),
+                );
+                bytes
+            }
+            Ok(Err(_)) => return Err(missing()),
+            Err(_) => {
+                relay.observe_delivery(current.node_id, started.elapsed(), None);
+                return Err(upstream());
+            }
+        };
         self.cursor += length;
         self.next_chunk = Instant::now()
             + Duration::from_secs_f64(length as f64 / PER_STREAM_BYTES_PER_SECOND as f64);

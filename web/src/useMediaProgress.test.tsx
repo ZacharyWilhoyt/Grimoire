@@ -72,3 +72,26 @@ it('does not restore an old music position when restoration is disabled',async()
   expect(play).toHaveBeenCalledOnce()
  }finally{await act(async()=>root.unmount());vi.unstubAllGlobals()}
 })
+
+it('uses the last playback time after a compatible source switch and avoids seeking across different timelines', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+  vi.stubGlobal('fetch',vi.fn(async()=>new Response('null')))
+  const play=vi.spyOn(HTMLMediaElement.prototype,'play').mockResolvedValue()
+  const host=document.createElement('div'),root=createRoot(host)
+  const resume={position:42,total:120,exact:false,paused:true,volume:.4}
+  function Player({source}:{source:string}){
+    const {media}=useMediaProgress<HTMLVideoElement>(source,'film.mp4','',true,resume)
+    return <video key={source} ref={media}/>
+  }
+  try {
+    for(const [source,duration,expected] of [['compatible',120.5,42],['different',125,0]] as const){
+      await act(async()=>root.render(<Player source={source}/>))
+      const video=host.querySelector('video')!
+      Object.defineProperties(video,{readyState:{value:1},duration:{value:duration}})
+      await act(async()=>video.dispatchEvent(new Event('loadedmetadata')))
+      expect(video.currentTime).toBe(expected)
+      expect(video.volume).toBe(.4)
+    }
+    expect(play).not.toHaveBeenCalled()
+  } finally {await act(async()=>root.unmount());vi.unstubAllGlobals()}
+})

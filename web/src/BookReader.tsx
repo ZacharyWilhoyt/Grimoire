@@ -1,3 +1,4 @@
+import type {PlaybackControls,ResumePoint} from './playbackRouting'
 import MetadataCredits from './MetadataCredits'
 import WatchSidebar from './WatchSidebar'
 import {epubChapters,type Chapter} from './epubChapters'
@@ -5,13 +6,13 @@ import {ProgressSession} from './progress'
 import {displayTitle,type MetadataView,type MediaItem} from './media'
 import {useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState} from 'react'
 import {ArrowLeft,ChevronLeft,ChevronRight,PanelRightClose,Settings,X} from 'lucide-react'
-import {isImage,openArchive,parseXml,type BookArchive} from './bookArchive'
+import {isImage,openArchive,BookDeliveryError,parseXml,type BookArchive} from './bookArchive'
 import {readSettings,isSpread,spreadMembers,type ReaderKind} from './readerSettings'
 import ReaderPage from './ReaderPage'
 import {apiFetch} from './api'
 import type {LinkContext} from './mediaLinks'
-type Props={mediaUrl?:string;remoteProgress?:boolean;userId?:string;sourceId:string;sourceName:string;file:{metadata?:MetadataView|null;name:string;relative_path:string;extension:string};onClose:()=>void;onNext?:(item:MediaItem)=>void}
-export default function BookReader({mediaUrl,remoteProgress,userId,sourceId,sourceName,file,onClose,onNext}:Props){
+type Props=PlaybackControls & {mediaUrl?:string;remoteProgress?:boolean;userId?:string;sourceId:string;sourceName:string;file:{metadata?:MetadataView|null;name:string;relative_path:string;extension:string};onClose:()=>void;onNext?:(item:MediaItem)=>void}
+export default function BookReader({mediaUrl,remoteProgress,userId,sourceControl,resume,onSourceFailure,onCapture,sourceId,sourceName,file,onClose,onNext}:Props){
  const comic=file.extension.toLowerCase()==='cbz'
  const storage=`grimoire:reader:v1:${userId??'local'}`
  const [kind,setKind]=useState<ReaderKind>(()=>{try{const v=localStorage.getItem(`${storage}:kind:${sourceId}:${file.relative_path}`)??localStorage.getItem(`${storage}:last:${comic?'cbz':'epub'}`);return ['Novel','Comic','Manga','Manhua'].includes(v??'')?v as ReaderKind:comic?'Comic':'Novel'}catch{return comic?'Comic':'Novel'}})
@@ -36,6 +37,16 @@ export default function BookReader({mediaUrl,remoteProgress,userId,sourceId,sour
  },[settingsOpen])
  const strip=!comic||settings.layout==='strip'
  useEffect(()=>{try{localStorage.setItem(`${storage}:${kind}`,JSON.stringify(settings));localStorage.setItem(`${storage}:kind:${sourceId}:${file.relative_path}`,kind);localStorage.setItem(`${storage}:last:${comic?'cbz':'epub'}`,kind)}catch{/* Storage is optional. */}},[storage,kind,settings,sourceId,file.relative_path])
+  const failure=useRef(onSourceFailure)
+  failure.current=onSourceFailure
+  const reported=useRef(false)
+  const readPoint=():ResumePoint=>({position:index,locator:chapters[index]?.path})
+  useEffect(()=>{onCapture?.(readPoint);return()=>onCapture?.(null)},[onCapture,index,chapters])
+  const reportFailure=(point=readPoint())=>{
+    if(reported.current)return
+    reported.current=true
+    failure.current?.(point)
+  }
   useEffect(() => {
     setProgressError(''); setArchive(null); setChapters([]); setLoading(true)
     const controller = new AbortController()
@@ -59,14 +70,15 @@ export default function BookReader({mediaUrl,remoteProgress,userId,sourceId,sour
       }
       if (!pages.length) throw new Error('No readable pages were found in this book.')
       if (!controller.signal.aborted) {
-        const located = saved?.locator ? pages.findIndex(page => page.path === saved.locator) : -1
-        setIndex(located >= 0 ? located : Math.min(Math.max(0, Math.floor(saved?.position ?? 0)), pages.length - 1))
+        const locator=resume?.exact?resume.locator:saved?.locator
+        const located = locator ? pages.findIndex(page => page.path === locator) : -1
+        setIndex(located >= 0 ? located : Math.min(Math.max(0, Math.floor((resume?.exact?resume.position:saved?.position) ?? 0)), pages.length - 1))
         setArchive(opened); setChapters(pages); setLoading(false)
       }
     }
-    load().catch(error => { if (!controller.signal.aborted) { setError(error instanceof Error ? error.message : 'Could not open this book.'); setLoading(false) } })
+    load().catch(error => { if (!controller.signal.aborted) { if(error instanceof BookDeliveryError)reportFailure({position:resume?.position??0,locator:resume?.locator});setError(error instanceof Error ? error.message : 'Could not open this book.'); setLoading(false) } })
     return () => { controller.abort(); void opened?.close().catch(() => {}) }
-  }, [sourceId, file.relative_path, comic, mediaUrl, remoteProgress])
+  }, [sourceId, file.relative_path, comic, mediaUrl, remoteProgress, resume])
  useEffect(()=>{
    if(mediaUrl&&!remoteProgress)return
    const abort=new AbortController()
@@ -180,6 +192,7 @@ export default function BookReader({mediaUrl,remoteProgress,userId,sourceId,sour
  <label>{comic?'Page':'Chapter'}<select aria-label={comic?'Page':'Chapter'} value={index} disabled={loading} onChange={e=>go(Number(e.target.value))}>{chapters.map((chapter,i)=><option key={chapter.path} value={i}>{comic?i+1:chapter.label}</option>)}</select> / {chapters.length}</label>
  <button aria-label={index===chapters.length-1&&!next?'Finish book':'Next'} title={index===chapters.length-1&&!next?'Mark book finished':'Next'} disabled={loading||index>=chapters.length-1&&!next&&bookFinished} onClick={()=>strip&&index<chapters.length-1?go(index+1):advance()}><ChevronRight/></button>
  </nav><button className="reader-cozy-toggle" aria-label="Cozy reading view" aria-pressed={cozy} onClick={toggleCozy}><PanelRightClose/></button></header>
+ {sourceControl}
  <div className="reader-layout">
  <button ref={settingsButton} className="reader-settings-toggle" aria-label="Reading settings" aria-expanded={settingsOpen} aria-controls="reading-settings" onClick={()=>setSettingsOpen(value=>!value)}><Settings size={21}/></button>
  {settingsOpen&&<div ref={settingsPanel} className="reader-settings-panel" id="reading-settings" role="region" aria-label="Reading settings panel"><header>Reading settings<button aria-label="Close reading settings" onClick={()=>{setSettingsOpen(false);settingsButton.current?.focus()}}><X size={18}/></button></header>
@@ -201,7 +214,7 @@ export default function BookReader({mediaUrl,remoteProgress,userId,sourceId,sour
  {loading&&<p role="status">Opening book content…</p>}{error&&<p role="alert">{error}</p>}{progressError&&<p role="status">{progressError}</p>}
  {archive&&!loading&&!error&&<div className={spread?'reader-surface reader-spread':'reader-surface'} style={{
    ...(spread?{width:`calc(${fittedSpreadWidth} * ${settings.zoom/100})`,gridTemplateColumns:`minmax(0, ${100*firstAspect/spreadAspect}fr) minmax(0, ${100*secondAspect/spreadAspect}fr)`}:{zoom:settings.zoom/100}),
-   direction:comic&&settings.layout==='double'?settings.direction:'ltr'}}>{(strip?chapters.map((_,i)=>i):members).map(page=><ReaderPage key={chapters[page].path} archive={archive} path={chapters[page].path} index={page} comic={comic} settings={settings} onReady={pageReady} onVisible={strip?visible:undefined} onCozy={toggleCozy} lazy={strip&&page!==index}/>)}</div>}
+   direction:comic&&settings.layout==='double'?settings.direction:'ltr'}}>{(strip?chapters.map((_,i)=>i):members).map(page=><ReaderPage key={chapters[page].path} archive={archive} path={chapters[page].path} index={page} comic={comic} settings={settings} onReady={pageReady} onVisible={strip?visible:undefined} onCozy={toggleCozy} onDeliveryFailure={()=>reportFailure()} lazy={strip&&page!==index}/>)}</div>}
  </div></div></main>
  {!cozy&&(!mediaUrl||remoteProgress)&&<div className="reader-related"><WatchSidebar sourceId={sourceId} path={file.relative_path}/></div>}
  </section>

@@ -193,3 +193,22 @@
 .source-agent-token label,.source-agent-token input,.source-agent-body video,.source-agent-body audio{display:block;width:100%}
 .source-agent-token input{padding:.45rem .6rem;background:var(--theme-surface);color:var(--theme-text);border:1px solid var(--theme-outline);border-radius:.35rem;font:inherit}
 .source-agent-token pre{overflow:auto;padding:10px;background:#111116;font-size:12px}
+
+.playback-source {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .45rem .8rem;
+  padding: .4rem .8rem;
+  color: #bbb4c9;
+  font-size: .8rem;
+}
+.playback-source label { display: flex; align-items: center; gap: .45rem; }
+.playback-source select {
+  max-width: min(18rem, 55vw);
+  border: 1px solid #ffffff22;
+  border-radius: .4rem;
+  color: inherit;
+  background: #24212e;
+  padding: .3rem .45rem;
+}
