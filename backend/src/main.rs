@@ -10,11 +10,17 @@ mod auth;
 #[cfg(test)]
 mod auth_integration;
 mod catalog;
+mod comments;
+mod image_registry;
 mod metadata;
 mod music;
+mod nodes;
 mod permissions;
 mod progress;
+mod relay;
+mod remote_catalog;
 mod security;
+mod sources;
 mod statistics;
 mod subtitles;
 mod subtitles_mkv;
@@ -46,6 +52,7 @@ struct AppState {
     catalog_scans: Arc<tokio::sync::Semaphore>,
     metadata: Arc<metadata::Runtime>,
     video_audio: Arc<video_audio::Runtime>,
+    relay: Arc<relay::Runtime>,
     transcode: Arc<transcode::Runtime>,
 }
 
@@ -156,7 +163,7 @@ async fn list_sources(
     axum::Extension(identity): axum::Extension<auth::Identity>,
 ) -> Result<Json<Vec<SourceSummary>>, AppError> {
     let sources = sqlx::query_as::<_, Source>(
-        "SELECT s.id,s.name,s.path,(s.owner_id=$1) AS is_owner,(s.owner_id=$1 OR COALESCE(p.can_discover AND p.can_access_media,false)) AS can_access_media,COALESCE(p.acquisition_policy,'auto_deny') AS acquisition_policy FROM sources s LEFT JOIN source_permissions p ON p.source_id=s.id AND p.user_id=$1 WHERE s.owner_id=$1 OR p.can_discover ORDER BY s.created_at,s.id",
+        "SELECT s.id,s.name,s.path,(s.owner_id=$1) AS is_owner,(s.owner_id=$1 OR COALESCE(p.can_discover AND p.can_access_media,false)) AS can_access_media,COALESCE(p.acquisition_policy,'auto_deny') AS acquisition_policy FROM sources s LEFT JOIN source_permissions p ON p.source_id=s.id AND p.user_id=$1 WHERE s.kind='local_directory' AND (s.owner_id=$1 OR p.can_discover) ORDER BY s.created_at,s.id",
     )
     .bind(identity.user.id)
     .fetch_all(&state.db)
@@ -249,15 +256,9 @@ async fn media_root(
     user: &auth::User,
     source_id: &str,
 ) -> Result<PathBuf, AppError> {
-    let path: Option<String> = sqlx::query_scalar(
-        "SELECT s.path FROM sources s WHERE s.id=$1 AND (s.owner_id=$2 OR EXISTS(SELECT 1 FROM source_permissions p WHERE p.source_id=s.id AND p.user_id=$2 AND p.can_discover AND p.can_access_media))",
-    ).bind(source_id).bind(user.id).fetch_optional(&state.db).await.map_err(|_| auth::unavailable())?;
-    path.map(PathBuf::from).ok_or_else(|| {
-        AppError(
-            StatusCode::NOT_FOUND,
-            "Source not found or media access not granted.".into(),
-        )
-    })
+    Ok(sources::LocalSource::authorized(state, user.id, source_id)
+        .await?
+        .path)
 }
 
 async fn remove_source(
@@ -266,17 +267,28 @@ async fn remove_source(
     RoutePath(source_id): RoutePath<String>,
 ) -> Result<StatusCode, AppError> {
     let mut tx = state.db.begin().await.map_err(|_| auth::unavailable())?;
-    let owner: Option<uuid::Uuid> =
-        sqlx::query_scalar("SELECT owner_id FROM sources WHERE id=$1 FOR UPDATE")
-            .bind(&source_id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|_| auth::unavailable())?;
+    let owner: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT owner_id FROM sources WHERE id=$1 AND kind='local_directory' FOR UPDATE",
+    )
+    .bind(&source_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|_| auth::unavailable())?;
     if owner != Some(identity.user.id) {
         return Err(AppError(StatusCode::NOT_FOUND, "Source not found.".into()));
     }
     sqlx::query("INSERT INTO source_permission_audit(source_id,actor_id,target_id,action,before_state) SELECT source_id,$2,user_id,'revoked',json_build_object('can_discover',can_discover,'can_access_media',can_access_media,'acquisition_policy',acquisition_policy)::text FROM source_permissions WHERE source_id=$1")
         .bind(&source_id).bind(identity.user.id).execute(&mut *tx).await.map_err(|_| auth::unavailable())?;
+    let managed: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM arr_connections WHERE source_id=$1 AND managed)",
+    )
+    .bind(&source_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|_| auth::unavailable())?;
+    if managed {
+        return Err(bad_request("Remove this source's managed Arr instances and their connections before disconnecting it."));
+    }
     sqlx::query("DELETE FROM sources WHERE id=$1")
         .bind(source_id)
         .execute(&mut *tx)
@@ -435,12 +447,7 @@ fn resolve_media_path(root: &Path, relative: &str, kind: &str) -> Result<PathBuf
 }
 
 fn classify_extension(extension: &str) -> Option<&'static str> {
-    match extension {
-        "mkv" | "mp4" | "m4v" | "mov" | "avi" | "webm" | "mpeg" | "mpg" | "ts" => Some("video"),
-        "mp3" | "flac" | "m4a" | "aac" | "ogg" | "opus" | "wav" | "aiff" | "wma" => Some("music"),
-        "epub" | "cbz" => Some("book"),
-        _ => None,
-    }
+    grimoire_api::node_protocol::media_kind(extension)
 }
 
 fn modified_epoch(metadata: &fs::Metadata) -> Option<f64> {
@@ -537,6 +544,8 @@ fn scan_directory(root: &Path) -> Result<Vec<MediaFile>, String> {
 async fn frontend(request: Request) -> Response {
     if request.uri().path() == "/api"
         || request.uri().path().starts_with("/api/")
+        || request.uri().path() == "/v2"
+        || request.uri().path().starts_with("/v2/")
         || !matches!(
             *request.method(),
             axum::http::Method::GET | axum::http::Method::HEAD
@@ -615,6 +624,13 @@ fn app(state: AppState) -> Router {
             get(subtitles::read_font),
         )
         .route(
+            "/api/media/comments",
+            get(comments::list)
+                .post(comments::post)
+                .layer(DefaultBodyLimit::max(24 * 1024)),
+        )
+        .route("/api/media/comments/{id}", delete(comments::remove))
+        .route(
             "/api/progress",
             get(progress::get)
                 .put(progress::put)
@@ -631,6 +647,21 @@ fn app(state: AppState) -> Router {
             get(metadata::groups::details),
         )
         .route(
+            "/api/sources/{source_id}/groups/{group_id}/synopsis",
+            axum::routing::put(metadata::groups::set_synopsis)
+                .layer(DefaultBodyLimit::max(32 * 1024)),
+        )
+        .route(
+            "/api/sources/{source_id}/groups/{group_id}/arr/{connection_id}/preview",
+            axum::routing::post(metadata::arr::series::preview)
+                .layer(DefaultBodyLimit::max(32 * 1024)),
+        )
+        .route(
+            "/api/sources/{source_id}/groups/{group_id}/arr/apply",
+            axum::routing::post(metadata::arr::series::apply)
+                .layer(DefaultBodyLimit::max(32 * 1024)),
+        )
+        .route(
             "/api/sources/{source_id}/groups/{group_id}/genres",
             axum::routing::put(metadata::groups::set_genres)
                 .delete(metadata::groups::reset_genres)
@@ -644,6 +675,15 @@ fn app(state: AppState) -> Router {
                 .layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
         )
         .route("/api/sources/{source_id}/arr", get(metadata::arr::list))
+        .route(
+            "/api/sources/{source_id}/arr/managed",
+            axum::routing::post(metadata::arr::managed::create)
+                .layer(DefaultBodyLimit::max(16 * 1024)),
+        )
+        .route(
+            "/api/sources/{source_id}/arr/{connection_id}/manage/{action}",
+            axum::routing::post(metadata::arr::managed::action),
+        )
         .route(
             "/api/sources/{source_id}/arr/{connection_id}",
             axum::routing::put(metadata::arr::save)
@@ -660,6 +700,10 @@ fn app(state: AppState) -> Router {
         )
         .route("/api/metadata/providers", get(metadata::provider_status))
         .route("/api/metadata/artwork/{file_key}", get(metadata::artwork))
+        .route(
+            "/api/sources/{source_id}/video-artwork",
+            get(metadata::sidecars::artwork),
+        )
         .route(
             "/api/sources/{source_id}/metadata",
             get(metadata::details)
@@ -740,6 +784,22 @@ fn app(state: AppState) -> Router {
                 .layer(DefaultBodyLimit::max(16 * 1024)),
         )
         .route("/api/statistics", get(statistics::read))
+        .route(
+            "/api/nodes/v1/sources/{source}/representations/{id}",
+            get(relay::read),
+        )
+        .route("/api/admin/relay", get(relay::stats))
+        .route("/api/nodes/v1/sources", get(remote_catalog::sources))
+        .route(
+            "/api/nodes/v1/sources/{id}/catalog",
+            get(remote_catalog::list),
+        )
+        .route("/api/nodes/v1", get(nodes::list))
+        .route(
+            "/api/nodes/v1/enrollment-tokens",
+            axum::routing::post(nodes::issue),
+        )
+        .route("/api/nodes/v1/{id}", delete(nodes::revoke))
         .route("/api/sources", get(list_sources).post(add_source))
         .route("/api/sources/{source_id}", delete(remove_source))
         .route(
@@ -760,16 +820,53 @@ fn app(state: AppState) -> Router {
         ));
     Router::new()
         .merge(protected)
+        .route("/v2/", get(image_registry::ping))
+        .route(
+            "/v2/grimoire/source-agent/{kind}/{reference}",
+            get(image_registry::read),
+        )
         .route("/api/health", get(health))
         .route("/api/ready", get(readiness))
         .route("/api/auth/register", axum::routing::post(auth::register))
         .route("/api/auth/login", axum::routing::post(auth::login))
         .fallback(frontend)
-        .layer(DefaultBodyLimit::max(4096))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::origin_and_limits,
         ))
+        // Machine routes authenticate signed messages and never use browser cookies.
+        .merge(
+            Router::new()
+                .route(
+                    grimoire_api::node_protocol::ENROLL,
+                    axum::routing::post(nodes::enroll),
+                )
+                .route(
+                    grimoire_api::node_protocol::ROTATE,
+                    axum::routing::post(nodes::rotate),
+                )
+                .route(
+                    grimoire_api::node_protocol::CATALOG_DELTA,
+                    axum::routing::post(remote_catalog::delta).layer(DefaultBodyLimit::max(
+                        grimoire_api::node_protocol::CATALOG_BODY_LIMIT,
+                    )),
+                )
+                .route(
+                    grimoire_api::node_protocol::RELAY_POLL,
+                    axum::routing::post(relay::poll),
+                )
+                .route(
+                    "/api/nodes/v1/relay/upload/{id}",
+                    axum::routing::post(relay::upload).layer(DefaultBodyLimit::max(
+                        grimoire_api::node_protocol::RELAY_CHUNK_BYTES,
+                    )),
+                )
+                .route(
+                    grimoire_api::node_protocol::HEARTBEAT,
+                    axum::routing::post(nodes::heartbeat),
+                ),
+        )
+        .layer(DefaultBodyLimit::max(4096))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             security::enforce,
@@ -837,6 +934,7 @@ async fn main() {
         catalog_scans: Arc::new(tokio::sync::Semaphore::new(2)),
         metadata: Arc::new(metadata::Runtime::new()),
         video_audio: Arc::new(crate::video_audio::Runtime::new()),
+        relay: Arc::new(crate::relay::Runtime::new()),
         transcode: Arc::new(crate::transcode::Runtime::new()),
     };
     if state.tls.managed.is_some() && !state.network.require_proxy {

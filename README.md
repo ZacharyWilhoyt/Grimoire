@@ -551,6 +551,15 @@ After updating, run `npm ci` in `web/` when dependencies change and restart both
 development servers.
 Reader checks can be run with `npm test` in `web/` and `cargo test` in `backend/`.
 
+### Media discussions
+
+Use **Comments** in the video or book sidebar, or the speech-bubble button next
+to a track on the Music page. Comments and replies belong to that specific item.
+Accounts need media access to read or post. Comment text is displayed as plain
+text, and each account can post up to 12 comments or replies per minute.
+Instance administrators with media access can delete abusive comments. The comment
+text is erased and existing replies stay in the discussion.
+
 ### Personal media pages
 
 Use **Discover** to browse accessible files, bookmark items into **My library**,
@@ -653,6 +662,13 @@ in the current SVG. It fails if the source changes to an unsupported structure.
 
 
 ## Contributing
+
+Frontend changes should reuse the theme variables and existing control styles
+in `web/src/styles.css`. Use `theme-button` for new compact dialog and panel
+buttons, with `theme-button-primary` for the main action and
+`theme-button-icon` for icon-only controls. Check text and icon contrast,
+keyboard focus, and disabled states against the panel background.
+
 
 Contributions, ideas, and discussions are welcome as the project takes
 shape.

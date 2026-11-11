@@ -9,11 +9,13 @@ vi.mock('./api',()=>({apiFetch:vi.fn()}))
 const mocked=vi.mocked(apiFetch)
 const item=(n:number,kind:'book'|'video'='book')=>({file_key:String(n),kind,available:true,source_id:'s',source_name:'Source',relative_path:`file${n}`,name:`Title ${n}`,extension:kind==='book'?'cbz':'mkv',saved_at:null,last_opened_at:null,modified_at:n,size_bytes:1,progress:n===1?{position:3,total:20,updated_at:1}:null,metadata:{has_custom:false,origin:'local',artwork_url:null,can_edit:true,artwork_preference:'auto',provider:null,provider_id:null,fields:{title:`Title ${n}`,collection:'Series',volume:n,episode:n,genres:['Adventure'],description:'A paragraph.\n\n'+('A long synopsis. '.repeat(60))},credits:[],group:{id:'g',label:'Series',can_edit:false,has_custom_artwork:false,has_custom_genres:false}}} as MediaItem)
 afterEach(()=>{vi.resetAllMocks();vi.unstubAllGlobals()})
-async function fixture(kind:'book'|'video'='book'){
+async function fixture(kind:'book'|'video'='book',synopsis?:string){
  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true)
  mocked.mockImplementation(async(_url,init)=>new Response(JSON.stringify(init?.method==='PUT'?{...JSON.parse(String(init.body)),revision:2}:{status:'active',favorite:false,revision:1})))
  const host=document.createElement('div'),root=createRoot(host),open=vi.fn(),save=vi.fn()
- await act(async()=>root.render(<SeriesDetails series members={[item(2,kind),item(1,kind)]} catalog={[]} busy={false} onClose={vi.fn()} onOpen={open} onSave={save} onDetails={vi.fn()} onSeries={vi.fn()} onMetadata={vi.fn()} onGroupMetadata={vi.fn()}/>))
+ const members=[item(2,kind),item(1,kind)]
+ if(synopsis)for(const member of members){member.metadata!.group!.synopsis=synopsis;member.metadata!.group!.synopsis_provider='arr_sonarr'}
+ await act(async()=>root.render(<SeriesDetails series members={members} catalog={[]} busy={false} onClose={vi.fn()} onOpen={open} onSave={save} onDetails={vi.fn()} onSeries={vi.fn()} onMetadata={vi.fn()} onGroupMetadata={vi.fn()}/>))
  return {host,root,open,save}
 }
 it('opens the reader with saved progress and preserves sorting and tab state during local interactions',async()=>{
@@ -67,5 +69,45 @@ it('shows preference failures without optimistic changes and filters the chapter
   await act(async()=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')!.set!.call(input,'missing');input.dispatchEvent(new Event('input',{bubbles:true}))})
   expect(host.querySelectorAll('tbody tr')).toHaveLength(0)
   expect(host.textContent).toContain('No titles match')
+ }finally{await act(async()=>root.unmount())}
+})
+
+it('shows the saved group synopsis and its provider on the series page',async()=>{
+ const {host,root}=await fixture('video','Synopsis for the entire series.')
+ try{
+  expect(host.querySelector('.series-synopsis p')?.textContent).toBe('Synopsis for the entire series.')
+  expect(host.querySelector('.metadata-credits')?.textContent).toContain('Sonarr')
+ }finally{await act(async()=>root.unmount())}
+})
+
+it('links seasons independently and uses season posters and episode thumbnails',async()=>{
+ vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true)
+ mocked.mockImplementation(async()=>new Response(JSON.stringify({status:null,favorite:false,revision:0})))
+ const host=document.createElement('div'),root=createRoot(host),navigate=vi.fn()
+ const first=item(1,'video'),second=item(2,'video')
+ first.metadata!.fields.season=1
+ second.metadata!.fields.season=2
+ second.metadata!.thumbnail_url='/episode-two.jpg'
+ const props={
+  series:true,catalog:[],busy:false,onClose:vi.fn(),onOpen:vi.fn(),onSave:vi.fn(),
+  onDetails:vi.fn(),onSeries:vi.fn(),onMetadata:vi.fn(),onGroupMetadata:vi.fn(),onSeason:navigate,
+  artwork:{banner_url:'/series-banner.jpg',poster_url:'/series-poster.jpg'},
+  seasons:[{key:'1',count:1,poster_url:null},{key:'2',count:1,poster_url:'/season-two.jpg'}],
+ }
+ try{
+  await act(async()=>root.render(<SeriesDetails {...props} members={[first,second]}/>))
+  expect(host.querySelector('.series-banner')?.getAttribute('src')).toBe('/series-banner.jpg')
+  const cards=host.querySelectorAll<HTMLAnchorElement>('.series-season-card')
+  expect(cards).toHaveLength(2)
+  expect(cards[0].querySelector('img')?.getAttribute('src')).toBe('/series-poster.jpg')
+  expect(cards[1].querySelector('img')?.getAttribute('src')).toBe('/season-two.jpg')
+  expect(cards[1].getAttribute('href')).toContain('season=2')
+  await act(async()=>cards[1].click())
+  expect(navigate).toHaveBeenCalledWith('2')
+  await act(async()=>root.render(<SeriesDetails {...props} members={[second]} season="2"/>))
+  expect(host.querySelector('.series-season-heading')?.textContent).toBe('Season 2')
+  expect(host.querySelector('.series-sidebar img')?.getAttribute('src')).toBe('/season-two.jpg')
+  expect(host.querySelector('#series-panel-content img')?.getAttribute('src')).toBe('/episode-two.jpg')
+  expect(host.querySelector('#series-panel-content')?.textContent).not.toContain('Title 1')
  }finally{await act(async()=>root.unmount())}
 })

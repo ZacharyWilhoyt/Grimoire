@@ -87,7 +87,7 @@ export default function MetadataEditor({ item, onClose, onUpdated }: { item: Med
     <div className="metadata-content"><p className="metadata-original">Original file: {item.relative_path}</p>
       {!view && !error && <p role="status">Loading metadata…</p>}
       {view && <>
-        <div className="metadata-provenance"><span>Active metadata: {providerName(view.origin as Review['provider']) ?? view.origin}</span>{view.artwork_url && <img src={view.artwork_url} alt="Current artwork"/>}</div>
+        <div className="metadata-provenance"><span>Active metadata: {providerName(view.origin as Review['provider']) ?? view.origin}</span>{view.artwork_url && <img src={view.artwork_url} alt="Current artwork"/>}{view.thumbnail_url && <img src={view.thumbnail_url} alt="Episode thumbnail" title="Episode thumbnail"/>}</div>
         {view.group && (view.group.has_custom_genres || view.group.has_custom_artwork) && <p className="metadata-help">Album/series overrides are active{view.group.has_custom_genres ? ' for tags' : ''}{view.group.has_custom_artwork ? ' for artwork' : ''}. Change them in the group settings; individual edits retain their own values underneath.</p>}
         <form className="metadata-form" onSubmit={save}>
           {field('title', 'Display title')}{field('creator', item.kind === 'music' ? 'Artist / album artist' : item.kind === 'book' ? 'Author / writer' : 'Creator')}{field('collection', item.kind === 'music' ? 'Album' : 'Series / collection')}

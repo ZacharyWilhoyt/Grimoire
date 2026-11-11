@@ -1,4 +1,7 @@
 //! Optional owner-managed Arr adapters. Only fixed read endpoints are requested.
+pub mod managed;
+pub mod series;
+
 use super::{
     model::{self, Fields},
     *,
@@ -14,6 +17,7 @@ pub struct Config {
     key: Option<[u8; 32]>,
     allowed: HashSet<String>,
     client: reqwest::Client,
+    managed: Option<managed::Client>,
 }
 impl Config {
     pub fn from_env() -> Self {
@@ -25,11 +29,14 @@ impl Config {
             .ok()
             .and_then(|value| serde_json::from_str(&value).ok())
             .unwrap_or_default();
-        Self::new(key, allowed)
+        let mut config = Self::new(key, allowed);
+        config.managed = managed::Client::from_env();
+        config
     }
     fn new(key: Option<[u8; 32]>, allowed: Vec<String>) -> Self {
         Self {
             key,
+            managed: None,
             allowed: allowed
                 .into_iter()
                 .filter_map(|url| base_url(&url).ok())
@@ -109,6 +116,8 @@ struct Connection {
     api_key_encrypted: Vec<u8>,
     enabled: bool,
     revision: Uuid,
+    managed: bool,
+    writable_media: bool,
 }
 impl Connection {
     fn kind(&self) -> Result<Kind, AppError> {
@@ -136,8 +145,19 @@ impl Connection {
         self.api_key_encrypted = nonce.into_iter().chain(ciphertext).collect();
         Ok(())
     }
+    fn allowed(&self, config: &Config) -> bool {
+        if self.managed {
+            config.key.is_some()
+                && config.managed.is_some()
+                && self
+                    .kind()
+                    .is_ok_and(|kind| self.base_url == managed::base(self.id, kind))
+        } else {
+            config.allows(&self.base_url)
+        }
+    }
     fn secret(&self, config: &Config) -> Result<String, AppError> {
-        if !config.allows(&self.base_url) {
+        if !self.allowed(config) {
             return Err(not_configured());
         }
         if self.api_key_encrypted.len() < 40 {
@@ -156,7 +176,7 @@ impl Connection {
         String::from_utf8(bytes).map_err(|_| not_configured())
     }
     fn summary(&self, config: &Config) -> Value {
-        json!({"id":self.id,"name":self.name,"kind":self.kind,"base_url":self.base_url,"remote_root":self.remote_root,"source_subpath":self.source_subpath,"enabled":self.enabled,"has_api_key":true,"usable":self.enabled && config.allows(&self.base_url)})
+        json!({"id":self.id,"name":self.name,"kind":self.kind,"base_url":self.base_url,"remote_root":self.remote_root,"source_subpath":self.source_subpath,"enabled":self.enabled,"has_api_key":true,"usable":self.enabled && self.allowed(config),"managed":self.managed,"writable_media":self.writable_media})
     }
 }
 fn not_configured() -> AppError {
@@ -167,7 +187,7 @@ fn remote_error() -> AppError {
 }
 async fn owned(state: &AppState, source: &str, user: Uuid) -> Result<(), AppError> {
     let owned: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sources WHERE id=$1 AND owner_id=$2)")
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sources WHERE id=$1 AND owner_id=$2 AND kind='local_directory')")
             .bind(source)
             .bind(user)
             .fetch_one(&state.db)
@@ -202,9 +222,28 @@ pub async fn list(
     .fetch_all(&state.db)
     .await
     .map_err(|_| auth::unavailable())?;
-    Ok(Json(
-        json!({"configured":config.key.is_some() && !config.allowed.is_empty(),"online":state.metadata.online,"connections":rows.iter().map(|row|row.summary(config)).collect::<Vec<_>>()}),
-    ))
+    let controller = if identity.user.is_admin && config.key.is_some() {
+        config.managed.as_ref()
+    } else {
+        None
+    };
+    let ids = rows
+        .iter()
+        .filter(|row| row.managed)
+        .map(|row| row.id)
+        .collect::<Vec<_>>();
+    let instances = match controller {
+        Some(client) => client.list(&source, &ids).await.ok(),
+        None => None,
+    };
+    Ok(Json(json!({
+        "configured": config.key.is_some() && !config.allowed.is_empty(),
+        "online": state.metadata.online,
+        "managed_enabled": controller.is_some(),
+        "managed_online": instances.is_some(),
+        "instances": instances.unwrap_or_default(),
+        "connections": rows.iter().map(|row| row.summary(config)).collect::<Vec<_>>()
+    })))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -306,6 +345,11 @@ pub async fn save(
     .fetch_optional(&state.db)
     .await
     .map_err(|_| auth::unavailable())?;
+    if previous.as_ref().is_some_and(|row| row.managed) {
+        return Err(crate::bad_request(
+            "Use the managed instance controls for this connection.",
+        ));
+    }
     let key = match settings.api_key.filter(|key| !key.is_empty()) {
         Some(key) => key,
         None => {
@@ -339,6 +383,8 @@ pub async fn save(
         api_key_encrypted: vec![],
         enabled: settings.enabled,
         revision: Uuid::new_v4(),
+        managed: false,
+        writable_media: false,
     };
     row.seal(&state.metadata.arr, &key)?;
     let mut tx = state.db.begin().await.map_err(|_| auth::unavailable())?;
@@ -355,7 +401,7 @@ pub async fn save(
             "Use at most 12 Arr connections per source.",
         ));
     }
-    let saved = sqlx::query("INSERT INTO arr_connections(id,source_id,name,kind,base_url,remote_root,source_subpath,api_key_encrypted,enabled,revision) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(id) DO UPDATE SET name=$3,kind=$4,base_url=$5,remote_root=$6,source_subpath=$7,api_key_encrypted=$8,enabled=$9,revision=$10,updated_at=now() WHERE arr_connections.source_id=$2").bind(id).bind(&source).bind(&row.name).bind(&row.kind).bind(&row.base_url).bind(&row.remote_root).bind(&row.source_subpath).bind(&row.api_key_encrypted).bind(row.enabled).bind(row.revision).execute(&mut *tx).await.map_err(|_|auth::unavailable())?;
+    let saved = sqlx::query("INSERT INTO arr_connections(id,source_id,name,kind,base_url,remote_root,source_subpath,api_key_encrypted,enabled,revision) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(id) DO UPDATE SET name=$3,kind=$4,base_url=$5,remote_root=$6,source_subpath=$7,api_key_encrypted=$8,enabled=$9,revision=$10,updated_at=now() WHERE arr_connections.source_id=$2 AND NOT arr_connections.managed").bind(id).bind(&source).bind(&row.name).bind(&row.kind).bind(&row.base_url).bind(&row.remote_root).bind(&row.source_subpath).bind(&row.api_key_encrypted).bind(row.enabled).bind(row.revision).execute(&mut *tx).await.map_err(|_|auth::unavailable())?;
     if saved.rows_affected() != 1 {
         return Err(not_found());
     }
@@ -380,6 +426,27 @@ pub async fn remove(
 ) -> Result<StatusCode, AppError> {
     let mut tx = state.db.begin().await.map_err(|_| auth::unavailable())?;
     owner_lock(&mut tx, &source, identity.user.id).await?;
+    if let Some(row) = sqlx::query_as::<_, Connection>(
+        "SELECT * FROM arr_connections WHERE source_id=$1 AND id=$2",
+    )
+    .bind(&source)
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|_| auth::unavailable())?
+    {
+        if row.managed {
+            let client = managed::authorized(&state, &identity)?;
+            if client
+                .list(&source, &[id])
+                .await?
+                .iter()
+                .any(|instance| instance.id == id && instance.status != "removed")
+            {
+                return Err(crate::bad_request("Remove the managed container first."));
+            }
+        }
+    }
     sqlx::query("DELETE FROM arr_connections WHERE source_id=$1 AND id=$2")
         .bind(&source)
         .bind(id)
@@ -409,7 +476,7 @@ async fn guard(
             "This connection or online metadata access is disabled.",
         ));
     }
-    if !state.metadata.arr.allows(&connection.base_url) {
+    if !connection.allowed(&state.metadata.arr) {
         return Err(not_configured());
     }
     auth::rate_limit(&state.db, format!("arr:user:{user}"), 30, 300).await?;
@@ -613,6 +680,37 @@ fn cover(value: &Value, entity: &str, api: &str) -> Option<Cover> {
         api: api.into(),
     })
 }
+fn sonarr_episode_fields(series: &Value, mut episodes: Vec<&Value>) -> Result<Fields, AppError> {
+    episodes.sort_by_key(|episode| {
+        (
+            episode["seasonNumber"].as_i64(),
+            episode["episodeNumber"].as_i64(),
+        )
+    });
+    let first = episodes
+        .first()
+        .ok_or_else(|| crate::bad_request("Arr has no episodes linked to this file."))?;
+    let mut fields = fields(series);
+    fields.collection = string(series, "title", 300);
+    fields.title = Some(model::text(
+        &episodes
+            .iter()
+            .filter_map(|episode| episode["title"].as_str())
+            .take(20)
+            .collect::<Vec<_>>()
+            .join(" / "),
+        300,
+    ));
+    fields.description = string(first, "overview", 4000);
+    fields.season = first["seasonNumber"]
+        .as_u64()
+        .and_then(|number| u32::try_from(number).ok());
+    fields.episode = first["episodeNumber"]
+        .as_u64()
+        .and_then(|number| u32::try_from(number).ok());
+    Ok(fields)
+}
+
 async fn matched(
     state: &AppState,
     row: &Connection,
@@ -675,37 +773,13 @@ async fn matched(
                 ],
             )
             .await?;
-            let mut episodes: Vec<_> = array(&episodes)?
-                .iter()
-                .filter(|episode| episode["episodeFileId"].as_i64() == Some(file_id))
-                .collect();
-            episodes.sort_by_key(|episode| {
-                (
-                    episode["seasonNumber"].as_i64(),
-                    episode["episodeNumber"].as_i64(),
-                )
-            });
-            let first = episodes
-                .first()
-                .ok_or_else(|| crate::bad_request("Arr has no episodes linked to this file."))?;
-            let mut fields = fields(series);
-            fields.collection = string(series, "title", 300);
-            fields.title = Some(model::text(
-                &episodes
+            let fields = sonarr_episode_fields(
+                series,
+                array(&episodes)?
                     .iter()
-                    .filter_map(|episode| episode["title"].as_str())
-                    .take(20)
-                    .collect::<Vec<_>>()
-                    .join(" / "),
-                300,
-            ));
-            fields.description = string(first, "overview", 4000);
-            fields.season = first["seasonNumber"]
-                .as_u64()
-                .and_then(|number| u32::try_from(number).ok());
-            fields.episode = first["episodeNumber"]
-                .as_u64()
-                .and_then(|number| u32::try_from(number).ok());
+                    .filter(|episode| episode["episodeFileId"].as_i64() == Some(file_id))
+                    .collect(),
+            )?;
             Ok((
                 fields,
                 cover(series, "series", api),
@@ -856,7 +930,7 @@ pub(super) async fn review_artwork(
             "The Arr connection changed or was disabled. Preview the match again.",
         ));
     }
-    if !state.metadata.arr.allows(&row.base_url) {
+    if !row.allowed(&state.metadata.arr) {
         return Err(not_configured());
     }
     let Some(art) = art else { return Ok(None) };
@@ -920,6 +994,8 @@ mod tests {
             api_key_encrypted: vec![],
             enabled: true,
             revision: Uuid::new_v4(),
+            managed: false,
+            writable_media: false,
         }
     }
     #[test]

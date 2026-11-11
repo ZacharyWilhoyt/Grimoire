@@ -41,6 +41,7 @@ services:
       GRIMOIRE_PORT: '3000'
       GRIMOIRE_VAAPI_DEVICE: /dev/dri/renderD128
       GRIMOIRE_ARR_ALLOWED_URLS: ${GRIMOIRE_ARR_ALLOWED_URLS:-[]}
+      GRIMOIRE_ARR_CONTROLLER_SOCKET: ${GRIMOIRE_ARR_CONTROLLER_SOCKET:-}
       GRIMOIRE_TRUSTED_PROXIES: '["172.30.88.2/32"]'
       GRIMOIRE_PROXY_TOKEN: ${GRIMOIRE_PROXY_TOKEN:?Run deploy/setup.sh first}
       GRIMOIRE_REQUIRE_PROXY: 'true'
@@ -53,12 +54,32 @@ services:
     networks:
       grimoire:
         ipv4_address: 172.30.88.3
+      arr: {}
     volumes:
       - postgres_socket:/var/run/postgresql
       - app_data:/app/data
+      - arr_control:/run/grimoire-arr:ro
       - caddy_control:/run/caddy
       - caddy_data:/data:ro
       - ${GRIMOIRE_MEDIA_ROOT:?Set GRIMOIRE_MEDIA_ROOT in deploy/.env}:/media:ro
+  arr-controller:
+    profiles: [managed-arr]
+    build:
+      context: ..
+      dockerfile: deploy/arr-controller/Dockerfile
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    pids_limit: 96
+    networks: [arr]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - arr_control:/run/grimoire-arr
+      - arr_state:/state
+      - ./runtime/arr-controller/policy.json:/etc/grimoire-arr/policy.json:ro
   caddy:
     build:
       context: ..
@@ -89,6 +110,7 @@ services:
       - caddy_config:/config
       - caddy_control:/run/caddy
 networks:
+  arr: {}
   grimoire:
     ipam:
       config:
@@ -100,3 +122,5 @@ volumes:
   caddy_data:
   caddy_config:
   caddy_control:
+  arr_control:
+  arr_state:

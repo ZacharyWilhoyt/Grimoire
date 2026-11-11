@@ -35,6 +35,9 @@ CPU-only hosts and NVIDIA. Device access does not change source encoding policie
 To copy an existing installation into a **new** container database without
 replacing either installation, use [Database migration](DATABASE_MIGRATION.md).
 
+To provision and manage Sonarr, Radarr, or Lidarr containers from an owned source,
+enable the optional [managed Arr controller](ARR_INTEGRATIONS.md#create-containers-from-grimoire).
+
 ## Before configuring a public domain
 
 Open `https://localhost` on the server. The bootstrap site uses Caddy's private
@@ -209,3 +212,14 @@ Primary references: [Caddy API and atomic reloads](https://caddyserver.com/docs/
 [automatic HTTPS modes](https://caddyserver.com/docs/caddyfile/options#auto-https),
 [explicit TLS certificates and issuers](https://caddyserver.com/docs/caddyfile/directives/tls),
 [HTTPS validation requirements](https://caddyserver.com/docs/automatic-https).
+
+## Source Agent preview
+
+The independent agent deployment uses
+`deploy/compose.source-agent.yaml` on the source host. It connects outbound
+over HTTPS and stores its identity and scan journal in a private volume.
+The coordinator remains responsible for browser authentication and applies
+instance IP rules to both browser and agent connections. Keep the agent's
+state outside public backups and keep its media mounts read-only.
+See [Source Agent setup](SOURCE_AGENT.md) and the
+[node protocol](NODE_PROTOCOL.md) for the current relay and its limits.

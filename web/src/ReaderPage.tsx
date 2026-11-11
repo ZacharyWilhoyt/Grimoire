@@ -5,22 +5,25 @@ import type {ReaderSettings} from './readerSettings'
 export default function ReaderPage({archive,path,index,comic,settings,onReady,onVisible,onCozy,lazy=false}:{archive:BookArchive;path:string;index:number;comic:boolean;settings:ReaderSettings;onReady:(index:number,width:number,height:number)=>void;onVisible?:(index:number)=>void;onCozy:()=>void;lazy?:boolean}){
  const root=useRef<HTMLDivElement>(null),iframe=useRef<HTMLIFrameElement>(null)
  const [near,setNear]=useState(!lazy),[src,setSrc]=useState(''),[html,setHtml]=useState(''),[error,setError]=useState('')
+ const [attempt,setAttempt]=useState(0),[imageLoaded,setImageLoaded]=useState(false)
  const disposeFrame=useRef<(()=>void)|undefined>(undefined)
  useEffect(()=>()=>disposeFrame.current?.(),[])
  const [reserved,setReserved]=useState<number|undefined>(undefined)
  const [height,setHeight]=useState<number|undefined>(undefined)
  useEffect(()=>{
    if(!lazy||!root.current||typeof IntersectionObserver==='undefined'){setNear(true);return}
-   const observer=new IntersectionObserver(entries=>{for(const entry of entries){if(!entry.isIntersecting&&root.current)setReserved(root.current.getBoundingClientRect().height/settings.zoom*100);setNear(entry.isIntersecting)}},{root:root.current.closest('.reader-viewport'),rootMargin:'100% 0px'})
+   const observer=new IntersectionObserver(entries=>{for(const entry of entries){if(!entry.isIntersecting&&root.current)setReserved(root.current.getBoundingClientRect().height/settings.zoom*100);setNear(entry.isIntersecting)}},{root:root.current.closest('.reader-viewport'),rootMargin:comic?'0px':'100% 0px'})
    observer.observe(root.current);return()=>observer.disconnect()
- },[lazy])
+ },[lazy,comic])
  useEffect(()=>{
    if(!root.current||!onVisible||typeof IntersectionObserver==='undefined')return
    const observer=new IntersectionObserver(entries=>{if(entries.some(e=>e.isIntersecting))onVisible(index)},{root:root.current.closest('.reader-viewport'),rootMargin:'-10% 0px -75% 0px'})
    observer.observe(root.current);return()=>observer.disconnect()
  },[index,onVisible])
+ const shouldLoad=!lazy||near
  useEffect(()=>{
-   if(!near){disposeFrame.current?.();setSrc('');setHtml('');return}
+   setError('');setImageLoaded(false)
+   if(!shouldLoad){disposeFrame.current?.();setSrc('');setHtml('');return}
    let cancelled=false;const urls:string[]=[]
    const objectUrl=(blob:Blob)=>{const url=URL.createObjectURL(blob);urls.push(url);return url}
    void (async()=>{
@@ -40,7 +43,7 @@ export default function ReaderPage({archive,path,index,comic,settings,onReady,on
      if(!cancelled){setHtml(wrapper.innerHTML);onReady(index,0,0)}
    })().catch(e=>{if(!cancelled)setError(e instanceof Error?e.message:'Page could not load.')})
    return()=>{cancelled=true;urls.forEach(URL.revokeObjectURL)}
- },[archive,path,comic,near])
+ },[archive,path,comic,shouldLoad,attempt])
  const attachFrame=()=>{
    disposeFrame.current?.()
    const frame=iframe.current,doc=frame?.contentDocument
@@ -76,9 +79,10 @@ export default function ReaderPage({archive,path,index,comic,settings,onReady,on
    disposeFrame.current=()=>{observer?.disconnect();doc.removeEventListener('dblclick',onCozy);doc.removeEventListener('wheel',wheel);doc.removeEventListener('click',click);['pointerdown','pointermove','pointerup','pointercancel'].forEach(type=>doc.removeEventListener(type,pointer as EventListener))}
 
  }
- return <div ref={root} className={`reader-page ${comic?'reader-image-page':'reader-text-page'}`} data-page={index} style={!near||!src&&!html?{minHeight:reserved??'100dvh'}:undefined}>
-   {error&&<p role="alert">{error}</p>}
-   {comic&&src&&<img draggable={false} src={src} alt={`Page ${index+1}`} onLoad={e=>onReady(index,e.currentTarget.naturalWidth,e.currentTarget.naturalHeight)} onError={()=>setError('This page image is damaged or unsupported by your browser.')}/>}
+ return <div ref={root} className={`reader-page ${comic?'reader-image-page':'reader-text-page'}`} data-page={index} style={!shouldLoad||(comic?!imageLoaded:!html)?{minHeight:reserved??'100dvh'}:undefined}>
+   {shouldLoad&&error&&<div className="reader-page-status"><p role="alert">{error}</p>{comic&&<button type="button" onClick={()=>{setSrc('');setError('');setAttempt(value=>value+1)}}>Retry page</button>}</div>}
+   {comic&&shouldLoad&&!error&&!imageLoaded&&<p className="reader-page-status" role="status">Loading page {index+1}…</p>}
+   {comic&&shouldLoad&&src&&!error&&<img draggable={false} src={src} alt={`Page ${index+1}`} onLoad={e=>{setImageLoaded(true);onReady(index,e.currentTarget.naturalWidth,e.currentTarget.naturalHeight)}} onError={()=>setError('This page image is damaged or unsupported by your browser.')}/>}
    {!comic&&html&&<iframe ref={iframe} title={`Book chapter ${index+1}`} sandbox="allow-same-origin" referrerPolicy="no-referrer" srcDoc={chapterDocument(html,settings.fontSize,settings.theme)} onLoad={attachFrame} style={{height:height??'100dvh'}}/>}
  </div>
 }

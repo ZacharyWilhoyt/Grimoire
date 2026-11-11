@@ -6,11 +6,71 @@ connection, or integration encryption key is required for those features.
 
 Source owners may additionally connect Sonarr, Radarr, and Lidarr. Multiple
 connections can belong to one source, including multiple instances of the same
-app with different folder mappings. This first version reads metadata for files
-already imported into Arr. It does not add media to Arr, search indexers, trigger
-downloads, rename files, change monitoring, or modify Arr configuration.
+app with different folder mappings. The metadata connection reads files already imported into Arr. Managed container
+setup separately creates the Arr instance and configures its login.
 
-## One-time server setup
+## Create containers from Grimoire
+
+The optional managed controller provisions Sonarr, Radarr, and Lidarr for a
+source-owning administrator. Each instance has its own app configuration,
+credentials, and source-folder mapping. The 12-connection limit applies to the
+combined list of managed and manually connected instances.
+
+On the Docker host, start the base deployment, then run this once from the repo:
+
+```sh
+python3 scripts/setup-managed-arr.py --media-root /media
+```
+
+Repeat `--media-root` for each existing read-only API mount destination you want
+to approve. With custom mounts, use the actual paths **inside the API container**.
+The helper uses the current `deploy/.env`, including its database selection. It
+pins the local LinuxServer stable images by digest, creates approved media
+volumes, starts the private controller, and enables the API connection to it.
+Use `--max-instances` to adjust the host-wide limit (12 by default). Repeat the
+helper after changing approved mounts. It requires a local Docker Engine with
+API v1.47 or later and Compose v2. The running controller and its configuration
+are retained across ordinary API rebuilds.
+
+1. Open an owned source, expand **Optional Arr connections**, and choose
+   **Create managed Arr instance**.
+2. Choose the app, name, source folder, and a separate Arr login. The selected
+   folder appears as `/media` inside that container. Media defaults to read-only.
+   Enable write access per instance if you want Arr to import, rename, or manage
+   files there. Writable instances run as UID 10001 and receive the selected
+   folder’s non-root group. The host or network share must grant that user or
+   group write access. Grimoire leaves filesystem ownership and permissions
+   to the operator.
+3. Watch the card until it reports **running**. The connection and its encrypted
+   API key are already saved. **Open local Arr UI** on the server (or forward its
+   loopback port through SSH) to configure the Arr library. Add `/media` as the
+   root folder and import the existing library using Arr's own interface. Some
+   Arr imports require writable media. Arr instances start with empty libraries.
+4. Use **Test connection** and then preview matches from the item's metadata
+   panel. Repeat creation for additional apps or another instance of the same app.
+
+Start, stop, restart and remove a managed container from its card. Container
+removal retains the Arr configuration and applied metadata. After it finishes,
+remove the connection from the list. Remove managed instances before disconnecting
+their source. Use a replacement instance to change its app, folder or mount access.
+
+The controller has Docker daemon privileges. It receives a fixed set of requests
+over a private Unix socket and accepts only approved image templates, media
+volumes and owned instance identifiers. The Grimoire API mounts that socket, while
+the Docker socket stays with the controller. Arr applications run as UID 10001
+with dropped capabilities, a read-only root filesystem, private config and bounded
+CPU/memory/processes. The selected media subpath stays within an operator-approved
+volume. The Arr UIs bind to loopback after authenticated setup. The main Caddy
+site continues to serve Grimoire, and the metadata adapter uses its existing fixed
+GET requests. Protect the Docker host and its private `arr_state` volume, which
+contains Arr credentials and library settings. Back up that volume together with
+the database and integration encryption key. Configuration from removed instances
+is retained there, so its disk usage needs operator monitoring.
+
+Tested container images are maintained by [LinuxServer.io](https://docs.linuxserver.io/).
+Use the existing connection workflow below for separately operated instances.
+
+## One-time setup for existing instances
 
 1. Update/restart the API to apply migration `0005_arr_connections.sql`.
 2. Generate a random 32-byte encryption key, for example:
@@ -116,12 +176,39 @@ scanning local files, browsing pages, or playing media does not contact Arr. Tes
 and previews are explicit owner actions. Changing settings does not alter prior
 metadata; future previews use the new configuration.
 
+## Preview a whole Sonarr series
+
+Open the grouped video series, choose **Edit series metadata**, and select
+**Preview series from Arr library**. Grimoire matches existing episode files by
+mapped path within that grouping. Review the synopsis and the matched files,
+then apply either update or both. Reviews support up to 1,000 matched files.
+
+The synopsis is stored on the group and displayed on its series page. You can
+also enter a synopsis in the group editor. Bulk episode imports preserve manual
+episode edits and the current group identity. Files in other groups and files
+without exact matches stay outside the review.
+
+## Display exported artwork and browse seasons
+
+Grimoire recognizes the artwork files Sonarr exports alongside existing video
+files. Use `banner.jpg` (or `fanart.jpg`) and `poster.jpg` in the series folder,
+`season02-poster.jpg` for Season 2, and `<episode filename stem>-thumb.jpg` beside
+an episode. JPEG, PNG, and WebP are supported. Season 0 also recognizes
+`season-specials-poster.jpg`.
+
+A grouped video series lists its seasons when season numbers are available.
+Each season has a shareable URL, its own poster when present, and a list of
+matching episodes. Missing season art falls back to the series poster. Episode
+cards prefer their matching thumbnail. The link and artwork routes require
+current source access. Grimoire reads these files directly, so exported artwork
+appears without an additional Arr metadata import.
+
 ## Security and operational limits
 
 - Only the source owner can list, save, test, remove or preview its connections.
   Other users and administrators of someone else's source receive no implicit
   access. Acquisition permissions do not authorize these operations.
-- Grimoire only sends fixed **GET** requests to Arr. The key itself may confer
+- The metadata adapter sends fixed **GET** requests to Arr. The key itself may confer
   broader Arr privileges; protect it as a privileged credential. Keys use
   XChaCha20-Poly1305 encryption with fresh nonces and authenticated binding to the
   source, connection ID, app and destination. Secret keys/ciphertext are omitted
@@ -159,12 +246,17 @@ Origin/CSRF checks. `{id}` is a connection UUID.
 | Method | Route | Purpose |
 | --- | --- | --- |
 | GET | `/api/sources/{source}/arr` | Owner settings/status and redacted connections |
+| POST | `/api/sources/{source}/arr/managed` | Reserve and provision a managed instance (owning administrator) |
+| POST | `/api/sources/{source}/arr/{id}/manage/{action}` | Start, stop, restart or remove a managed container (owning administrator) |
 | PUT | `/api/sources/{source}/arr/{id}` | Save `{name,kind,base_url,remote_root,source_subpath,api_key,enabled}` |
 | DELETE | `/api/sources/{source}/arr/{id}` | Remove a connection and its pending previews |
 | POST | `/api/sources/{source}/arr/{id}/test` | Test stored URL/key; return app/API version |
 | POST | `/api/sources/{source}/arr/{id}/preview` | `{path}`; return canonical fields and review token |
+| POST | `/api/sources/{source}/groups/{group}/arr/{id}/preview` | Review matched Sonarr episodes and a group synopsis |
+| POST | `/api/sources/{source}/groups/{group}/arr/apply` | Apply a reviewed series synopsis, matched episodes, or both |
+| PUT | `/api/sources/{source}/groups/{group}/synopsis` | Save a manual group synopsis |
 
-Use the existing metadata apply endpoint for review tokens. The normal catalog,
+Use the file metadata apply endpoint for individual reviews and the group apply endpoint for series reviews. The normal catalog,
 metadata and delivery APIs remain unchanged. Tests use isolated simulated Arr
 services; no real Arr credentials are included. Integration tests exercise all
 three apps, Sonarr API version discovery, encryption/redaction, exact paths,

@@ -90,3 +90,13 @@ If the permission roster cannot be fetched, the dialog shows an unavailable stat
 and a retry action instead of assuming no grants exist. Editing resumes after a
 successful load. If a change succeeds but refreshing the roster fails, the dialog
 reports the applied change and requires retry before further editing.
+
+## Remote Source Agent preview
+
+Remote sharing currently uses a source-level projection. A viewer needs both
+the coordinator's discovery permission and a matching local agent rule before
+the coordinator lists remote metadata. Playback also needs media access on
+both sides. The agent rereads its local rules before opening every relay
+range. Central permissions are editable in the Source Agents panel, which
+shows the viewer UUID for the agent configuration. Local rules are changed on
+the agent host. Directory- and item-level remote overrides are pending.

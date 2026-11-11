@@ -40,21 +40,27 @@ async fn validate(
     user: &auth::User,
     reference: &Reference,
 ) -> Result<&'static str, AppError> {
-    if reference.source_id.len() > 128 || reference.relative_path.len() > 4096 {
+    validate_media(state, user, &reference.source_id, &reference.relative_path).await
+}
+pub(crate) async fn validate_media(
+    state: &AppState,
+    user: &auth::User,
+    source_id: &str,
+    relative_path: &str,
+) -> Result<&'static str, AppError> {
+    if source_id.len() > 128 || relative_path.len() > 4096 {
         return Err(crate::bad_request("Invalid media reference."));
     }
-    let root = crate::media_root(state, user, &reference.source_id).await?;
-    let extension = std::path::Path::new(&reference.relative_path)
+    let root = crate::media_root(state, user, source_id).await?;
+    let extension = std::path::Path::new(relative_path)
         .extension()
         .and_then(|extension| extension.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
     let kind = crate::classify_extension(&extension)
         .ok_or_else(|| crate::bad_request("Unsupported media type."))?;
-    let path = crate::resolve_media_path(&root, &reference.relative_path, kind)?;
-    if path.strip_prefix(&root).ok().and_then(|path| path.to_str())
-        != Some(reference.relative_path.as_str())
-    {
+    let path = crate::resolve_media_path(&root, relative_path, kind)?;
+    if path.strip_prefix(&root).ok().and_then(|path| path.to_str()) != Some(relative_path) {
         return Err(crate::bad_request("Use the original catalog path."));
     }
     Ok(kind)

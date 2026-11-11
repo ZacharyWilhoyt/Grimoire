@@ -6,3 +6,7 @@ it('round trips media paths and series IDs without placing credentials in URLs',
   expect(linkRequest(seriesLink('source','abc').slice(1))).toBe('/api/media/link?source_id=source&group=abc')
   expect(linkRequest('')).toBeNull()
 })
+
+it('preserves a season in a shared series link',()=>{
+ expect(linkRequest(seriesLink('source','abc','2').slice(1))).toBe('/api/media/link?source_id=source&group=abc&season=2')
+})

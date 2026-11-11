@@ -653,13 +653,15 @@ pub async fn get_policy(
     Extension(identity): Extension<auth::Identity>,
     Path(source): Path<String>,
 ) -> Result<Response, AppError> {
-    let owner: bool = sqlx::query_scalar("SELECT owner_id=$2 FROM sources WHERE id=$1")
-        .bind(&source)
-        .bind(identity.user.id)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|_| auth::unavailable())?
-        .ok_or_else(missing)?;
+    let owner: bool = sqlx::query_scalar(
+        "SELECT owner_id=$2 FROM sources WHERE id=$1 AND kind='local_directory'",
+    )
+    .bind(&source)
+    .bind(identity.user.id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| auth::unavailable())?
+    .ok_or_else(missing)?;
     if !owner {
         return Err(missing());
     }

@@ -3,6 +3,7 @@ pub mod groups;
 mod local;
 pub mod model;
 mod providers;
+pub mod sidecars;
 use crate::{auth, catalog, AppError, AppState};
 use axum::{
     extract::{Path, Query, State},
@@ -82,6 +83,8 @@ pub struct View {
     pub has_custom: bool,
     pub origin: String,
     pub artwork_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thumbnail_url: Option<String>,
     pub can_edit: bool,
     pub artwork_preference: ArtworkPreference,
     pub provider: Option<String>,
@@ -131,6 +134,7 @@ fn view(path: &str, key: &str, record: Option<&Record>, can_edit: bool, availabl
                     }
                 })
         },
+        thumbnail_url: None,
         artwork_url: available
             .then(|| {
                 record
@@ -276,7 +280,7 @@ async fn reference(
         return Err(crate::bad_request("Invalid file path."));
     }
     let root = if owner {
-        let path:Option<String>=sqlx::query_scalar("SELECT s.path FROM sources s JOIN users u ON u.id=s.owner_id WHERE s.id=$1 AND s.owner_id=$2 AND NOT u.disabled").bind(source).bind(user.id).fetch_optional(&state.db).await.map_err(|_|auth::unavailable())?;
+        let path:Option<String>=sqlx::query_scalar("SELECT s.path FROM sources s JOIN users u ON u.id=s.owner_id WHERE s.id=$1 AND s.kind='local_directory' AND s.owner_id=$2 AND NOT u.disabled").bind(source).bind(user.id).fetch_optional(&state.db).await.map_err(|_|auth::unavailable())?;
         PathBuf::from(path.ok_or_else(not_found)?)
     } else {
         crate::media_root(state, user, source).await?
@@ -398,9 +402,12 @@ pub async fn details(
     Query(query): Query<FileQuery>,
 ) -> Result<Json<View>, AppError> {
     let file = reference(&state, &identity.user, &source, &query.path, false).await?;
-    Ok(Json(
-        current_view(&state, &identity.user, &source, &query.path, &file.key).await?,
-    ))
+    let mut metadata =
+        current_view(&state, &identity.user, &source, &query.path, &file.key).await?;
+    if file.kind == "video" {
+        metadata.thumbnail_url = sidecars::thumbnail_url(&source, &query.path, &file.path);
+    }
+    Ok(Json(metadata))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -697,7 +704,7 @@ pub async fn apply(
                 "Metadata processing is busy.".into(),
             )
         })?;
-    let review=sqlx::query_as::<_,ReviewRow>("SELECT provider,provider_id,data,artwork_ref,arr_connection_id,arr_revision FROM metadata_reviews WHERE id=$1 AND owner_id=$2 AND source_id=$3 AND file_key=$4 AND expires_at>now()").bind(apply.review_token).bind(identity.user.id).bind(&source).bind(&file.key).fetch_optional(&state.db).await.map_err(|_|auth::unavailable())?.ok_or_else(||crate::bad_request("This review expired or belongs to a different file/account. Preview the match again."))?;
+    let review=sqlx::query_as::<_,ReviewRow>("SELECT provider,provider_id,data,artwork_ref,arr_connection_id,arr_revision FROM metadata_reviews WHERE id=$1 AND owner_id=$2 AND source_id=$3 AND file_key=$4 AND group_id IS NULL AND expires_at>now()").bind(apply.review_token).bind(identity.user.id).bind(&source).bind(&file.key).fetch_optional(&state.db).await.map_err(|_|auth::unavailable())?.ok_or_else(||crate::bad_request("This review expired or belongs to a different file/account. Preview the match again."))?;
     let mut warnings = Vec::new();
     let artwork = if let Some(connection) = review.arr_connection_id {
         arr::review_artwork(
@@ -741,7 +748,7 @@ pub async fn apply(
         arr::check_review(&mut tx, &source, id, review.arr_revision).await?;
     }
     ensure_row(&mut tx, &source, &apply.path, &file.key).await?;
-    let removed=sqlx::query("DELETE FROM metadata_reviews WHERE id=$1 AND owner_id=$2 AND source_id=$3 AND file_key=$4 AND expires_at>now()").bind(apply.review_token).bind(identity.user.id).bind(&source).bind(&file.key).execute(&mut *tx).await.map_err(|_|auth::unavailable())?;
+    let removed=sqlx::query("DELETE FROM metadata_reviews WHERE id=$1 AND owner_id=$2 AND source_id=$3 AND file_key=$4 AND group_id IS NULL AND expires_at>now()").bind(apply.review_token).bind(identity.user.id).bind(&source).bind(&file.key).execute(&mut *tx).await.map_err(|_|auth::unavailable())?;
     if removed.rows_affected() != 1 {
         return Err(crate::bad_request(
             "Preview this match again before applying it.",
@@ -951,7 +958,7 @@ async fn run_scan(
     let mut skipped = 0;
     let mut warnings = 0;
     for (index, file) in files.into_iter().enumerate() {
-        let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sources s JOIN users u ON u.id=s.owner_id WHERE s.id=$1 AND s.owner_id=$2 AND NOT u.disabled)").bind(source).bind(user.id).fetch_one(&state.db).await.map_err(|_|auth::unavailable())?;
+        let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sources s JOIN users u ON u.id=s.owner_id WHERE s.id=$1 AND s.kind='local_directory' AND s.owner_id=$2 AND NOT u.disabled)").bind(source).bind(user.id).fetch_one(&state.db).await.map_err(|_|auth::unavailable())?;
         if !active {
             return Err(not_found());
         }
@@ -1127,6 +1134,7 @@ mod scan_tests {
             catalog_scans: Arc::new(Semaphore::new(1)),
             metadata: runtime,
             video_audio: Arc::new(crate::video_audio::Runtime::new()),
+            relay: Arc::new(crate::relay::Runtime::new()),
             transcode: Arc::new(crate::transcode::Runtime::new()),
         };
         let worker =

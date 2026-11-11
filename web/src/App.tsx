@@ -1,4 +1,5 @@
 import { linkRequest, mediaLink, detailLink, seriesLink, type LinkContext } from './mediaLinks'
+import SourceAgents, { type RemoteBook, type RemoteSource, type SourceAgent } from './SourceAgents'
 import SourceTranscoding from './SourceTranscoding'
 import ConnectDirectory from './ConnectDirectory'
 import { loadCatalogPage, type PersonalPage } from './catalogLoader'
@@ -22,7 +23,7 @@ import VideoPlayer from './VideoPlayer'
 import MusicPlayer from './MusicPlayer'
 import MusicPage from './MusicPage'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { BookOpen, ChevronDown, Compass, Film, FolderOpen, Headphones, Library, Menu, Plus, Search, Settings2, ShieldCheck, RefreshCw, Sparkles, Trash2 } from 'lucide-react'
+import { BookOpen, ChevronDown, Compass, Film, FolderOpen, Headphones, Library, Menu, Plus, Search, Server, Settings2, ShieldCheck, RefreshCw, Sparkles, Trash2 } from 'lucide-react'
 
 type MediaKind = 'All' | 'Video' | 'Music' | 'Books'
 type Source = { id: string; name: string; available: boolean; is_owner: boolean; can_access_media: boolean; acquisition_policy: AcquisitionPolicy }
@@ -34,6 +35,12 @@ async function readApi<T>(url: string, signal?: AbortSignal): Promise<T> {
 }
 
 function Workspace({ user, logout }: { user: User; logout: () => void }) {
+  const [agentsOpen, setAgentsOpen] = useState(false)
+  const [sidebarAgents, setSidebarAgents] = useState<SourceAgent[]>([])
+  const [sharedRemoteSources, setSharedRemoteSources] = useState<RemoteSource[]>([])
+  const [agentSelection, setAgentSelection] = useState<SourceAgent>()
+  const [remoteSelection, setRemoteSelection] = useState<RemoteSource>()
+  const [remoteBook, setRemoteBook] = useState<RemoteBook | null>(null)
   const [detailItem,setDetailItem]=useState<MediaItem|null>(null)
   const [linkedSeries, setLinkedSeries] = useState<LinkContext | null>(null)
   const [linkLoading, setLinkLoading] = useState(false)
@@ -104,6 +111,25 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
   }, [sourceRefresh])
 
   useEffect(() => {
+    if (agentsOpen) return
+    const controller = new AbortController()
+    void readApi<SourceAgent[]>('/api/nodes/v1', controller.signal).then(nodes => {
+      if (!controller.signal.aborted && Array.isArray(nodes)) setSidebarAgents(nodes.filter(node => !node.revoked))
+    }).catch(() => {})
+    void readApi<RemoteSource[]>('/api/nodes/v1/sources', controller.signal).then(sources => {
+      if (!controller.signal.aborted && Array.isArray(sources)) setSharedRemoteSources(sources.filter(source => !source.is_owner))
+    }).catch(() => {})
+    return () => controller.abort()
+  }, [sourceRefresh, agentsOpen])
+
+  const openAgents = (agent?: SourceAgent, source?: RemoteSource) => {
+    setAgentSelection(agent)
+    setRemoteSelection(source)
+    setMenuOpen(false)
+    setAgentsOpen(true)
+  }
+
+  useEffect(() => {
     setSourceFiles([]); setSourceError(''); setSourceLoading(false)
     if (!selectedSource?.can_access_media) return
     const controller = new AbortController()
@@ -152,11 +178,12 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
       if (controller.signal.aborted) return
       if (result.continuing) {
         setContinuing(result.continuing.items)
-        if (result.continuing.unavailable_items) notes.push('Some items with saved progress are unavailable.')
       }
       if (result.recent) {
         setRecent(result.recent.items)
-        if (result.recent.unavailable_items) notes.push('Some recently opened files are currently unavailable.')
+      }
+      if (result.continuing?.unavailable_items || result.recent?.unavailable_items) {
+        notes.push('Some files in your history are missing from their saved locations. Your progress and history are retained.')
       }
       if (result.library) {
         const library = result.library
@@ -224,21 +251,32 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
   }, [])
   const closeWatch = () => { setDetailItem(null);setVideo(null); setReading(null); setLinkedSeries(null); setLinkError(''); window.history.pushState(null, '', '/#discover') }
   const showDetails=(item:MediaItem)=>{setDetailItem(item);window.history.pushState(null,'',detailLink(item.source_id,item.relative_path))}
-  const showSeries=async(item:MediaItem)=>{
+  const showSeries=async(item:MediaItem, season?:string|null)=>{
     const group=item.metadata?.group;if(!group)return
     setLinkLoading(true);setLinkError('')
-    try{const context=await readApi<LinkContext>(`/api/media/link?${new URLSearchParams({source_id:item.source_id,group:group.id})}`);setDetailItem(null);setLinkedSeries(context);window.history.pushState(null,'',seriesLink(item.source_id,group.id))}catch(e){setLinkError(e instanceof Error?e.message:'Series unavailable.')}finally{setLinkLoading(false)}
+    const url=seriesLink(item.source_id,group.id,season)
+    try {
+      const context=await readApi<LinkContext>(linkRequest(url.slice(1))!)
+      setDetailItem(null)
+      setLinkedSeries(context)
+      window.history.pushState(null,'',url)
+    } catch(e) {
+      setLinkError(e instanceof Error?e.message:'Series unavailable.')
+    } finally { setLinkLoading(false) }
   }
   const refreshDetails = () => {
     setSourceRefresh(value=>value+1)
     const item=detailItem??linkedSeries?.members[0]
     if(!item)return
     const params=new URLSearchParams({source_id:item.source_id})
-    if(linkedSeries&&!detailItem&&item.metadata?.group)params.set('group',item.metadata.group.id)
+    if(linkedSeries&&!detailItem&&item.metadata?.group){
+      params.set('group',item.metadata.group.id)
+      if(linkedSeries.season!=null)params.set('season',linkedSeries.season)
+    }
     else params.set('path',item.relative_path)
     void readApi<LinkContext>(`/api/media/link?${params}`).then(context=>{
       if(detailItem)setDetailItem(current=>current?.file_key===item.file_key?context.item:current)
-      else setLinkedSeries(current=>current?.members[0]?.metadata?.group?.id===item.metadata?.group?.id?context:current)
+      else setLinkedSeries(current=>current?.members[0]?.metadata?.group?.id===item.metadata?.group?.id&&current?.season===linkedSeries?.season?context:current)
     }).catch(error=>setActionError(error instanceof Error?error.message:'Could not refresh details.'))
   }
   const toggleSaved = async (item: MediaItem) => {
@@ -305,13 +343,14 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
 
   const musicPlayer = playback && <MusicPlayer key="music" tracks={playback.tracks} index={playback.index} busy={actionBusy} onIndex={index => { void openMedia(playback.tracks[index], playback.tracks) }} onClose={() => setPlayback(null)}/>
   if (linkLoading || linkError) return <>{musicPlayer}<section className="watch-page"><main className="watch-main"><button className="watch-back" onClick={closeWatch}>Back to library</button><p role={linkError ? 'alert' : 'status'}>{linkError || 'Opening media link…'}</p></main></section></>
+  if (remoteBook) return <BookReader mediaUrl={remoteBook.url} userId={user.id} key={remoteBook.url} sourceId={remoteBook.sourceId} sourceName={remoteBook.sourceName} file={{ ...remoteBook.item, relative_path: remoteBook.item.id }} onClose={() => { setRemoteBook(null); setAgentsOpen(true) }}/>
   if (reading) return <BookReader userId={user.id} key={`${reading.source_id}:${reading.relative_path}`} sourceId={reading.source_id} sourceName={reading.source_name} file={reading} onClose={closeWatch} onNext={item=>{void openMedia(item,[item])}}/>
 
 
   if(linkedSeries?.members[0]?.kind==='music'&&!detailItem) return <>{musicPlayer}<section className="series-page"><header className="watch-header"><button className="watch-back" onClick={closeWatch}>Back to library</button><h1>{linkedSeries.label??'Album'}</h1></header>{actionError&&<p role="alert">{actionError}</p>}<MediaCollection items={linkedSeries.members} groupBy="none" busy={actionBusy} onOpen={(item,queue)=>{void openMedia(item,queue)}} onSave={item=>{void toggleSaved(item)}} onMetadata={setMetadataItem} onGroupMetadata={setGroupItem}/>{metadataItem&&<MetadataEditor item={metadataItem} onClose={()=>setMetadataItem(null)} onUpdated={refreshDetails}/>} {groupItem&&<GroupEditor item={groupItem} onClose={()=>setGroupItem(null)} onUpdated={refreshDetails}/>}</section></>
   if (detailItem || linkedSeries) {
     const members=detailItem?[detailItem]:linkedSeries!.members
-    return <>{musicPlayer}<SeriesDetails key={detailItem?.file_key??members[0]?.metadata?.group?.id} members={members} label={linkedSeries?.label} series={!detailItem} catalog={catalog} busy={actionBusy} error={actionError} onClose={closeWatch} onOpen={(item,queue)=>{void openMedia(item,queue)}} onSave={item=>{void toggleSaved(item)}} onDetails={showDetails} onSeries={item=>{void showSeries(item)}} onMetadata={setMetadataItem} onGroupMetadata={setGroupItem}/>{metadataItem&&<MetadataEditor item={metadataItem} onClose={()=>setMetadataItem(null)} onUpdated={refreshDetails}/>}
+    return <>{musicPlayer}<SeriesDetails key={detailItem?.file_key??`${members[0]?.metadata?.group?.id}:${linkedSeries?.season??'series'}`} members={members} season={detailItem?null:linkedSeries?.season} seasons={detailItem?undefined:linkedSeries?.seasons} artwork={detailItem?undefined:linkedSeries?.artwork} onSeason={season=>{if(members[0])void showSeries(members[0],season)}} label={linkedSeries?.label} series={!detailItem} catalog={catalog} busy={actionBusy} error={actionError} onClose={closeWatch} onOpen={(item,queue)=>{void openMedia(item,queue)}} onSave={item=>{void toggleSaved(item)}} onDetails={showDetails} onSeries={item=>{void showSeries(item)}} onMetadata={setMetadataItem} onGroupMetadata={setGroupItem}/>{metadataItem&&<MetadataEditor item={metadataItem} onClose={()=>setMetadataItem(null)} onUpdated={refreshDetails}/>}
     {groupItem&&<GroupEditor key={groupItem.metadata?.group?.id} item={groupItem} onClose={()=>setGroupItem(null)} onUpdated={refreshDetails}/>}</>
   }
   return <>{musicPlayer}{video && <VideoPlayer userId={user.id} key={`${video.source_id}:${video.relative_path}`} sourceId={video.source_id} sourceName={video.source_name} file={video} mini={miniVideo} onRestore={() => { setMiniVideo(false); window.history.pushState(null, '', mediaLink(video.source_id, video.relative_path)) }} onDismiss={() => setVideo(null)} onNext={item => { void openMedia(item, [item]) }} onClose={() => { setMiniVideo(true); window.history.pushState(null, '', '/#discover') }}/>}
@@ -323,8 +362,19 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
       <nav className="main-nav">{nav.map(({ label, icon: Icon }) => <button key={label} className={`nav-item ${!selectedSource && page === label ? 'selected' : ''}`} onClick={() => { navigate(label) }}><Icon size={18} strokeWidth={1.8} />{label}</button>)}</nav>
       <div className="side-label sources-label">YOUR SOURCES <button title="Refresh sources" onClick={() => setSourceRefresh(value => value + 1)}><RefreshCw size={14}/></button>{user.is_admin && <button title="Connect a directory" onClick={() => setConnectOpen(true)}><Plus size={15} /></button>}</div>
       {sources.map(source => <button key={source.id} className={`source-row ${selectedSource?.id === source.id ? 'source-selected' : ''}`} onClick={() => { setSelectedSource(source); setGenre(''); setFilter('All'); setQuery(''); setMenuOpen(false); setActionError('') }}><span className="source-icon owner"><FolderOpen size={16} /></span><span className="source-copy"><strong>{source.name}</strong><small>{source.is_owner ? 'Owned source' : 'Shared with you'}</small></span><span className={`source-dot ${source.available ? 'online' : ''}`} /></button>)}
+      {sidebarAgents.map(agent => <button key={agent.id} className="source-row" onClick={() => openAgents(agent)}>
+        <span className="source-icon owner"><Server size={16}/></span>
+        <span className="source-copy"><strong>{agent.label}</strong><small>{agent.online ? 'Source agent · Online' : 'Source agent · Offline'}</small></span>
+        <span className={`source-dot ${agent.online ? 'online' : ''}`}/>
+      </button>)}
+      {sharedRemoteSources.map(source => <button key={source.id} className="source-row" onClick={() => openAgents(undefined, source)}>
+        <span className="source-icon"><Server size={16}/></span>
+        <span className="source-copy"><strong>{source.name}</strong><small>Shared remote source</small></span>
+        <span className={`source-dot ${source.available ? 'online' : ''}`}/>
+      </button>)}
       {sourcesError && <p className="source-error no-sources" role="alert">{sourcesError}</p>}
-      {sources.length === 0 && <p className="no-sources">No sources available yet.</p>}
+      {sources.length === 0 && sidebarAgents.length === 0 && sharedRemoteSources.length === 0 && <p className="no-sources">No sources available yet.</p>}
+      <button className="add-source" onClick={() => openAgents()}><Server size={15}/> Source Agents</button>
       {user.is_admin && <button className="add-source" onClick={() => setConnectOpen(true)}><Plus size={15} /> Connect a directory</button>}
       <div className="sidebar-bottom">{user.is_admin&&<button className="nav-item" onClick={()=>setAdminSecurityOpen(true)}><Settings2 size={18}/>Administrator security</button>}<button className="nav-item" onClick={() => setSettingsOpen(true)}><Settings2 size={18} />Account settings</button><button className="nav-item" onClick={logout}>Sign out</button><div className="connection"><span className={`connection-dot ${apiStatus}`} />{apiStatus === 'connected' ? 'Connected to Grimoire' : apiStatus === 'offline' ? 'API not connected' : 'Connecting…'}</div></div>
     </aside>
@@ -351,6 +401,7 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
         {!musicActive&&<><MetadataCredits/><footer className="footer"><span>MADE FOR THE MOMENTS BETWEEN</span><span>GRIMOIRE <b>·</b> EARLY ACCESS</span></footer></>}
       </div>
     </main>
+    {agentsOpen && <SourceAgents initialAgent={agentSelection} initialSource={remoteSelection} onClose={() => setAgentsOpen(false)} onPermissions={source => setPermissionsSource({ ...source, available: true, is_owner: true, can_access_media: true, acquisition_policy: 'auto_deny' })} onBook={book => { setAgentsOpen(false); setPlayback(null); setVideo(null); setRemoteBook(book) }}/>}
     {permissionsSource && <SourcePermissions source={permissionsSource} ownerUsername={user.username} onClose={() => setPermissionsSource(null)} onSaved={() => setSourceRefresh(value => value + 1)}/>}
     {adminSecurityOpen&&user.is_admin&&<AdminSecurity onClose={()=>setAdminSecurityOpen(false)}/>}
     {settingsOpen && <AccountSettings onClose={() => setSettingsOpen(false)} />}

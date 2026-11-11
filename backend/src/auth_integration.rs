@@ -26,6 +26,7 @@ pub(super) fn state(pool: PgPool) -> AppState {
         catalog_scans: Arc::new(tokio::sync::Semaphore::new(2)),
         metadata: Arc::new(metadata::Runtime::new()),
         video_audio: Arc::new(crate::video_audio::Runtime::new()),
+        relay: Arc::new(crate::relay::Runtime::new()),
         transcode: Arc::new(crate::transcode::Runtime::new()),
     }
 }
@@ -2158,9 +2159,9 @@ async fn arr_connections_are_optional_owner_only_and_match_existing_files_withou
             if endpoint.starts_with("mediacover/") {return ([("content-type","image/jpeg")],jpeg).into_response();}
             let value=match (app_name,endpoint) {
                 ("radarr","movie")=>json!([{"id":1,"title":"An Arr Movie","year":2025,"overview":"Movie overview","genres":["Drama"],"path":"/movies/Movie","movieFile":{"id":2,"path":"/movies/Movie/Movie.mkv"},"images":[{"coverType":"poster","url":"/MediaCover/1/poster.jpg"}],"collection":{"title":"Movie Collection"}}]),
-                ("sonarr"|"Sonarr","series")=>json!([{"id":3,"title":"Arr Show","path":"/tv/Show","year":2024,"genres":["Animation"],"images":[{"coverType":"poster","url":"/MediaCover/3/poster.jpg"}]}]),
-                ("sonarr"|"Sonarr","episodefile")=>json!([{"id":4,"path":"/tv/Show/Season 01/ep01.mkv"}]),
-                ("sonarr"|"Sonarr","episode")=>json!([{"id":5,"episodeFileId":4,"title":"Arr Pilot","seasonNumber":1,"episodeNumber":1,"overview":"Episode overview"}]),
+                ("sonarr"|"Sonarr","series")=>json!([{"id":3,"title":"Arr Show","overview":"The whole series synopsis","path":"/tv/Show","year":2024,"genres":["Animation"],"images":[{"coverType":"poster","url":"/MediaCover/3/poster.jpg"}]}]),
+                ("sonarr"|"Sonarr","episodefile")=>json!([{"id":4,"path":"/tv/Show/Season 01/ep01.mkv"},{"id":14,"relativePath":"Season 01/ep02.mkv"},{"id":24,"relativePath":"Season 01/ep03.mkv"}]),
+                ("sonarr"|"Sonarr","episode")=>json!([{"id":5,"episodeFileId":4,"title":"Arr Pilot","seasonNumber":1,"episodeNumber":1,"overview":"Episode overview"},{"id":15,"episodeFileId":14,"title":"Arr Second","seasonNumber":1,"episodeNumber":2,"overview":"Second episode overview"},{"id":25,"episodeFileId":24,"title":"Different group","seasonNumber":1,"episodeNumber":3}]),
                 ("lidarr","artist")=>json!([{"id":6,"artistName":"Arr Artist","path":"/music/Artist","genres":["Jazz"]}]),
                 ("lidarr","trackfile")=>json!([{"id":7,"albumId":8,"path":"/music/Artist/Album/song.flac"}]),
                 ("lidarr","album/8")=>json!({"id":8,"title":"Arr Album","releaseDate":"2023-01-01","genres":[],"images":[{"coverType":"cover","url":"/MediaCover/Albums/8/cover.jpg"}]}),
@@ -2185,6 +2186,8 @@ async fn arr_connections_are_optional_owner_only_and_match_existing_files_withou
     let root = std::env::temp_dir().join(format!("grimoire-arr-{}", Uuid::new_v4()));
     for path in [
         "shows/Show/Season 01/ep01.mkv",
+        "shows/Show/Season 01/ep02.mkv",
+        "shows/Show/Season 01/ep03.mkv",
         "movies/Movie/Movie.mkv",
         "music/Artist/Album/song.flac",
         "movies/NotInArr.mkv",
@@ -2423,6 +2426,145 @@ async fn arr_connections_are_optional_owner_only_and_match_existing_files_withou
             .status(),
             StatusCode::BAD_REQUEST
         );
+        if app == "sonarr" {
+            let second = "shows/Show/Season 01/ep02.mkv";
+            let third = "shows/Show/Season 01/ep03.mkv";
+            for (member, collection) in [(second, "Arr Show"), (third, "Other group")] {
+                sqlx::query("INSERT INTO media_metadata(file_key,source_id,relative_path,local_data) VALUES($1,$2,$3,$4)")
+                    .bind(crate::catalog::file_key(&source, member)).bind(&source).bind(member)
+                    .bind(json!({"collection":collection}).to_string()).execute(&pool).await.unwrap();
+            }
+            let group = applied["metadata"]["group"]["id"].as_str().unwrap();
+            let group_url = format!("/api/sources/{source}/groups/{group}");
+            let preview_url = format!("{group_url}/arr/{id}/preview");
+            let apply_group_url = format!("{group_url}/arr/apply");
+            let series = request(
+                &state,
+                Method::POST,
+                &preview_url,
+                Some(&owner),
+                Some(&csrf),
+                Some(ORIGIN),
+                Some(json!({"path":path})),
+            )
+            .await;
+            assert_eq!(series.status(), StatusCode::OK);
+            let series = body(series).await;
+            assert_eq!(series["synopsis"], "The whole series synopsis");
+            assert_eq!(series["episodes"].as_array().unwrap().len(), 2);
+            assert_eq!(series["episodes"][1]["path"], second);
+            let file_apply = json!({"path":path,"review_token":series["review_token"]});
+            assert_eq!(
+                request(
+                    &state,
+                    Method::POST,
+                    &apply_url,
+                    Some(&owner),
+                    Some(&csrf),
+                    Some(ORIGIN),
+                    Some(file_apply)
+                )
+                .await
+                .status(),
+                StatusCode::BAD_REQUEST
+            );
+            let update = json!({"path":path,"review_token":series["review_token"],"synopsis":true,"episodes":true});
+            assert_eq!(
+                request(
+                    &state,
+                    Method::POST,
+                    &apply_group_url,
+                    Some(&viewer),
+                    Some(&viewer_csrf),
+                    Some(ORIGIN),
+                    Some(update.clone())
+                )
+                .await
+                .status(),
+                StatusCode::NOT_FOUND
+            );
+            let changed = request(
+                &state,
+                Method::POST,
+                &apply_group_url,
+                Some(&owner),
+                Some(&csrf),
+                Some(ORIGIN),
+                Some(update.clone()),
+            )
+            .await;
+            assert_eq!(changed.status(), StatusCode::OK);
+            assert_eq!(body(changed).await["episodes_updated"], 2);
+            assert_eq!(
+                request(
+                    &state,
+                    Method::POST,
+                    &apply_group_url,
+                    Some(&owner),
+                    Some(&csrf),
+                    Some(ORIGIN),
+                    Some(update)
+                )
+                .await
+                .status(),
+                StatusCode::BAD_REQUEST
+            );
+            let metadata = |member: &str| {
+                format!(
+                    "/api/sources/{source}/metadata?{}",
+                    reqwest::Url::parse_with_params("http://localhost", &[("path", member)])
+                        .unwrap()
+                        .query()
+                        .unwrap()
+                )
+            };
+            let view = body(
+                request(
+                    &state,
+                    Method::GET,
+                    &metadata(second),
+                    Some(&viewer),
+                    None,
+                    None,
+                    None,
+                )
+                .await,
+            )
+            .await;
+            assert_eq!(view["group"]["synopsis"], "The whole series synopsis");
+            assert_eq!(view["group"]["id"], group);
+            assert_eq!(view["fields"]["description"], "Second episode overview");
+            assert_eq!(view["fields"]["title"], "Arr Second");
+            let untouched = body(
+                request(
+                    &state,
+                    Method::GET,
+                    &metadata(third),
+                    Some(&owner),
+                    None,
+                    None,
+                    None,
+                )
+                .await,
+            )
+            .await;
+            assert_eq!(untouched["provider"], Value::Null);
+            let synopsis_url = format!("{group_url}/synopsis");
+            let manual = request(
+                &state,
+                Method::PUT,
+                &synopsis_url,
+                Some(&owner),
+                Some(&csrf),
+                Some(ORIGIN),
+                Some(json!({"path":path,"synopsis":"Manual synopsis"})),
+            )
+            .await;
+            assert_eq!(manual.status(), StatusCode::OK);
+            let manual = body(manual).await;
+            assert_eq!(manual["group"]["synopsis"], "Manual synopsis");
+            assert_eq!(manual["group"]["synopsis_provider"], Value::Null);
+        }
         let stale = body(
             request(
                 &state,
@@ -5373,4 +5515,1034 @@ async fn ip_access_is_admin_only_allow_over_deny_global_and_recoverable(pool: Pg
         StatusCode::FORBIDDEN
     );
     assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM auth_events WHERE event IN ('ip_policy_changed','operator_ip_policy_reset')").fetch_one(&pool).await.unwrap(),3);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn media_comments_and_replies_follow_item_permissions(pool: PgPool) {
+    let state = state(pool.clone());
+    let (owner, owner_csrf, owner_user) = register_user(&state, "comment_owner").await;
+    let (viewer, viewer_csrf, viewer_user) = register_user(&state, "comment_viewer").await;
+    let root = shared_media_fixture();
+    let source = Uuid::new_v4().to_string();
+    let owner_id = Uuid::parse_str(owner_user["id"].as_str().unwrap()).unwrap();
+    let viewer_id = Uuid::parse_str(viewer_user["id"].as_str().unwrap()).unwrap();
+    sqlx::query("INSERT INTO sources(id,owner_id,name,path) VALUES ($1,$2,'Discussion',$3)")
+        .bind(&source)
+        .bind(owner_id)
+        .bind(root.to_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO source_permissions(source_id,user_id,can_discover) VALUES($1,$2,true)",
+    )
+    .bind(&source)
+    .bind(viewer_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let endpoint = "/api/media/comments";
+    let list = format!("{endpoint}?source_id={source}&path=clip.mp4");
+    let comment = json!({"source_id":source,"path":"clip.mp4","body":" <b>Hello</b> "});
+    for (cookie, expected) in [
+        (None, StatusCode::UNAUTHORIZED),
+        (Some(viewer.as_str()), StatusCode::NOT_FOUND),
+    ] {
+        assert_eq!(
+            request(&state, Method::GET, &list, cookie, None, None, None)
+                .await
+                .status(),
+            expected
+        );
+    }
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            endpoint,
+            Some(&owner),
+            None,
+            Some(ORIGIN),
+            Some(comment.clone())
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            endpoint,
+            Some(&viewer),
+            Some(&viewer_csrf),
+            Some(ORIGIN),
+            Some(comment.clone())
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    let posted = request(
+        &state,
+        Method::POST,
+        endpoint,
+        Some(&owner),
+        Some(&owner_csrf),
+        Some(ORIGIN),
+        Some(comment),
+    )
+    .await;
+    assert_eq!(posted.status(), StatusCode::CREATED);
+    let posted = body(posted).await;
+    assert_eq!(posted["body"], "<b>Hello</b>");
+    assert_eq!(posted["author"], "comment_owner");
+
+    sqlx::query(
+        "UPDATE source_permissions SET can_access_media=true WHERE source_id=$1 AND user_id=$2",
+    )
+    .bind(&source)
+    .bind(viewer_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut reply =
+        json!({"source_id":source,"path":"story.epub","body":"A reply","parent_id":posted["id"]});
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            endpoint,
+            Some(&viewer),
+            Some(&viewer_csrf),
+            Some(ORIGIN),
+            Some(reply.clone())
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    reply["path"] = json!("clip.mp4");
+    let response = request(
+        &state,
+        Method::POST,
+        endpoint,
+        Some(&viewer),
+        Some(&viewer_csrf),
+        Some(ORIGIN),
+        Some(reply.clone()),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let response = body(response).await;
+    assert_eq!(response["parent_id"], posted["id"]);
+    assert_eq!(response["author"], "comment_viewer");
+    assert_eq!(response["reply_to"], "comment_owner");
+
+    sqlx::query("INSERT INTO media_comments(source_id,file_key,author_id,body) SELECT $1,$2,$3,'More comments' FROM generate_series(1,29)")
+        .bind(&source).bind(catalog::file_key(&source,"clip.mp4")).bind(owner_id).execute(&pool).await.unwrap();
+    let first = request(&state, Method::GET, &list, Some(&viewer), None, None, None).await;
+    assert_eq!(first.headers()["cache-control"], "private, no-store");
+    let first = body(first).await;
+    assert_eq!(first["comments"].as_array().unwrap().len(), 30);
+    assert_eq!(first["comments"][0], posted);
+    assert_eq!(first["comments"][1], response);
+    let after = format!("{list}&after={}", first["next"].as_str().unwrap());
+    let last =
+        body(request(&state, Method::GET, &after, Some(&viewer), None, None, None).await).await;
+    assert_eq!(last["comments"].as_array().unwrap().len(), 1);
+    assert!(last["next"].is_null());
+
+    let comment_id = posted["id"].as_str().unwrap();
+    let remove = format!("{endpoint}/{comment_id}?source_id={source}&path=clip.mp4");
+    let wrong_item = format!("{endpoint}/{comment_id}?source_id={source}&path=story.epub");
+    assert_eq!(
+        request(
+            &state,
+            Method::DELETE,
+            &remove,
+            Some(&viewer),
+            Some(&viewer_csrf),
+            Some(ORIGIN),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    sqlx::query("UPDATE users SET is_admin=true WHERE id=$1 OR id=$2")
+        .bind(owner_id)
+        .bind(viewer_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        request(
+            &state,
+            Method::DELETE,
+            &remove,
+            Some(&owner),
+            None,
+            Some(ORIGIN),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::DELETE,
+            &wrong_item,
+            Some(&owner),
+            Some(&owner_csrf),
+            Some(ORIGIN),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::DELETE,
+            &remove,
+            Some(&owner),
+            Some(&owner_csrf),
+            Some(ORIGIN),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    let moderated =
+        body(request(&state, Method::GET, &list, Some(&owner), None, None, None).await).await;
+    assert_eq!(moderated["can_moderate"], true);
+    assert_eq!(moderated["comments"][0]["removed"], true);
+    assert_eq!(moderated["comments"][0]["body"], "[Comment removed]");
+    assert_eq!(moderated["comments"][1]["body"], "A reply");
+    assert_eq!(moderated["comments"][1]["reply_to"], "Removed comment");
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            endpoint,
+            Some(&owner),
+            Some(&owner_csrf),
+            Some(ORIGIN),
+            Some(reply.clone())
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    sqlx::query("DELETE FROM source_permissions WHERE source_id=$1 AND user_id=$2")
+        .bind(&source)
+        .bind(viewer_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        request(&state, Method::GET, &list, Some(&viewer), None, None, None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::POST,
+            endpoint,
+            Some(&viewer),
+            Some(&viewer_csrf),
+            Some(ORIGIN),
+            Some(reply)
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::DELETE,
+            &remove,
+            Some(&viewer),
+            Some(&viewer_csrf),
+            Some(ORIGIN),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[sqlx::test(migrations = false)]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn source_provider_upgrade_preserves_local_identity_and_grants(pool: PgPool) {
+    let all = sqlx::migrate!();
+    let baseline = sqlx::migrate::Migrator {
+        migrations: std::borrow::Cow::Owned(
+            all.iter()
+                .filter(|migration| migration.version <= 18)
+                .cloned()
+                .collect(),
+        ),
+        ..sqlx::migrate::Migrator::DEFAULT
+    };
+    baseline.run(&pool).await.unwrap();
+    let app_state = state(pool.clone());
+    let (owner_cookie, _, owner) = register_user(&app_state, "upgrade_owner").await;
+    let (viewer_cookie, _, viewer) = register_user(&app_state, "upgrade_viewer").await;
+    let owner = Uuid::parse_str(owner["id"].as_str().unwrap()).unwrap();
+    let viewer = Uuid::parse_str(viewer["id"].as_str().unwrap()).unwrap();
+    let root = shared_media_fixture();
+    let source = "existing-local-source";
+    let key = catalog::file_key(source, "clip.mp4");
+    sqlx::query("INSERT INTO sources(id,owner_id,name,path) VALUES($1,$2,'Existing',$3)")
+        .bind(source)
+        .bind(owner)
+        .bind(root.to_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO source_permissions(source_id,user_id,can_discover,can_access_media,acquisition_policy) VALUES($1,$2,true,true,'manual_approval')")
+        .bind(source).bind(viewer).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO media_progress(user_id,file_key,source_id,relative_path,position,revision) VALUES($1,$2,$3,'clip.mp4',42,1)")
+        .bind(viewer).bind(&key).bind(source).execute(&pool).await.unwrap();
+
+    let arr = Uuid::new_v4();
+    sqlx::query("INSERT INTO arr_connections(id,source_id,name,kind,base_url,remote_root,api_key_encrypted,revision,managed)
+                 VALUES($1,$2,'Existing Arr','sonarr','http://localhost:8989','/media',$3,$4,true)")
+        .bind(arr).bind(source).bind(b"encrypted fixture".as_slice()).bind(Uuid::new_v4())
+        .execute(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO media_metadata(file_key,source_id,relative_path,local_data)
+                 VALUES($1,$2,'clip.mp4',$3)",
+    )
+    .bind(&key)
+    .bind(source)
+    .bind(r#"{"title":"Existing title"}"#)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO media_comments(source_id,file_key,author_id,body)
+                 VALUES($1,$2,$3,'Existing comment')",
+    )
+    .bind(source)
+    .bind(&key)
+    .bind(owner)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    all.run(&pool).await.unwrap();
+    all.run(&pool).await.unwrap();
+    assert!(
+        sqlx::query_scalar::<_, bool>("SELECT managed FROM arr_connections WHERE id=$1")
+            .bind(arr)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT body FROM media_comments WHERE file_key=$1")
+            .bind(&key)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        "Existing comment"
+    );
+    let node = Uuid::new_v4();
+    sqlx::query("INSERT INTO source_nodes(id,owner_id) VALUES($1,$2)")
+        .bind(node)
+        .bind(owner)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let remote = "unpublished-remote-source";
+    let insert = "INSERT INTO sources(id,owner_id,name,kind,node_id) VALUES($1,$2,'Remote','remote_agent',$3)";
+    assert!(sqlx::query(insert)
+        .bind(remote)
+        .bind(viewer)
+        .bind(node)
+        .execute(&pool)
+        .await
+        .is_err());
+    sqlx::query(insert)
+        .bind(remote)
+        .bind(owner)
+        .bind(node)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let catalog = body(
+        request(
+            &app_state,
+            Method::GET,
+            &format!("/api/sources/{source}/media"),
+            Some(&viewer_cookie),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    let clip = catalog
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["relative_path"] == "clip.mp4")
+        .unwrap();
+    assert_eq!(clip["file_key"], key);
+    assert_eq!(clip["metadata"]["fields"]["title"], "Existing title");
+    assert_eq!(clip["progress"]["position"], 42.0);
+    let sources = body(
+        request(
+            &app_state,
+            Method::GET,
+            "/api/sources",
+            Some(&viewer_cookie),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(sources[0]["acquisition_policy"], "manual_approval");
+    assert_eq!(
+        request(
+            &app_state,
+            Method::GET,
+            &format!("/api/sources/{remote}/media"),
+            Some(&owner_cookie),
+            None,
+            None,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn source_node_enrollment_authenticates_owner_key_and_rejects_replay(pool: PgPool) {
+    use grimoire_api::node_protocol::{self, Enrollment, Heartbeat, Rotation};
+    use ring::{
+        rand::SystemRandom,
+        signature::{Ed25519KeyPair, KeyPair},
+    };
+
+    let app_state = state(pool.clone());
+    let (owner, owner_csrf, user) = register_user(&app_state, "node_owner").await;
+    let (other, other_csrf, _) = register_user(&app_state, "node_other").await;
+    assert_eq!(user["is_admin"], false);
+    let tokens = "/api/nodes/v1/enrollment-tokens";
+    let missing_csrf = request(
+        &app_state,
+        Method::POST,
+        tokens,
+        Some(&owner),
+        None,
+        Some(ORIGIN),
+        None,
+    )
+    .await;
+    assert_eq!(missing_csrf.status(), StatusCode::FORBIDDEN);
+    let issued = request(
+        &app_state,
+        Method::POST,
+        tokens,
+        Some(&owner),
+        Some(&owner_csrf),
+        Some(ORIGIN),
+        None,
+    )
+    .await;
+    assert_eq!(issued.status(), StatusCode::CREATED);
+    assert_eq!(issued.headers()["cache-control"], "private, no-store");
+    let token = body(issued).await["token"].as_str().unwrap().to_owned();
+    let key_bytes = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+    let key = Ed25519KeyPair::from_pkcs8(key_bytes.as_ref()).unwrap();
+    let mut enrollment = Enrollment {
+        version: node_protocol::VERSION,
+        node_id: Uuid::new_v4(),
+        public_key: hex::encode(key.public_key().as_ref()),
+        label: "Test agent".into(),
+        token,
+        signature: String::new(),
+    };
+    enrollment.signature = hex::encode(key.sign(&enrollment.signed_bytes()).as_ref());
+    let valid = serde_json::to_value(&enrollment).unwrap();
+    let mut forged = valid.clone();
+    forged["label"] = json!("Forged label");
+    for (message, status) in [
+        (forged, StatusCode::UNAUTHORIZED),
+        (valid.clone(), StatusCode::CREATED),
+        (valid, StatusCode::UNAUTHORIZED),
+    ] {
+        assert_eq!(
+            request(
+                &app_state,
+                Method::POST,
+                node_protocol::ENROLL,
+                None,
+                None,
+                None,
+                Some(message)
+            )
+            .await
+            .status(),
+            status
+        );
+    }
+    let node_list = "/api/nodes/v1";
+    let owned = body(
+        request(
+            &app_state,
+            Method::GET,
+            node_list,
+            Some(&owner),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(owned[0]["id"], enrollment.node_id.to_string());
+    assert_eq!(owned[0]["online"], true);
+    let unrelated = body(
+        request(
+            &app_state,
+            Method::GET,
+            node_list,
+            Some(&other),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(unrelated, json!([]));
+    assert!(owned[0].get("public_key").is_none());
+
+    let mut heartbeat = Heartbeat {
+        version: node_protocol::VERSION,
+        node_id: enrollment.node_id,
+        timestamp_ms: node_protocol::now_ms(),
+        signature: String::new(),
+    };
+    heartbeat.signature = hex::encode(key.sign(&heartbeat.signed_bytes()).as_ref());
+    let pulse = serde_json::to_value(&heartbeat).unwrap();
+    let mut unsupported = pulse.clone();
+    unsupported["version"] = json!(node_protocol::VERSION + 1);
+    for (message, status) in [
+        (unsupported, StatusCode::UPGRADE_REQUIRED),
+        (pulse.clone(), StatusCode::NO_CONTENT),
+        (pulse, StatusCode::UNAUTHORIZED),
+    ] {
+        assert_eq!(
+            request(
+                &app_state,
+                Method::POST,
+                node_protocol::HEARTBEAT,
+                None,
+                None,
+                None,
+                Some(message)
+            )
+            .await
+            .status(),
+            status
+        );
+    }
+
+    let replacement = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+    let replacement = Ed25519KeyPair::from_pkcs8(replacement.as_ref()).unwrap();
+    let mut rotation = Rotation {
+        version: node_protocol::VERSION,
+        node_id: enrollment.node_id,
+        timestamp_ms: heartbeat.timestamp_ms + 1,
+        new_public_key: hex::encode(replacement.public_key().as_ref()),
+        signature: String::new(),
+        new_signature: String::new(),
+    };
+    let signed = rotation.signed_bytes();
+    rotation.signature = hex::encode(key.sign(&signed).as_ref());
+    rotation.new_signature = hex::encode(replacement.sign(&signed).as_ref());
+    let valid = serde_json::to_value(rotation).unwrap();
+    let mut forged = valid.clone();
+    forged["new_signature"] = forged["signature"].clone();
+    for (message, expected) in [
+        (forged, StatusCode::UNAUTHORIZED),
+        (valid.clone(), StatusCode::NO_CONTENT),
+        (valid, StatusCode::UNAUTHORIZED),
+    ] {
+        assert_eq!(
+            request(
+                &app_state,
+                Method::POST,
+                node_protocol::ROTATE,
+                None,
+                None,
+                None,
+                Some(message)
+            )
+            .await
+            .status(),
+            expected
+        );
+    }
+    heartbeat.timestamp_ms += 2;
+    for (signer, expected) in [
+        (&key, StatusCode::UNAUTHORIZED),
+        (&replacement, StatusCode::NO_CONTENT),
+    ] {
+        heartbeat.signature = hex::encode(signer.sign(&heartbeat.signed_bytes()).as_ref());
+        assert_eq!(
+            request(
+                &app_state,
+                Method::POST,
+                node_protocol::HEARTBEAT,
+                None,
+                None,
+                None,
+                Some(serde_json::to_value(&heartbeat).unwrap())
+            )
+            .await
+            .status(),
+            expected
+        );
+    }
+
+    let node_url = format!("{node_list}/{}", enrollment.node_id);
+    for (cookie, csrf, status) in [
+        (&other, &other_csrf, StatusCode::NOT_FOUND),
+        (&owner, &owner_csrf, StatusCode::NO_CONTENT),
+    ] {
+        assert_eq!(
+            request(
+                &app_state,
+                Method::DELETE,
+                &node_url,
+                Some(cookie),
+                Some(csrf),
+                Some(ORIGIN),
+                None
+            )
+            .await
+            .status(),
+            status
+        );
+    }
+    heartbeat.timestamp_ms += 1;
+    heartbeat.signature = hex::encode(replacement.sign(&heartbeat.signed_bytes()).as_ref());
+    assert_eq!(
+        request(
+            &app_state,
+            Method::POST,
+            node_protocol::HEARTBEAT,
+            None,
+            None,
+            None,
+            Some(serde_json::to_value(heartbeat).unwrap())
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let owned = body(
+        request(
+            &app_state,
+            Method::GET,
+            node_list,
+            Some(&owner),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(owned[0]["online"], false);
+    assert_eq!(owned[0]["revoked"], true);
+
+    let new_key = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+    let new_key = Ed25519KeyPair::from_pkcs8(new_key.as_ref()).unwrap();
+    for (cookie, csrf, signer, expected) in [
+        (&other, &other_csrf, &new_key, StatusCode::UNAUTHORIZED),
+        (&owner, &owner_csrf, &replacement, StatusCode::UNAUTHORIZED),
+        (&owner, &owner_csrf, &new_key, StatusCode::CREATED),
+    ] {
+        let token = body(
+            request(
+                &app_state,
+                Method::POST,
+                tokens,
+                Some(cookie),
+                Some(csrf),
+                Some(ORIGIN),
+                None,
+            )
+            .await,
+        )
+        .await;
+        enrollment.token = token["token"].as_str().unwrap().into();
+        enrollment.public_key = hex::encode(signer.public_key().as_ref());
+        enrollment.signature = hex::encode(signer.sign(&enrollment.signed_bytes()).as_ref());
+        let response = request(
+            &app_state,
+            Method::POST,
+            node_protocol::ENROLL,
+            None,
+            None,
+            None,
+            Some(serde_json::to_value(&enrollment).unwrap()),
+        )
+        .await;
+        assert_eq!(response.status(), expected);
+    }
+    for (signer, expected) in [
+        (&replacement, StatusCode::UNAUTHORIZED),
+        (&new_key, StatusCode::NO_CONTENT),
+    ] {
+        let mut pulse = Heartbeat {
+            version: 1,
+            node_id: enrollment.node_id,
+            timestamp_ms: node_protocol::now_ms(),
+            signature: String::new(),
+        };
+        pulse.signature = hex::encode(signer.sign(&pulse.signed_bytes()).as_ref());
+        assert_eq!(
+            request(
+                &app_state,
+                Method::POST,
+                node_protocol::HEARTBEAT,
+                None,
+                None,
+                None,
+                Some(serde_json::to_value(pulse).unwrap())
+            )
+            .await
+            .status(),
+            expected
+        );
+    }
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "Requires disposable PostgreSQL DATABASE_URL; run with --ignored"]
+async fn remote_catalog_revisions_require_node_ownership_and_both_policies(pool: PgPool) {
+    use grimoire_api::node_protocol::{self, CatalogDelta, CatalogEntry, SourceGrant};
+    use ring::{
+        rand::SystemRandom,
+        signature::{Ed25519KeyPair, KeyPair},
+    };
+
+    async fn submit(
+        state: &AppState,
+        node: Uuid,
+        key: &Ed25519KeyPair,
+        delta: &CatalogDelta,
+    ) -> StatusCode {
+        let bytes = serde_json::to_vec(delta).unwrap();
+        let timestamp = node_protocol::now_ms();
+        let message = node_protocol::catalog_signature_bytes(
+            1,
+            node,
+            timestamp,
+            &node_protocol::body_digest(&bytes),
+        );
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(node_protocol::CATALOG_DELTA)
+            .extension(ConnectInfo(
+                "127.0.0.1:12345".parse::<SocketAddr>().unwrap(),
+            ))
+            .header("x-grimoire-node-version", "1")
+            .header("x-grimoire-node-id", node.to_string())
+            .header("x-grimoire-node-timestamp", timestamp.to_string())
+            .header(
+                "x-grimoire-node-signature",
+                hex::encode(key.sign(&message).as_ref()),
+            )
+            .body(Body::from(bytes))
+            .unwrap();
+        app(state.clone()).oneshot(request).await.unwrap().status()
+    }
+
+    let state = state(pool.clone());
+    let (owner_cookie, _, owner) = register_user(&state, "remote_owner").await;
+    let (viewer_cookie, _, viewer) = register_user(&state, "remote_viewer").await;
+    let owner = Uuid::parse_str(owner["id"].as_str().unwrap()).unwrap();
+    let viewer = Uuid::parse_str(viewer["id"].as_str().unwrap()).unwrap();
+    let node = Uuid::new_v4();
+    let other = Uuid::new_v4();
+    let key = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+    let key = Ed25519KeyPair::from_pkcs8(key.as_ref()).unwrap();
+    let other_key = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+    let other_key = Ed25519KeyPair::from_pkcs8(other_key.as_ref()).unwrap();
+    for (id, owner, signer) in [(node, owner, &key), (other, viewer, &other_key)] {
+        sqlx::query(
+            "INSERT INTO source_nodes(id,owner_id,public_key,last_seen) VALUES($1,$2,$3,now())",
+        )
+        .bind(id)
+        .bind(owner)
+        .bind(signer.public_key().as_ref())
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let source = Uuid::new_v4();
+    let list = format!("/api/nodes/v1/sources/{source}/catalog");
+    let item = Uuid::new_v4();
+    let mut delta = CatalogDelta {
+        source_id: source,
+        source_name: "Remote fixture".into(),
+        revision: 1,
+        published: false,
+        upserts: vec![CatalogEntry {
+            item_id: item,
+            representation_id: Uuid::new_v4(),
+            name: "Episode.mkv".into(),
+            extension: "mkv".into(),
+            size_bytes: 1234,
+        }],
+        removed: vec![],
+        grants: None,
+    };
+    assert_eq!(
+        submit(&state, node, &other_key, &delta).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        submit(&state, node, &key, &delta).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        submit(&state, node, &key, &delta).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        submit(&state, other, &other_key, &delta).await,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::GET,
+            &list,
+            Some(&owner_cookie),
+            None,
+            None,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    delta.revision = 3;
+    delta.published = true;
+    delta.upserts.clear();
+    assert_eq!(
+        submit(&state, node, &key, &delta).await,
+        StatusCode::CONFLICT
+    );
+    delta.revision = 2;
+    delta.grants = Some(vec![SourceGrant {
+        user_id: viewer,
+        can_discover: true,
+        can_access_media: false,
+    }]);
+    assert_eq!(
+        submit(&state, node, &key, &delta).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        request(
+            &state,
+            Method::GET,
+            &list,
+            Some(&viewer_cookie),
+            None,
+            None,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    sqlx::query("INSERT INTO source_permissions(source_id,user_id,can_discover,can_access_media) VALUES($1,$2,true,true)")
+        .bind(format!("remote:{source}")).bind(viewer).execute(&pool).await.unwrap();
+    let sources_path = "/api/nodes/v1/sources";
+    for (cookie, expected_node) in [(&owner_cookie, json!(node)), (&viewer_cookie, Value::Null)] {
+        let sources = body(
+            request(
+                &state,
+                Method::GET,
+                sources_path,
+                Some(cookie),
+                None,
+                None,
+                None,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(sources[0]["id"], source.to_string());
+        assert_eq!(sources[0]["node_id"], expected_node);
+    }
+    let shown = body(
+        request(
+            &state,
+            Method::GET,
+            &list,
+            Some(&viewer_cookie),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(shown["items"][0]["name"], "Episode.mkv");
+    assert_eq!(shown["can_access_media"], false);
+    assert!(shown["items"][0].get("path").is_none());
+
+    delta.revision = 3;
+    delta.grants.as_mut().unwrap()[0].can_access_media = true;
+    assert_eq!(
+        submit(&state, node, &key, &delta).await,
+        StatusCode::NO_CONTENT
+    );
+    let allowed = body(
+        request(
+            &state,
+            Method::GET,
+            &list,
+            Some(&viewer_cookie),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(allowed["can_access_media"], true);
+    let representation = allowed["items"][0]["representation_id"].as_str().unwrap();
+    let delivery = format!("/api/nodes/v1/sources/{source}/representations/{representation}");
+    let browser_range = Request::builder()
+        .uri(&delivery)
+        .header("cookie", &viewer_cookie)
+        .header("range", "bytes=10-13")
+        .extension(ConnectInfo(
+            "127.0.0.1:12345".parse::<SocketAddr>().unwrap(),
+        ))
+        .body(Body::empty())
+        .unwrap();
+    let browser = tokio::spawn(app(state.clone()).oneshot(browser_range));
+    let signed = |url: &str, operation: &str, payload: &str| {
+        let timestamp = node_protocol::now_ms();
+        let signature = key.sign(&node_protocol::relay_signature_bytes(
+            operation, node, timestamp, payload,
+        ));
+        Request::builder()
+            .method(Method::POST)
+            .uri(url)
+            .extension(ConnectInfo(
+                "127.0.0.1:12345".parse::<SocketAddr>().unwrap(),
+            ))
+            .header("x-grimoire-node-version", "1")
+            .header("x-grimoire-node-id", node.to_string())
+            .header("x-grimoire-node-timestamp", timestamp.to_string())
+            .header("x-grimoire-node-signature", hex::encode(signature.as_ref()))
+    };
+    let poll = signed(node_protocol::RELAY_POLL, "poll", "")
+        .body(Body::empty())
+        .unwrap();
+    let grant = app(state.clone()).oneshot(poll).await.unwrap();
+    assert_eq!(grant.status(), StatusCode::OK);
+    let grant: node_protocol::SignedRelayGrant = serde_json::from_value(body(grant).await).unwrap();
+    assert_eq!(grant.grant.offset, 10);
+    assert_eq!(grant.grant.length, 4);
+    assert_eq!(grant.grant.viewer_id, viewer);
+    assert!(node_protocol::verify(
+        &hex::decode(grant.coordinator_key).unwrap(),
+        &grant.grant.signed_bytes(),
+        &grant.signature
+    ));
+    let bytes = b"test";
+    let digest = node_protocol::body_digest(bytes);
+    let upload = format!("{}/{}", node_protocol::RELAY_UPLOAD, grant.grant.id);
+    let proof = format!("{}:{digest}", grant.grant.id);
+    for status in [StatusCode::NO_CONTENT, StatusCode::NOT_FOUND] {
+        let upload = signed(&upload, "upload", &proof)
+            .header("x-grimoire-content-digest", &digest)
+            .body(Body::from(&bytes[..]))
+            .unwrap();
+        assert_eq!(
+            app(state.clone()).oneshot(upload).await.unwrap().status(),
+            status
+        );
+    }
+    let response = browser.await.unwrap().unwrap();
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(response.headers()["content-range"], "bytes 10-13/1234");
+    assert_eq!(to_bytes(response.into_body(), 4).await.unwrap(), &bytes[..]);
+
+    delta.revision = 4;
+    delta.removed.push(item);
+    delta.grants = None;
+    assert_eq!(
+        submit(&state, node, &key, &delta).await,
+        StatusCode::NO_CONTENT
+    );
+    let emptied = body(
+        request(
+            &state,
+            Method::GET,
+            &list,
+            Some(&viewer_cookie),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(emptied["items"], json!([]));
+    sqlx::query("UPDATE remote_catalog_state SET last_confirmed=now()-interval '91 seconds' WHERE source_id=$1")
+        .bind(format!("remote:{source}")).execute(&pool).await.unwrap();
+    assert_eq!(
+        request(
+            &state,
+            Method::GET,
+            &list,
+            Some(&viewer_cookie),
+            None,
+            None,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
 }

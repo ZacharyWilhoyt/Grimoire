@@ -48,8 +48,8 @@ of hostile media should run in a restricted worker/container with OS resource
 limits. There is no persistent subtitle extraction cache yet, so large files may
 require a scan when selecting a track.
 
-SRT/WebVTT are normalized to plain-text native cues; custom WebVTT styles and cue
-position settings are intentionally omitted. ASS is never passed through that
+SRT/WebVTT are normalized to native cues with support for italics, bold, and
+underlining. Custom WebVTT styles and cue position settings are omitted. ASS is never passed through that
 converter. Selected tracks apply to this player session. Closing/switching
 tracks cancels fetches, releases blob URLs, and destroys the libass worker.
 

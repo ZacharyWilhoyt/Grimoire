@@ -99,3 +99,21 @@ describe('book archives', () => {
    serve(10,new Uint8Array(20))
    await expect(openArchive('/book',new AbortController().signal,'cbz')).rejects.toThrow('oversized range')
  })
+
+it('retries an interrupted CBZ range and drops pages outside the reader window', async () => {
+  const { fetch, requests } = mockBook(await fixture())
+  const book = await openArchive('/book', new AbortController().signal, 'cbz')
+  try {
+    const name = 'chapter.xhtml'
+    book.retain(new Set([name]))
+    fetch.mockRejectedValueOnce(new TypeError('Network interrupted'))
+    const first = await book.read(name)
+    expect(await first.text()).toBe('<p>Hello</p>')
+    expect(await book.read(name)).toBe(first)
+
+    book.retain(new Set())
+    const before = requests.length
+    expect(await book.read(name)).not.toBe(first)
+    expect(requests.length).toBeGreaterThan(before)
+  } finally { await book.close() }
+})

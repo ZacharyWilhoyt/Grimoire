@@ -1,0 +1,6 @@
+services:
+  api:
+    environment:
+      GRIMOIRE_REGISTRY_ROOT: /app/registry
+    volumes:
+      - ./runtime/registry:/app/registry:ro

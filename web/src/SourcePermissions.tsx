@@ -22,6 +22,7 @@ export default function SourcePermissions({ source, ownerUsername, onClose, onSa
   const [message, setMessage] = useState('')
   const owner = username.trim().toLowerCase() === ownerUsername
   const effective = owner ? { ...grant, can_discover: true, can_access_media: true } : grant
+  const remote = source.id.startsWith('remote:')
   const endpoint = `/api/sources/${encodeURIComponent(source.id)}/permissions`
   useEffect(() => {
     let active = true
@@ -67,10 +68,10 @@ export default function SourcePermissions({ source, ownerUsername, onClose, onSa
   return <dialog ref={dialog} className="video-backdrop" aria-labelledby="permissions-title" onCancel={event => { event.preventDefault(); onClose() }}>
     <section className="permissions-panel">
       <header className="video-header"><div><h2 id="permissions-title">Source permissions</h2><span>{source.name}</span></div><button aria-label="Close source permissions" onClick={onClose}><X size={21}/></button></header>
-      <div className="permissions-content"><p>Grant access by username. Visibility, media access, and acquisition are separate permissions. Everyone else is denied by default.</p>
+      <div className="permissions-content"><p>Grant access by username. Visibility, media access, and acquisition are separate permissions. Everyone else is denied by default.</p>{remote && <p>Also add the user ID below to the agent’s local sharing configuration.</p>}
         {loading ? <p role="status">Loading permissions…</p> : !loaded ? <div><p>The permission roster is unavailable. Retry before editing access.</p><button className="track-play" onClick={() => setAttempt(value => value + 1)}>Retry loading permissions</button></div> : <>
           <div className="grants-list">{permissions.length === 0 ? <p>No per-user permissions configured. Only you can access this source.</p> : permissions.map(permission => <article className="grant-row" key={permission.user_id}>
-            <div><strong>{permission.username}{permission.username === ownerUsername ? ' (owner)' : ''}</strong><span>{permission.can_discover ? 'Visible' : 'Hidden'} · {permission.can_access_media ? 'Media allowed' : 'Media denied'} · Acquisition: {policyLabel(permission.acquisition_policy)}</span></div>
+            <div><strong>{permission.username}{permission.username === ownerUsername ? ' (owner)' : ''}</strong><span>{permission.can_discover ? 'Visible' : 'Hidden'} · {permission.can_access_media ? 'Media allowed' : 'Media denied'} · Acquisition: {policyLabel(permission.acquisition_policy)}</span>{remote && <code>{permission.user_id}</code>}</div>
             <button disabled={busy} onClick={() => { setUsername(permission.username); setGrant({ can_discover: permission.can_discover, can_access_media: permission.can_access_media, acquisition_policy: permission.acquisition_policy }); setMessage('') }} aria-label={`Edit permissions for ${permission.username}`}>Edit</button>
             <button disabled={busy} onClick={() => { void revoke(permission.username) }} aria-label={`Remove permissions for ${permission.username}`}>Remove</button>
           </article>)}</div>

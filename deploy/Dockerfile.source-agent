@@ -1,0 +1,15 @@
+FROM rust:1-bookworm AS build
+WORKDIR /build/backend
+COPY backend/ ./
+RUN CARGO_BUILD_JOBS=2 cargo build --locked --release --bin grimoire-source-agent
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/* && \
+    useradd --uid 10001 --no-create-home grimoire-agent && \
+    install -d -m 0700 -o 10001 -g 10001 /var/lib/grimoire-agent
+COPY --from=build /build/backend/target/release/grimoire-source-agent /usr/local/bin/
+USER 10001:10001
+ENV GRIMOIRE_AGENT_STATE=/var/lib/grimoire-agent/identity.json
+ENTRYPOINT ["grimoire-source-agent"]
+CMD ["run"]

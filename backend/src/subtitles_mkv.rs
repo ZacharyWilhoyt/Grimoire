@@ -198,7 +198,7 @@ async fn extract_uncached(
             "-c:s".into(),
             if format == "ass" { "copy" } else { "webvtt" }.into(),
             "-f".into(),
-            format.into(),
+            if format == "ass" { "ass" } else { "webvtt" }.into(),
             "pipe:1".into(),
         ];
         if preview {
@@ -311,6 +311,35 @@ mod tests {
         assert!(!font(
             &serde_json::json!({"codec_type":"attachment","codec_name":"ttf","extradata_size":9000000})
         ));
+    }
+    #[tokio::test]
+    #[ignore = "Requires FFmpeg/FFprobe; run with --ignored"]
+    async fn embedded_subrip_extracts_as_webvtt() {
+        let root = std::env::temp_dir().join(format!("grimoire-subrip-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let script = root.join("captions.srt");
+        let file = root.join("captions.mkv");
+        std::fs::write(&script, "1\n00:00:01,000 --> 00:00:03,000\nTest caption\n").unwrap();
+        let status = tokio::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-i"])
+            .arg(&script)
+            .args(["-c:s", "copy"])
+            .arg(&file)
+            .status()
+            .await
+            .unwrap();
+        assert!(status.success());
+        let streams = streams(&file)
+            .await
+            .unwrap_or_else(|_| panic!("probe failed"));
+        assert_eq!(format(&streams[0]), Some("vtt"));
+        let result = extract(&file, streams[0]["index"].as_u64().unwrap(), false, "vtt").await;
+        std::fs::remove_dir_all(root).unwrap();
+        let text =
+            String::from_utf8(result.unwrap_or_else(|_| panic!("extraction failed"))).unwrap();
+        assert!(text.starts_with("WEBVTT"));
+        assert!(text.contains("00:01.000 --> 00:03.000"));
+        assert!(text.contains("Test caption"));
     }
     #[tokio::test]
     #[ignore = "Requires FFmpeg/FFprobe; run with --ignored"]

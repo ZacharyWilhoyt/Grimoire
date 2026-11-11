@@ -1,0 +1,20 @@
+name: grimoire-source-agent
+services:
+  agent:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.source-agent
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 512m
+    environment:
+      GRIMOIRE_AGENT_CONFIG: /etc/grimoire-agent/sources.json
+    volumes:
+      - agent_state:/var/lib/grimoire-agent
+      - ./agent-config:/etc/grimoire-agent:ro
+      - ${GRIMOIRE_AGENT_MEDIA_ROOT:?Set GRIMOIRE_AGENT_MEDIA_ROOT to an approved host directory}:/media:ro
+volumes:
+  agent_state:
