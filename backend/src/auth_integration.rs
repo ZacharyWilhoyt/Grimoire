@@ -6392,6 +6392,24 @@ async fn remote_catalog_revisions_require_node_ownership_and_both_policies(pool:
     );
     sqlx::query("INSERT INTO source_permissions(source_id,user_id,can_discover,can_access_media) VALUES($1,$2,true,true)")
         .bind(format!("remote:{source}")).bind(viewer).execute(&pool).await.unwrap();
+    let sources_path = "/api/nodes/v1/sources";
+    for (cookie, expected_node) in [(&owner_cookie, json!(node)), (&viewer_cookie, Value::Null)] {
+        let sources = body(
+            request(
+                &state,
+                Method::GET,
+                sources_path,
+                Some(cookie),
+                None,
+                None,
+                None,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(sources[0]["id"], source.to_string());
+        assert_eq!(sources[0]["node_id"], expected_node);
+    }
     let shown = body(
         request(
             &state,

@@ -367,6 +367,7 @@ struct SourceSummary {
     id: String,
     name: String,
     is_owner: bool,
+    node_id: Option<Uuid>,
     available: bool,
 }
 
@@ -376,6 +377,7 @@ pub async fn sources(
 ) -> Result<impl IntoResponse, AppError> {
     let rows = sqlx::query_as::<_, SourceSummary>(
         "SELECT substring(s.id FROM 8) AS id,s.name,s.owner_id=$1 AS is_owner,
+         CASE WHEN s.owner_id=$1 THEN n.id END AS node_id,
          COALESCE(c.published AND n.revoked_at IS NULL AND n.last_seen>now()-interval '90 seconds'
             AND c.last_confirmed>now()-interval '90 seconds',false) AS available
          FROM sources s JOIN source_nodes n ON n.id=s.node_id

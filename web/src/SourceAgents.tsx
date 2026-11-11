@@ -4,8 +4,8 @@ import { apiFetch } from './api'
 import { formatSize } from './media'
 import { useModalDialog } from './useModalDialog'
 
-type Node = { id: string; label: string; online: boolean; revoked: boolean }
-type RemoteSource = { id: string; name: string; is_owner: boolean; available: boolean }
+export type SourceAgent = { id: string; label: string; online: boolean; revoked: boolean }
+export type RemoteSource = { id: string; name: string; is_owner: boolean; available: boolean; node_id?: string | null }
 type Item = { id: string; representation_id: string; name: string; extension: string; size_bytes: number }
 type Catalog = { items: Item[]; next: string | null; can_access_media: boolean }
 export type RemoteBook = { sourceId: string; sourceName: string; item: Item; url: string }
@@ -21,16 +21,18 @@ async function load<T>(path: string, init?: RequestInit): Promise<T> {
   return result.json()
 }
 
-export default function SourceAgents({ onClose, onPermissions, onBook }: {
+export default function SourceAgents({ onClose, onPermissions, onBook, initialAgent, initialSource }: {
+  initialAgent?: SourceAgent
+  initialSource?: RemoteSource
   onClose: () => void
   onPermissions: (source: { id: string; name: string }) => void
   onBook: (book: RemoteBook) => void
 }) {
   const dialog = useModalDialog()
   const origin = window.location.origin
-  const [nodes, setNodes] = useState<Node[]>([])
+  const [nodes, setNodes] = useState<SourceAgent[]>([])
   const [sources, setSources] = useState<RemoteSource[]>([])
-  const [selected, setSelected] = useState<RemoteSource | null>(null)
+  const [selected, setSelected] = useState<RemoteSource | null>(initialSource ?? null)
   const [catalog, setCatalog] = useState<Catalog | null>(null)
   const [playing, setPlaying] = useState<Item | null>(null)
   const [token, setToken] = useState('')
@@ -45,17 +47,23 @@ export default function SourceAgents({ onClose, onPermissions, onBook }: {
     setLoading(true)
     setError('')
     void Promise.all([
-      load<Node[]>('', { signal: controller.signal }),
+      load<SourceAgent[]>('', { signal: controller.signal }),
       load<RemoteSource[]>('/sources', { signal: controller.signal }),
     ]).then(([nodes, sources]) => {
-      if (!controller.signal.aborted) { setNodes(nodes); setSources(sources) }
+      if (controller.signal.aborted) return
+      setNodes(nodes)
+      setSources(sources)
+      if (initialAgent) {
+        const available = sources.filter(source => source.node_id === initialAgent.id && source.available)
+        if (available.length === 1) setSelected(available[0])
+      }
     }).catch(error => {
       if (!controller.signal.aborted) setError(error.message)
     }).finally(() => {
       if (!controller.signal.aborted) setLoading(false)
     })
     return () => controller.abort()
-  }, [refresh])
+  }, [refresh, initialAgent])
 
   useEffect(() => {
     if (!selected) return
@@ -78,7 +86,7 @@ export default function SourceAgents({ onClose, onPermissions, onBook }: {
     } finally { setBusy(false) }
   }
 
-  async function revoke(node: Node) {
+  async function revoke(node: SourceAgent) {
     if (!window.confirm(`Revoke ${node.label}? This stops access through the agent.`)) return
     setBusy(true); setError('')
     try {
@@ -103,10 +111,14 @@ export default function SourceAgents({ onClose, onPermissions, onBook }: {
 
   const mediaUrl = (source: RemoteSource, item: Item) => `${base}/sources/${source.id}/representations/${item.representation_id}`
 
+  const listedSources = initialAgent ? sources.filter(source => source.node_id === initialAgent.id) : sources
+  const managing = !initialAgent && !initialSource
+
   return <dialog ref={dialog} className="source-agent-dialog" aria-labelledby="source-agent-heading" onCancel={event => { event.preventDefault(); onClose() }}>
-    <header><h2 id="source-agent-heading"><Server size={20}/> Source Agents</h2><button className="theme-button theme-button-icon" type="button" aria-label="Close Source Agents" onClick={onClose}><X size={19}/></button></header>
+    <header><h2 id="source-agent-heading"><Server size={20}/> {initialAgent?.label ?? initialSource?.name ?? 'Source Agents'}</h2><button className="theme-button theme-button-icon" type="button" aria-label="Close Source Agents" onClick={onClose}><X size={19}/></button></header>
     <div className="source-agent-body">
       {error && <p role="alert" className="catalog-notice error">{error}</p>}
+      {managing && <>
       <div className="source-agent-actions"><button className="theme-button theme-button-primary" type="button" onClick={() => { void issue() }} disabled={busy}>Create enrollment token</button><button className="theme-button theme-button-icon" type="button" onClick={() => setRefresh(value => value + 1)} disabled={loading || busy} aria-label="Refresh Source Agents"><RefreshCw size={16}/></button></div>
       <div className="source-agent-token">
         <p>Run setup on the Linux machine that holds your media. It will ask which directories to share and when to create an enrollment token.</p>
@@ -119,9 +131,11 @@ docker run --rm -it -v grimoire-agent:/var/lib/grimoire-agent ${window.location.
       {loading && <p role="status">Checking Source Agents…</p>}
       {!loading && nodes.length === 0 && <p>No agents enrolled yet.</p>}
       <ul className="source-agent-list">{nodes.map(node => <li key={node.id}><span><strong>{node.label}</strong><small>{node.revoked ? 'Revoked' : node.online ? 'Online' : 'Offline'}</small></span>{!node.revoked && <button className="theme-button" type="button" disabled={busy} onClick={() => { void revoke(node) }}>Revoke</button>}</li>)}</ul>
-      <h3>Remote sources</h3>
-      {!loading && sources.length === 0 && <p>No remote sources are available.</p>}
-      <ul className="source-agent-list">{sources.map(source => <li key={source.id}><button className="theme-button" type="button" disabled={!source.available || busy} onClick={() => { setSelected(source); setCatalog(null); setPlaying(null) }}>{source.name}</button><small>{source.available ? 'Available' : 'Offline or unpublished'}</small>{source.is_owner && <button className="theme-button" type="button" onClick={() => onPermissions({ id: `remote:${source.id}`, name: source.name })}>Permissions</button>}</li>)}</ul>
+      </>}
+      {!managing && loading && <p role="status">Checking remote sources…</p>}
+      {!initialSource && <h3>Remote sources</h3>}
+      {!initialSource && !loading && listedSources.length === 0 && <p>{initialAgent ? 'This agent has not published a source yet.' : 'No remote sources are available.'}</p>}
+      {!initialSource && <ul className="source-agent-list">{listedSources.map(source => <li key={source.id}><button className="theme-button" type="button" disabled={!source.available || busy} onClick={() => { setSelected(source); setCatalog(null); setPlaying(null) }}>{source.name}</button><small>{source.available ? 'Available' : 'Offline or unpublished'}</small>{source.is_owner && <button className="theme-button" type="button" onClick={() => onPermissions({ id: `remote:${source.id}`, name: source.name })}>Permissions</button>}</li>)}</ul>}
       {selected && catalog && <section aria-label={selected.name}>
         <h3>{selected.name}</h3>
         {!catalog.can_access_media && <p>Discovery access only.</p>}

@@ -63,6 +63,10 @@ The Source Agents panel lists remote catalogs separately from Discover.
 
 ## Outbound playback preview
 
+Enrolled agents appear under **Your Sources**. Select an agent to see its
+published libraries. A single available library opens automatically.
+Sources shared by other accounts appear by library name.
+
 Use **Source Agents** in the coordinator sidebar to generate an enrollment
 token, view status, revoke your agent or browse remote sources. A source
 owner can grant central access using **Permissions**. The agent's local

@@ -1,5 +1,5 @@
 import { linkRequest, mediaLink, detailLink, seriesLink, type LinkContext } from './mediaLinks'
-import SourceAgents, { type RemoteBook } from './SourceAgents'
+import SourceAgents, { type RemoteBook, type RemoteSource, type SourceAgent } from './SourceAgents'
 import SourceTranscoding from './SourceTranscoding'
 import ConnectDirectory from './ConnectDirectory'
 import { loadCatalogPage, type PersonalPage } from './catalogLoader'
@@ -36,6 +36,10 @@ async function readApi<T>(url: string, signal?: AbortSignal): Promise<T> {
 
 function Workspace({ user, logout }: { user: User; logout: () => void }) {
   const [agentsOpen, setAgentsOpen] = useState(false)
+  const [sidebarAgents, setSidebarAgents] = useState<SourceAgent[]>([])
+  const [sharedRemoteSources, setSharedRemoteSources] = useState<RemoteSource[]>([])
+  const [agentSelection, setAgentSelection] = useState<SourceAgent>()
+  const [remoteSelection, setRemoteSelection] = useState<RemoteSource>()
   const [remoteBook, setRemoteBook] = useState<RemoteBook | null>(null)
   const [detailItem,setDetailItem]=useState<MediaItem|null>(null)
   const [linkedSeries, setLinkedSeries] = useState<LinkContext | null>(null)
@@ -105,6 +109,25 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
     }).catch(error => { if (!controller.signal.aborted) { setApiStatus('offline'); setSourcesError(error instanceof Error ? error.message : 'Could not load sources.') } })
     return () => controller.abort()
   }, [sourceRefresh])
+
+  useEffect(() => {
+    if (agentsOpen) return
+    const controller = new AbortController()
+    void readApi<SourceAgent[]>('/api/nodes/v1', controller.signal).then(nodes => {
+      if (!controller.signal.aborted && Array.isArray(nodes)) setSidebarAgents(nodes.filter(node => !node.revoked))
+    }).catch(() => {})
+    void readApi<RemoteSource[]>('/api/nodes/v1/sources', controller.signal).then(sources => {
+      if (!controller.signal.aborted && Array.isArray(sources)) setSharedRemoteSources(sources.filter(source => !source.is_owner))
+    }).catch(() => {})
+    return () => controller.abort()
+  }, [sourceRefresh, agentsOpen])
+
+  const openAgents = (agent?: SourceAgent, source?: RemoteSource) => {
+    setAgentSelection(agent)
+    setRemoteSelection(source)
+    setMenuOpen(false)
+    setAgentsOpen(true)
+  }
 
   useEffect(() => {
     setSourceFiles([]); setSourceError(''); setSourceLoading(false)
@@ -339,9 +362,19 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
       <nav className="main-nav">{nav.map(({ label, icon: Icon }) => <button key={label} className={`nav-item ${!selectedSource && page === label ? 'selected' : ''}`} onClick={() => { navigate(label) }}><Icon size={18} strokeWidth={1.8} />{label}</button>)}</nav>
       <div className="side-label sources-label">YOUR SOURCES <button title="Refresh sources" onClick={() => setSourceRefresh(value => value + 1)}><RefreshCw size={14}/></button>{user.is_admin && <button title="Connect a directory" onClick={() => setConnectOpen(true)}><Plus size={15} /></button>}</div>
       {sources.map(source => <button key={source.id} className={`source-row ${selectedSource?.id === source.id ? 'source-selected' : ''}`} onClick={() => { setSelectedSource(source); setGenre(''); setFilter('All'); setQuery(''); setMenuOpen(false); setActionError('') }}><span className="source-icon owner"><FolderOpen size={16} /></span><span className="source-copy"><strong>{source.name}</strong><small>{source.is_owner ? 'Owned source' : 'Shared with you'}</small></span><span className={`source-dot ${source.available ? 'online' : ''}`} /></button>)}
+      {sidebarAgents.map(agent => <button key={agent.id} className="source-row" onClick={() => openAgents(agent)}>
+        <span className="source-icon owner"><Server size={16}/></span>
+        <span className="source-copy"><strong>{agent.label}</strong><small>{agent.online ? 'Source agent · Online' : 'Source agent · Offline'}</small></span>
+        <span className={`source-dot ${agent.online ? 'online' : ''}`}/>
+      </button>)}
+      {sharedRemoteSources.map(source => <button key={source.id} className="source-row" onClick={() => openAgents(undefined, source)}>
+        <span className="source-icon"><Server size={16}/></span>
+        <span className="source-copy"><strong>{source.name}</strong><small>Shared remote source</small></span>
+        <span className={`source-dot ${source.available ? 'online' : ''}`}/>
+      </button>)}
       {sourcesError && <p className="source-error no-sources" role="alert">{sourcesError}</p>}
-      {sources.length === 0 && <p className="no-sources">No sources available yet.</p>}
-      <button className="add-source" onClick={() => setAgentsOpen(true)}><Server size={15}/> Source Agents</button>
+      {sources.length === 0 && sidebarAgents.length === 0 && sharedRemoteSources.length === 0 && <p className="no-sources">No sources available yet.</p>}
+      <button className="add-source" onClick={() => openAgents()}><Server size={15}/> Source Agents</button>
       {user.is_admin && <button className="add-source" onClick={() => setConnectOpen(true)}><Plus size={15} /> Connect a directory</button>}
       <div className="sidebar-bottom">{user.is_admin&&<button className="nav-item" onClick={()=>setAdminSecurityOpen(true)}><Settings2 size={18}/>Administrator security</button>}<button className="nav-item" onClick={() => setSettingsOpen(true)}><Settings2 size={18} />Account settings</button><button className="nav-item" onClick={logout}>Sign out</button><div className="connection"><span className={`connection-dot ${apiStatus}`} />{apiStatus === 'connected' ? 'Connected to Grimoire' : apiStatus === 'offline' ? 'API not connected' : 'Connecting…'}</div></div>
     </aside>
@@ -368,7 +401,7 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
         {!musicActive&&<><MetadataCredits/><footer className="footer"><span>MADE FOR THE MOMENTS BETWEEN</span><span>GRIMOIRE <b>·</b> EARLY ACCESS</span></footer></>}
       </div>
     </main>
-    {agentsOpen && <SourceAgents onClose={() => setAgentsOpen(false)} onPermissions={source => setPermissionsSource({ ...source, available: true, is_owner: true, can_access_media: true, acquisition_policy: 'auto_deny' })} onBook={book => { setAgentsOpen(false); setPlayback(null); setVideo(null); setRemoteBook(book) }}/>}
+    {agentsOpen && <SourceAgents initialAgent={agentSelection} initialSource={remoteSelection} onClose={() => setAgentsOpen(false)} onPermissions={source => setPermissionsSource({ ...source, available: true, is_owner: true, can_access_media: true, acquisition_policy: 'auto_deny' })} onBook={book => { setAgentsOpen(false); setPlayback(null); setVideo(null); setRemoteBook(book) }}/>}
     {permissionsSource && <SourcePermissions source={permissionsSource} ownerUsername={user.username} onClose={() => setPermissionsSource(null)} onSaved={() => setSourceRefresh(value => value + 1)}/>}
     {adminSecurityOpen&&user.is_admin&&<AdminSecurity onClose={()=>setAdminSecurityOpen(false)}/>}
     {settingsOpen && <AccountSettings onClose={() => setSettingsOpen(false)} />}
