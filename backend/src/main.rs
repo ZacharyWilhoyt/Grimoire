@@ -10,6 +10,7 @@ mod auth;
 #[cfg(test)]
 mod auth_integration;
 mod catalog;
+mod catalog_inventory;
 mod comments;
 mod image_registry;
 mod metadata;
@@ -50,6 +51,7 @@ struct AppState {
     config: Arc<auth::Config>,
     hashing: Arc<tokio::sync::Semaphore>,
     catalog_scans: Arc<tokio::sync::Semaphore>,
+    inventory_writes: Arc<tokio::sync::Semaphore>,
     metadata: Arc<metadata::Runtime>,
     video_audio: Arc<video_audio::Runtime>,
     relay: Arc<relay::Runtime>,
@@ -932,6 +934,7 @@ async fn main() {
         config: Arc::new(config),
         hashing: Arc::new(tokio::sync::Semaphore::new(4)),
         catalog_scans: Arc::new(tokio::sync::Semaphore::new(2)),
+        inventory_writes: Arc::new(tokio::sync::Semaphore::new(1)),
         metadata: Arc::new(metadata::Runtime::new()),
         video_audio: Arc::new(crate::video_audio::Runtime::new()),
         relay: Arc::new(crate::relay::Runtime::new()),

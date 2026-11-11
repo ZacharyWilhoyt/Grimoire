@@ -1132,6 +1132,7 @@ mod scan_tests {
             }),
             hashing: Arc::new(Semaphore::new(1)),
             catalog_scans: Arc::new(Semaphore::new(1)),
+            inventory_writes: Arc::new(Semaphore::new(1)),
             metadata: runtime,
             video_audio: Arc::new(crate::video_audio::Runtime::new()),
             relay: Arc::new(crate::relay::Runtime::new()),

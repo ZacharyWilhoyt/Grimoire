@@ -184,6 +184,7 @@ pub async fn discover(
     .await
     .map_err(|_| auth::unavailable())?;
     filter_current_access(&state, identity.user.id, &mut result.items).await?;
+    crate::catalog_inventory::observe(&state, &result.items);
     enrich(&state, identity.user.id, &mut result.items).await?;
     Ok(Json(result))
 }
@@ -208,6 +209,7 @@ pub async fn source_items(
     .await
     .map_err(|_| auth::unavailable())??;
     media_root(state, user, source_id).await?;
+    crate::catalog_inventory::observe(state, &items);
     enrich(state, user.id, &mut items).await?;
     Ok(items)
 }

@@ -24,6 +24,7 @@ pub(super) fn state(pool: PgPool) -> AppState {
         }),
         hashing: Arc::new(tokio::sync::Semaphore::new(4)),
         catalog_scans: Arc::new(tokio::sync::Semaphore::new(2)),
+        inventory_writes: Arc::new(tokio::sync::Semaphore::new(1)),
         metadata: Arc::new(metadata::Runtime::new()),
         video_audio: Arc::new(crate::video_audio::Runtime::new()),
         relay: Arc::new(crate::relay::Runtime::new()),
@@ -5906,6 +5907,30 @@ async fn source_provider_upgrade_preserves_local_identity_and_grants(pool: PgPoo
         .find(|item| item["relative_path"] == "clip.mp4")
         .unwrap();
     assert_eq!(clip["file_key"], key);
+    let inventory = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(row) = sqlx::query_as::<_, (Uuid, Uuid, String)>(
+                "SELECT r.item_id,r.id,l.local_relative_path FROM catalog_locations l
+                 JOIN catalog_representations r ON r.id=l.representation_id WHERE l.local_file_key=$1",
+            ).bind(&key).fetch_optional(&pool).await.unwrap() {
+                break row;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.unwrap();
+    assert_eq!(inventory.2, "clip.mp4");
+    crate::catalog_inventory::record(&pool, json!([{
+        "file_key":key,"source_id":source,"path":"clip.mp4","kind":"video","extension":"mp4","size":19
+    }])).await.unwrap();
+    let repeated: (Uuid, Uuid) = sqlx::query_as(
+        "SELECT r.item_id,r.id FROM catalog_locations l JOIN catalog_representations r
+         ON r.id=l.representation_id WHERE l.local_file_key=$1",
+    )
+    .bind(&key)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(repeated, (inventory.0, inventory.1));
     assert_eq!(clip["metadata"]["fields"]["title"], "Existing title");
     assert_eq!(clip["progress"]["position"], 42.0);
     let sources = body(
