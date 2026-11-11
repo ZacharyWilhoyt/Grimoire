@@ -6354,7 +6354,8 @@ async fn remote_catalog_revisions_require_node_ownership_and_both_policies(pool:
         app(state.clone()).oneshot(request).await.unwrap().status()
     }
 
-    let state = state(pool.clone());
+    let mut state = state(pool.clone());
+    crate::metadata::tvdb::enable_fixture(Arc::get_mut(&mut state.metadata).unwrap());
     let (owner_cookie, owner_csrf, owner) = register_user(&state, "remote_owner").await;
     let (viewer_cookie, viewer_csrf, viewer) = register_user(&state, "remote_viewer").await;
     let owner = Uuid::parse_str(owner["id"].as_str().unwrap()).unwrap();
@@ -6731,6 +6732,67 @@ async fn remote_catalog_revisions_require_node_ownership_and_both_policies(pool:
     .await;
     assert_eq!(reset.status(), StatusCode::OK);
     assert_eq!(body(reset).await["fields"]["title"], "First episode");
+
+    let review = Uuid::new_v4();
+    let file_key = catalog::file_key(&source_key, &page_path);
+    sqlx::query(
+        "INSERT INTO metadata_reviews(id,owner_id,source_id,file_key,provider,provider_id,data)
+        VALUES($1,$2,$3,$4,'tvdb','429934:10152847:official',$5)",
+    )
+    .bind(review)
+    .bind(owner)
+    .bind(&source_key)
+    .bind(file_key)
+    .bind(
+        json!({"title":"Chinatsu Senpai","collection":"Blue Box","season":1,"episode":1})
+            .to_string(),
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let apply_url = format!("{editor}/apply");
+    let input = json!({"path":page_path,"review_token":review});
+    assert_eq!(
+        write(Method::POST, &apply_url, input.clone())
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let owner_apply = |payload| {
+        request(
+            &state,
+            Method::POST,
+            &apply_url,
+            Some(&owner_cookie),
+            Some(&owner_csrf),
+            Some(ORIGIN),
+            Some(payload),
+        )
+    };
+    let result = owner_apply(input.clone()).await;
+    assert_eq!(result.status(), StatusCode::OK);
+    assert_eq!(
+        body(result).await["metadata"]["fields"]["title"],
+        "Chinatsu Senpai"
+    );
+    assert_eq!(owner_apply(input).await.status(), StatusCode::BAD_REQUEST);
+    let result = body(browse().await).await;
+    assert_eq!(result["items"][0]["metadata"]["credits"], json!(["tvdb"]));
+    assert_eq!(result["items"][0]["logical_id"], json!(logical_id));
+    let tvdb_group = auth::digest("tvdb:series:429934:official");
+    let link = format!("/api/media/link?source_id=remote%3A{source}&group={tvdb_group}");
+    let result = request(
+        &state,
+        Method::GET,
+        &link,
+        Some(&viewer_cookie),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(result.status(), StatusCode::OK);
+    assert_eq!(body(result).await["label"], "Blue Box");
 
     let online = body(browse().await).await;
     assert_eq!(online["items"][0]["available"], true);

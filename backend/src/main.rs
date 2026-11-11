@@ -597,6 +597,7 @@ fn app(state: AppState) -> Router {
         .merge(catalog_matching::routes())
         .merge(collection_membership::routes())
         .merge(unified_catalog::metadata_routes())
+        .merge(metadata::tvdb::routes())
         .merge(playback::routes())
         .route(
             "/api/sources/{source_id}/metadata/group-membership",

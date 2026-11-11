@@ -28,3 +28,26 @@ applying a batch. Collection membership is independent of deduplication and
 playback routing.
 
 Migration 0027 adds Source Agent metadata overrides.
+
+## TheTVDB for TV and anime
+
+Configure a TheTVDB v4 project API key that permits use by your deployment.
+Set it as `GRIMOIRE_TVDB_API_KEY` in the API's private environment. Compose
+passes it from `deploy/.env` to the API. The key stays server-side. Grimoire
+uses the project's key without requiring a Sonarr installation or exposing
+credentials to viewers. The existing online metadata toggle still applies.
+See [TheTVDB API and attribution](https://thetvdb.com/api-information).
+
+On **Metadata**, edit an owned TV file and choose **TheTVDB television**.
+Search for a series, select the aired, DVD, or absolute order, and enter
+the season and episode number if needed. Preview the episode before
+applying it. This works for local and Source Agent video files. Grimoire
+stores series ID, episode ID, and order with the reviewed match and uses
+English translations where available. A series poster is requested during
+apply. The matched record preserves custom overrides unless the owner
+selects the replace option.
+
+The workflow matches individual files. It does not scan or acquire media
+and does not automatically merge independently owned files into a shared
+canonical identity. Migration 0028 stores reviewed TheTVDB matches for
+Source Agent representations.

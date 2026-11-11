@@ -52,6 +52,10 @@ struct RemoteRow {
     custom_fields: Option<serde_json::Value>,
     custom_group: Option<String>,
     hide_artwork: bool,
+    tvdb_id: Option<String>,
+    tvdb_group: Option<String>,
+    tvdb_fields: Option<serde_json::Value>,
+    tvdb_art: Option<String>,
 }
 
 impl RemoteRow {
@@ -68,9 +72,11 @@ impl RemoteRow {
             .provider_fields
             .and_then(|fields| serde_json::from_value(fields).ok())
             .unwrap_or_default();
-        let provider = self.namespace;
+        let mut provider = self.namespace;
+        let mut provider_id = self.identifier;
+        let mut provider_art = self.provider_art;
         let group = self.series_group.and_then(|id| {
-            let mut parts = self.identifier.as_deref()?.split(':');
+            let mut parts = provider_id.as_deref()?.split(':');
             let series = parts.next()?;
             fields.season = parts.next()?.parse().ok();
             fields.episode = parts.next()?.parse().ok();
@@ -89,6 +95,26 @@ impl RemoteRow {
                 synopsis_provider: None,
             })
         });
+        let group = if let Some(tvdb) = self
+            .tvdb_fields
+            .and_then(|value| serde_json::from_value::<Fields>(value).ok())
+        {
+            fields = tvdb;
+            provider = Some("tvdb".into());
+            provider_id = self.tvdb_id;
+            provider_art = self.tvdb_art;
+            self.tvdb_group.map(|id| GroupView {
+                id,
+                label: fields.collection.clone().unwrap_or_default(),
+                can_edit: false,
+                has_custom_genres: false,
+                has_custom_artwork: false,
+                synopsis: None,
+                synopsis_provider: None,
+            })
+        } else {
+            group
+        };
         let has_custom = self.custom_fields.is_some();
         if let Some(custom) = self
             .custom_fields
@@ -111,8 +137,7 @@ impl RemoteRow {
                 self.custom_group
                     .and_then(|_| metadata::groups::identity(&self.source_id, kind, &fields))
             });
-        let artwork_url = self
-            .provider_art
+        let artwork_url = provider_art
             .filter(|_| !self.hide_artwork)
             .map(|_| format!("/api/catalog/v1/artwork/{}", self.representation_id));
         let has_artwork = artwork_url.is_some();
@@ -146,7 +171,7 @@ impl RemoteRow {
                 Default::default()
             },
             provider,
-            provider_id: self.identifier,
+            provider_id,
         });
         Some(Item {
             file_key,
@@ -183,11 +208,13 @@ pub(crate) async fn remote_items(
 ) -> Result<(Vec<Item>, bool), AppError> {
     let mut rows = sqlx::query_as::<_, RemoteRow>(
         "SELECT v.*,s.owner_id=$1 AS owner,o.fields AS custom_fields,
-                o.group_id AS custom_group,COALESCE(o.hide_artwork,false) AS hide_artwork
+                o.group_id AS custom_group,COALESCE(o.hide_artwork,false) AS hide_artwork,
+                t.provider_id AS tvdb_id,t.group_id AS tvdb_group,t.fields AS tvdb_fields,t.artwork AS tvdb_art
          FROM catalog_remote_page_locations v JOIN sources s ON s.id=v.source_id
          LEFT JOIN catalog_remote_metadata_overrides o ON o.representation_id=v.representation_id
+         LEFT JOIN catalog_remote_tvdb_matches t ON t.representation_id=v.representation_id
          WHERE v.viewer_id=$1 AND ($2::uuid[] IS NULL OR v.representation_id=ANY($2))
-           AND ($3::text IS NULL OR COALESCE(v.series_group,o.group_id)=$3)
+           AND ($3::text IS NULL OR COALESCE(t.group_id,v.series_group,o.group_id)=$3)
          ORDER BY v.logical_id,v.playback_eligible DESC,v.location_id LIMIT $4",
     )
     .bind(viewer)
@@ -270,7 +297,9 @@ pub(crate) async fn artwork(
     Path(representation): Path<Uuid>,
 ) -> Result<Response, AppError> {
     let bytes: Vec<u8> = sqlx::query_scalar(
-        "SELECT a.jpeg FROM catalog_remote_page_locations v JOIN metadata_artwork a ON a.id=v.provider_art
+        "SELECT a.jpeg FROM catalog_remote_page_locations v
+         LEFT JOIN catalog_remote_tvdb_matches t ON t.representation_id=v.representation_id
+         JOIN metadata_artwork a ON a.id=CASE WHEN t.representation_id IS NULL THEN v.provider_art ELSE t.artwork END
          WHERE v.viewer_id=$1 AND v.representation_id=$2 AND NOT EXISTS(
              SELECT 1 FROM catalog_remote_metadata_overrides o WHERE o.representation_id=v.representation_id AND o.hide_artwork)",
     )
@@ -362,10 +391,10 @@ pub(crate) async fn remote_link(
     });
     let mut members = if let Some(ref group) = group {
         let allowed: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM catalog_remote_page_locations
-             WHERE viewer_id=$1 AND source_id=$2 AND (series_group=$3 OR (series_group IS NULL AND EXISTS(
-                SELECT 1 FROM catalog_remote_metadata_overrides o
-                WHERE o.representation_id=catalog_remote_page_locations.representation_id AND o.group_id=$3))))",
+            "SELECT EXISTS(SELECT 1 FROM catalog_remote_page_locations v
+             LEFT JOIN catalog_remote_tvdb_matches t ON t.representation_id=v.representation_id
+             LEFT JOIN catalog_remote_metadata_overrides o ON o.representation_id=v.representation_id
+             WHERE v.viewer_id=$1 AND v.source_id=$2 AND COALESCE(t.group_id,v.series_group,o.group_id)=$3)",
         )
         .bind(viewer)
         .bind(&source)
@@ -425,7 +454,7 @@ pub(crate) fn metadata_routes() -> axum::Router<AppState> {
         .layer(axum::extract::DefaultBodyLimit::max(32 * 1024))
 }
 
-async fn owner_item(state: &AppState, user: Uuid, id: Uuid) -> Result<Item, AppError> {
+pub(crate) async fn owner_item(state: &AppState, user: Uuid, id: Uuid) -> Result<Item, AppError> {
     let (items, _) = remote_items(state, user, Some(&[id]), None).await?;
     items
         .into_iter()
@@ -457,7 +486,7 @@ struct OwnerEdit {
     artwork_preference: metadata::model::ArtworkPreference,
 }
 
-const OWNER_CHECK: &str = "SELECT v.representation_id FROM catalog_remote_page_locations v
+pub(crate) const OWNER_CHECK: &str = "SELECT v.representation_id FROM catalog_remote_page_locations v
     JOIN sources s ON s.id=v.source_id AND s.owner_id=$1 WHERE v.viewer_id=$1 AND v.representation_id=$2";
 
 async fn save_owner_metadata(

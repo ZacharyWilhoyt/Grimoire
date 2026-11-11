@@ -6,12 +6,12 @@ import { X, Search, RefreshCw } from 'lucide-react'
 import { apiFetch } from './api'
 import { displayTitle, type MediaItem, type MetadataFields, type MetadataView } from './media'
 
-type Provider = 'tmdb_movie' | 'tmdb_tv' | 'musicbrainz' | 'openlibrary'
+type Provider = 'tmdb_movie' | 'tmdb_tv' | 'tvdb' | 'musicbrainz' | 'openlibrary'
 type Status = { provider: Provider; enabled: boolean; message: string | null }
 type Candidate = { id: string; title: string; creator: string | null; collection: string | null; year: number | null }
 type Review = { review_token: string; provider: Provider | 'arr_sonarr' | 'arr_radarr' | 'arr_lidarr'; provider_id: string; fields: MetadataFields; has_artwork: boolean }
-const providerName = (provider: Review['provider']) => ({ arr_sonarr: 'Sonarr', arr_radarr: 'Radarr', arr_lidarr: 'Lidarr', tmdb_movie: 'TMDB movies', tmdb_tv: 'TMDB television', musicbrainz: 'MusicBrainz recordings', openlibrary: 'Open Library books' })[provider]
-const providersFor = (kind: string): Provider[] => kind === 'video' ? ['tmdb_movie', 'tmdb_tv'] : kind === 'music' ? ['musicbrainz'] : ['openlibrary']
+const providerName = (provider: Review['provider']) => ({ arr_sonarr: 'Sonarr', arr_radarr: 'Radarr', arr_lidarr: 'Lidarr', tmdb_movie: 'TMDB movies', tmdb_tv: 'TMDB television', tvdb: 'TheTVDB television', musicbrainz: 'MusicBrainz recordings', openlibrary: 'Open Library books' })[provider]
+const providersFor = (kind: string): Provider[] => kind === 'video' ? ['tvdb', 'tmdb_tv', 'tmdb_movie'] : kind === 'music' ? ['musicbrainz'] : ['openlibrary']
 async function call<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await apiFetch(url, init)
   const data = await response.json()
@@ -28,11 +28,15 @@ export default function MetadataEditor({ item, onClose, onUpdated }: { item: Med
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
-  const [provider, setProvider] = useState<Provider>(providersFor(item.kind)[0])
+  const [provider, setProvider] = useState<Provider>(()=>item.kind==="video"?(item.remote||item.metadata?.fields.episode!=null?"tvdb":"tmdb_movie"):providersFor(item.kind)[0])
+  const [order, setOrder] = useState('official')
+  const [matchSeason,setMatchSeason]=useState('')
+  const [matchEpisode,setMatchEpisode]=useState('')
+  const matchingProviders = item.remote ? (item.kind==='video'?['tvdb'] as const:[]) : providersFor(item.kind)
   const [arr, setArr] = useState<ArrConnection[]>([])
   const [arrError, setArrError] = useState('')
   const [statuses, setStatuses] = useState<Status[]>([])
-  const [query, setQuery] = useState(displayTitle(item))
+  const [query, setQuery] = useState(item.kind==='video' && item.metadata?.fields.collection || displayTitle(item))
   const [results, setResults] = useState<Candidate[]>([])
   const [searched, setSearched] = useState(false)
   const [review, setReview] = useState<Review | null>(null)
@@ -43,7 +47,7 @@ export default function MetadataEditor({ item, onClose, onUpdated }: { item: Med
   useEffect(() => {
     let active = true
     call<MetadataView>(`${endpoint}?${new URLSearchParams({ path: item.relative_path })}`).then(view => { if (active) accept(view) }).catch(error => { if (active) setError(error instanceof Error ? error.message : 'Could not load metadata.') })
-    if (!item.remote) call<Status[]>('/api/metadata/providers').then(statuses => { if (active) setStatuses(statuses) }).catch(() => {})
+    if (matchingProviders.length) call<Status[]>('/api/metadata/providers').then(statuses => { if (active) setStatuses(statuses) }).catch(() => {})
     return () => { active = false }
   }, [endpoint, item.relative_path])
   useEffect(() => {
@@ -72,7 +76,11 @@ export default function MetadataEditor({ item, onClose, onUpdated }: { item: Med
   }) }
   const preview = (candidate: Candidate) => { void action(async () => {
     setReview(null)
-    const result = await call<Review>(`${endpoint}/preview`, json({ path: item.relative_path, provider, id: candidate.id }))
+    const result = await call<Review>(`${endpoint}/preview`, json({
+      path: item.relative_path, provider, id: candidate.id,
+      ...(provider==='tvdb'?{order,season:matchSeason===''?fields.season:Number(matchSeason),
+        episode:matchEpisode===''?fields.episode:Number(matchEpisode)}:{}),
+    }))
     setReview(result); setReplaceCustom(false)
   }) }
   const apply = () => { if (!review) return; void action(async () => {
@@ -101,9 +109,14 @@ export default function MetadataEditor({ item, onClose, onUpdated }: { item: Med
           <p className="metadata-help">Custom metadata is a complete owner-edited version. Local rescans and online matches preserve it until you choose to replace it.</p>
           {!!arr.length && <section className="metadata-online"><h3>From your Arr library</h3><p>Preview metadata for this exact mapped file. Applying a match preserves custom edits unless you explicitly replace them.</p><div className="arr-buttons">{arr.map(connection => <button key={connection.id} className="track-play" disabled={busy || !connection.usable} onClick={() => { void action(async () => { setReview(null); setReplaceCustom(false); setReview(await call<Review>(`/api/sources/${encodeURIComponent(item.source_id)}/arr/${connection.id}/preview`, json({ path: item.relative_path }))) }) }}>Preview from {connection.name}</button>)}</div></section>}
           {arrError && <p className="video-error" role="alert">{arrError}</p>}
-            {review && <div className="metadata-review"><h4>Review before applying</h4><strong>{review.fields.title}</strong><p>{[review.fields.creator, review.fields.collection, review.fields.year].filter(Boolean).join(' · ')}</p><p>{(review.fields.genres ?? []).join(', ')}</p><p>{review.fields.description}</p><small>{providerName(review.provider)} · {review.provider_id} · {review.has_artwork ? 'Provider artwork will be requested on apply.' : 'No provider artwork specified.'}</small>{view.has_custom && <label className="grant-toggle"><input type="checkbox" checked={replaceCustom} onChange={event => setReplaceCustom(event.target.checked)}/><span>Replace my custom metadata with this match</span></label>}<button className="connect-submit" disabled={busy} onClick={apply}>Apply reviewed match</button></div>}
-          {!item.remote&&<section className="metadata-online"><h3>Reviewed online matching</h3><p>Searching sends the query below to the selected provider. Preview a candidate and confirm before applying it. Files are never uploaded.</p>
-            <form className="metadata-form" onSubmit={search}><label>Provider<select value={provider} disabled={busy} onChange={event => { setProvider(event.target.value as Provider); setResults([]); setReview(null); setSearched(false) }}>{providersFor(item.kind).map(provider => <option key={provider} value={provider}>{providerName(provider)}</option>)}</select></label><label>Search query<input value={query} maxLength={200} required disabled={busy} onChange={event => setQuery(event.target.value)}/></label>{selected?.message && <p className="metadata-help">{selected.message}</p>}<button className="track-play" disabled={busy || !selected?.enabled}><Search size={14}/> Search provider</button></form>
+            {review && <div className="metadata-review"><h4>Review before applying</h4><strong>{review.fields.title}</strong><p>{[review.fields.creator, review.fields.collection, review.fields.season!=null&&review.fields.episode!=null?`S${review.fields.season} E${review.fields.episode}`:null, review.fields.year].filter(Boolean).join(' · ')}</p><p>{(review.fields.genres ?? []).join(', ')}</p><p>{review.fields.description}</p><small>{providerName(review.provider)} · {review.provider_id} · {review.has_artwork ? 'Provider artwork will be requested on apply.' : 'No provider artwork specified.'}</small>{view.has_custom && <label className="grant-toggle"><input type="checkbox" checked={replaceCustom} onChange={event => setReplaceCustom(event.target.checked)}/><span>Replace my custom metadata with this match</span></label>}<button className="connect-submit" disabled={busy} onClick={apply}>Apply reviewed match</button></div>}
+          {!!matchingProviders.length&&<section className="metadata-online"><h3>Reviewed online matching</h3><p>Searching sends the query below to the selected provider. Preview a candidate and confirm before applying it. Files are never uploaded.</p>
+            <form className="metadata-form" onSubmit={search}><label>Provider<select value={provider} disabled={busy} onChange={event => { setProvider(event.target.value as Provider); setResults([]); setReview(null); setSearched(false) }}>{matchingProviders.map(provider => <option key={provider} value={provider}>{providerName(provider)}</option>)}</select></label><label>Search query<input value={query} maxLength={200} required disabled={busy} onChange={event => setQuery(event.target.value)}/></label>{selected?.message && <p className="metadata-help">{selected.message}</p>}<button className="track-play" disabled={busy || !selected?.enabled}><Search size={14}/> Search provider</button></form>
+            {provider==='tvdb'&&!!results.length&&<div className="metadata-form metadata-numbers">
+              <label>Episode order<select value={order} onChange={event=>{setOrder(event.target.value);setReview(null)}} disabled={busy}><option value="official">Aired order</option><option value="dvd">DVD order</option><option value="absolute">Absolute order</option></select></label>
+              <label>Match season<input type="number" min="0" max="100000" value={matchSeason} placeholder={String(fields.season??'')} onChange={event=>{setMatchSeason(event.target.value);setReview(null)}} disabled={busy}/></label>
+              <label>Match episode<input type="number" min="1" max="100000" value={matchEpisode} placeholder={String(fields.episode??'')} onChange={event=>{setMatchEpisode(event.target.value);setReview(null)}} disabled={busy}/></label>
+            </div>}
             {searched && !results.length && <p>No matching results. Try a different title.</p>}
             <div className="metadata-matches">{results.map(result => <article key={result.id}><div><strong>{result.title}</strong><span>{[result.creator, result.collection, result.year].filter(Boolean).join(' · ')}</span></div><button className="track-play" disabled={busy} onClick={() => preview(result)}>Preview match</button></article>)}</div>
 

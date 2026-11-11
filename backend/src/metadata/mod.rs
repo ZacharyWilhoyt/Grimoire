@@ -4,6 +4,7 @@ mod local;
 pub mod model;
 pub(crate) mod providers;
 pub mod sidecars;
+pub(crate) mod tvdb;
 use crate::{auth, catalog, AppError, AppState};
 use axum::{
     extract::{Path, Query, State},
@@ -30,6 +31,7 @@ pub struct Runtime {
     pub client: reqwest::Client,
     pub online: bool,
     pub tmdb_token: Option<String>,
+    tvdb: tvdb::Runtime,
     work: Arc<Semaphore>,
     jobs: Arc<Semaphore>,
 }
@@ -54,6 +56,7 @@ impl Runtime {
             tmdb_token: std::env::var("GRIMOIRE_TMDB_TOKEN")
                 .ok()
                 .filter(|value| !value.trim().is_empty()),
+            tvdb: tvdb::Runtime::from_env(),
             work: Arc::new(Semaphore::new(2)),
             jobs: Arc::new(Semaphore::new(1)),
         }
@@ -582,6 +585,9 @@ pub struct Preview {
     path: String,
     provider: Provider,
     id: String,
+    season: Option<u32>,
+    episode: Option<u32>,
+    order: Option<tvdb::Order>,
 }
 #[derive(Serialize)]
 pub struct Review {
@@ -648,10 +654,24 @@ pub async fn preview(
 ) -> Result<Json<Review>, AppError> {
     let file = reference(&state, &identity.user, &source, &preview.path, true).await?;
     let _permit = online_guard(&state, identity.user.id, preview.provider, file.kind).await?;
-    let context = current_view(&state, &identity.user, &source, &preview.path, &file.key)
+    let mut context = current_view(&state, &identity.user, &source, &preview.path, &file.key)
         .await?
         .fields;
-    let matched = providers::preview(&state, preview.provider, &preview.id, &context).await?;
+    let (matched, provider_id) = if preview.provider == Provider::Tvdb {
+        tvdb::set_position(&mut context, &preview);
+        tvdb::lookup(
+            &state,
+            &preview.id,
+            &context,
+            preview.order.unwrap_or_default(),
+        )
+        .await?
+    } else {
+        (
+            providers::preview(&state, preview.provider, &preview.id, &context).await?,
+            preview.id,
+        )
+    };
     let id = Uuid::new_v4();
     let mut tx = state.db.begin().await.map_err(|_| auth::unavailable())?;
     owner_lock(&mut tx, &source, identity.user.id).await?;
@@ -659,12 +679,12 @@ pub async fn preview(
         .execute(&mut *tx)
         .await
         .map_err(|_| auth::unavailable())?;
-    sqlx::query("INSERT INTO metadata_reviews(id,owner_id,source_id,file_key,provider,provider_id,data,artwork_ref) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)").bind(id).bind(identity.user.id).bind(source).bind(file.key).bind(preview.provider.name()).bind(&preview.id).bind(serde_json::to_string(&matched.fields).map_err(|_|auth::unavailable())?).bind(matched.art.as_ref().map(serde_json::to_string).transpose().map_err(|_|auth::unavailable())?).execute(&mut *tx).await.map_err(|_|auth::unavailable())?;
+    sqlx::query("INSERT INTO metadata_reviews(id,owner_id,source_id,file_key,provider,provider_id,data,artwork_ref) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)").bind(id).bind(identity.user.id).bind(source).bind(file.key).bind(preview.provider.name()).bind(&provider_id).bind(serde_json::to_string(&matched.fields).map_err(|_|auth::unavailable())?).bind(matched.art.as_ref().map(serde_json::to_string).transpose().map_err(|_|auth::unavailable())?).execute(&mut *tx).await.map_err(|_|auth::unavailable())?;
     tx.commit().await.map_err(|_| auth::unavailable())?;
     Ok(Json(Review {
         review_token: id,
         provider: preview.provider,
-        provider_id: preview.id,
+        provider_id,
         fields: matched.fields,
         has_artwork: matched.art.is_some(),
     }))

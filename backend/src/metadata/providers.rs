@@ -12,6 +12,7 @@ use std::time::Duration;
 pub enum Provider {
     TmdbMovie,
     TmdbTv,
+    Tvdb,
     Musicbrainz,
     Openlibrary,
 }
@@ -20,6 +21,7 @@ impl Provider {
         match self {
             Self::TmdbMovie => "tmdb_movie",
             Self::TmdbTv => "tmdb_tv",
+            Self::Tvdb => "tvdb",
             Self::Musicbrainz => "musicbrainz",
             Self::Openlibrary => "openlibrary",
         }
@@ -27,14 +29,14 @@ impl Provider {
     pub fn supports(self, kind: &str) -> bool {
         matches!(
             (self, kind),
-            (Self::TmdbMovie | Self::TmdbTv, "video")
+            (Self::TmdbMovie | Self::TmdbTv | Self::Tvdb, "video")
                 | (Self::Musicbrainz, "music")
                 | (Self::Openlibrary, "book")
         )
     }
     pub fn validate_id(self, id: &str) -> bool {
         match self {
-            Self::TmdbMovie | Self::TmdbTv => id
+            Self::TmdbMovie | Self::TmdbTv | Self::Tvdb => id
                 .parse::<u64>()
                 .is_ok_and(|id| id > 0 && id < 10_000_000_000),
             Self::Musicbrainz => uuid::Uuid::parse_str(id).is_ok(),
@@ -53,6 +55,7 @@ impl Provider {
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Art {
     Tmdb(String),
+    Tvdb(String),
     Musicbrainz(String),
     Openlibrary(u64),
 }
@@ -85,11 +88,13 @@ pub fn enabled(state: &AppState, provider: Provider) -> bool {
     state.metadata.online
         && (!matches!(provider, Provider::TmdbMovie | Provider::TmdbTv)
             || state.metadata.tmdb_token.is_some())
+        && (provider != Provider::Tvdb || state.metadata.tvdb.enabled())
 }
 pub fn availability(state: &AppState) -> Vec<Availability> {
     [
         Provider::TmdbMovie,
         Provider::TmdbTv,
+        Provider::Tvdb,
         Provider::Musicbrainz,
         Provider::Openlibrary,
     ]
@@ -100,7 +105,14 @@ pub fn availability(state: &AppState) -> Vec<Availability> {
         message: if !state.metadata.online {
             Some("Online metadata is disabled by the server operator.".into())
         } else if !enabled(state, provider) {
-            Some("The server operator must configure GRIMOIRE_TMDB_TOKEN.".into())
+            Some(
+                if provider == Provider::Tvdb {
+                    "The server operator must configure GRIMOIRE_TVDB_API_KEY."
+                } else {
+                    "The server operator must configure GRIMOIRE_TMDB_TOKEN."
+                }
+                .into(),
+            )
         } else {
             None
         },
@@ -120,6 +132,7 @@ fn allowed(url: &reqwest::Url) -> bool {
             host,
             "api.themoviedb.org"
                 | "image.tmdb.org"
+                | "artworks.thetvdb.com"
                 | "musicbrainz.org"
                 | "coverartarchive.org"
                 | "openlibrary.org"
@@ -128,7 +141,7 @@ fn allowed(url: &reqwest::Url) -> bool {
         ) || host.ends_with(".archive.org")
     })
 }
-async fn budget(state: &AppState) -> Result<(), AppError> {
+pub(super) async fn budget(state: &AppState) -> Result<(), AppError> {
     let wait:Option<f64>=sqlx::query_scalar("INSERT INTO metadata_provider_budget(id,next_request_at) VALUES (1,now()+interval '1.1 seconds') ON CONFLICT(id) DO UPDATE SET next_request_at=GREATEST(metadata_provider_budget.next_request_at,now())+interval '1.1 seconds' WHERE metadata_provider_budget.next_request_at<now()+interval '5 seconds' RETURNING GREATEST(extract(epoch from next_request_at-now())::float8-1.1,0)").fetch_optional(&state.db).await.map_err(|_|auth::unavailable())?;
     let wait = wait.ok_or_else(|| {
         AppError(
@@ -200,14 +213,14 @@ fn url(base: &str, query: &[(&str, &str)]) -> reqwest::Url {
     url.query_pairs_mut().extend_pairs(query.iter().copied());
     url
 }
-fn string(value: &Value, key: &str, limit: usize) -> Option<String> {
+pub(super) fn string(value: &Value, key: &str, limit: usize) -> Option<String> {
     value
         .get(key)
         .and_then(Value::as_str)
         .map(|value| model::text(value, limit))
         .filter(|value| !value.is_empty())
 }
-fn year(value: &str) -> Option<i32> {
+pub(super) fn year(value: &str) -> Option<i32> {
     value
         .chars()
         .take(4)
@@ -253,6 +266,7 @@ pub fn parse_search(provider: Provider, value: &Value) -> Vec<Candidate> {
     let values = value
         .get(match provider {
             Provider::TmdbMovie | Provider::TmdbTv => "results",
+            Provider::Tvdb => "data",
             Provider::Musicbrainz => "recordings",
             Provider::Openlibrary => "docs",
         })
@@ -270,6 +284,20 @@ pub fn parse_search(provider: Provider, value: &Value) -> Vec<Candidate> {
                     None,
                     string(value, "release_date", 20)
                         .or_else(|| string(value, "first_air_date", 20)),
+                ),
+                Provider::Tvdb => (
+                    value.get("tvdb_id").and_then(|id| {
+                        id.as_str()
+                            .map(str::to_owned)
+                            .or_else(|| id.as_u64().map(|id| id.to_string()))
+                    })?,
+                    value
+                        .get("translations")
+                        .and_then(|translations| string(translations, "eng", 300))
+                        .or_else(|| string(value, "name", 300))?,
+                    None,
+                    None,
+                    string(value, "year", 20),
                 ),
                 Provider::Musicbrainz => {
                     let release = value
@@ -328,7 +356,19 @@ pub async fn search(
     provider: Provider,
     query: &str,
 ) -> Result<Vec<Candidate>, AppError> {
+    if provider == Provider::Tvdb {
+        return Ok(parse_search(
+            provider,
+            &super::tvdb::get(
+                state,
+                "/search",
+                &[("query", query), ("type", "series"), ("limit", "8")],
+            )
+            .await?,
+        ));
+    }
     let address = match provider {
+        Provider::Tvdb => unreachable!(),
         Provider::TmdbMovie => url(
             "https://api.themoviedb.org/3/search/movie",
             &[("query", query), ("include_adult", "false")],
@@ -395,6 +435,11 @@ pub async fn preview(
         return Err(crate::bad_request("Invalid provider identifier."));
     }
     let result = match provider {
+        Provider::Tvdb => {
+            super::tvdb::lookup(state, id, context, super::tvdb::Order::Official)
+                .await?
+                .0
+        }
         Provider::TmdbMovie | Provider::TmdbTv => {
             let kind = if provider == Provider::TmdbMovie {
                 "movie"
@@ -556,6 +601,7 @@ pub async fn preview(
 pub async fn artwork(state: &AppState, art: &Art) -> Result<Vec<u8>, AppError> {
     let address = match art {
         Art::Tmdb(path) => format!("https://image.tmdb.org/t/p/w500{path}"),
+        Art::Tvdb(path) => format!("https://artworks.thetvdb.com{path}"),
         Art::Musicbrainz(id) => {
             if uuid::Uuid::parse_str(id).is_err() {
                 return Err(unavailable());
