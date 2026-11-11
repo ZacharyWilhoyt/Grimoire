@@ -97,6 +97,7 @@ with tempfile.TemporaryDirectory(prefix='grimoire-caddy-smoke-') as temp:
  default_bind 127.0.0.1
  servers {{
   strict_sni_host
+  0rtt off
  }}
  AUTOMATION
 }}
@@ -148,6 +149,8 @@ https://localhost:{https_port} {{
         assert request('/range') == (206, 'bytes 2-4/10', b'234')
         status, current = api('/config/')
         assert status == 200 and json.loads(current)['admin']['listen'] == f'unix/{control}'
+        servers = json.loads(current)['apps']['http']['servers'].values()
+        assert all(server['allow_0rtt'] is False for server in servers if server.get('routes'))
         cert = storage / 'certificates/local/localhost/localhost.crt'
         key = cert.with_suffix('.key')
         before = cert.read_bytes(), key.read_bytes()

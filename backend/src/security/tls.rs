@@ -185,7 +185,8 @@ impl Managed {
         )
     }
     fn render(&self, settings: &Settings, local: bool) -> String {
-        let mut result=format!("{{\n admin {}\n storage file_system {{\n root {}\n }}\n skip_install_trust\n servers {{\n strict_sni_host\n }}\n log default {{\n output file {} {{\n roll_size 10MiB\n roll_keep 2\n }}\n format json\n }}\n",quote(&format!("unix/{}",self.socket.display())),quote(&self.storage.to_string_lossy()),quote(&self.storage.join("grimoire.log").to_string_lossy()));
+        // QUIC early requests have no verified remote.host for the API IP policy.
+        let mut result=format!("{{\n admin {}\n storage file_system {{\n root {}\n }}\n skip_install_trust\n servers {{\n strict_sni_host\n 0rtt off\n }}\n log default {{\n output file {} {{\n roll_size 10MiB\n roll_keep 2\n }}\n format json\n }}\n",quote(&format!("unix/{}",self.socket.display())),quote(&self.storage.to_string_lossy()),quote(&self.storage.join("grimoire.log").to_string_lossy()));
         if settings.automatic {
             result.push_str(" auto_https ignore_loaded_certs\n");
         }
@@ -729,6 +730,7 @@ mod tests {
         assert!(!file.contains("issuer acme"));
         assert!(!file.contains("http://video.example.com"));
         assert!(file.contains("{http.request.remote.host}"));
+        assert!(file.contains("0rtt off"));
         assert!(!file.contains("{$GRIMOIRE_PROXY_TOKEN}"));
         assert!(file.contains(&"0".repeat(64)));
     }

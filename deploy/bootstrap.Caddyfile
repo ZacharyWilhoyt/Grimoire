@@ -6,6 +6,7 @@
  skip_install_trust
  servers {
   strict_sni_host
+  0rtt off
  }
  log default {
   output file /data/caddy/grimoire.log {
