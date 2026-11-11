@@ -1,7 +1,7 @@
 //! Live, bounded catalog scans plus per-account saved items and open history.
 use crate::{
-    auth, media_root, resolve_media_path, scan_directory, sources::LocalSource, AppError, AppState,
-    MediaFile,
+    auth, media_root, resolve_media_path, scan_directory, sources::LocalSource, unified_catalog,
+    AppError, AppState, MediaFile,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -37,6 +37,14 @@ pub struct Item {
     pub last_opened_at: Option<f64>,
     pub available: bool,
     pub metadata: Option<crate::metadata::View>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logical_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub remote: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub media_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_access: Option<bool>,
 }
 #[derive(Serialize, FromRow)]
 pub struct PersonalState {
@@ -73,7 +81,8 @@ struct PersonalRow {
     file_key: String,
     source_id: String,
     source_name: String,
-    path: String,
+    path: Option<String>,
+    remote_representation: Option<Uuid>,
     relative_path: String,
     saved_at: Option<f64>,
     last_opened_at: Option<f64>,
@@ -93,9 +102,20 @@ fn item(source_id: &str, source_name: &str, file: MediaFile) -> Item {
         available: true,
         metadata: None,
         progress: None,
+        logical_id: None,
+        remote: false,
+        media_url: None,
+        remote_access: None,
     }
 }
-async fn enrich(state: &AppState, user: Uuid, items: &mut [Item]) -> Result<(), AppError> {
+pub(crate) async fn enrich_personal(
+    state: &AppState,
+    user: Uuid,
+    items: &mut [Item],
+) -> Result<(), AppError> {
+    if items.is_empty() {
+        return Ok(());
+    }
     let keys: Vec<_> = items.iter().map(|item| item.file_key.clone()).collect();
     let rows = sqlx::query_as::<_, PersonalState>("SELECT file_key,extract(epoch from saved_at)::float8 AS saved_at,extract(epoch from last_opened_at)::float8 AS last_opened_at FROM user_media WHERE user_id=$1 AND file_key=ANY($2)")
         .bind(user).bind(keys).fetch_all(&state.db).await.map_err(|_| auth::unavailable())?;
@@ -109,8 +129,12 @@ async fn enrich(state: &AppState, user: Uuid, items: &mut [Item]) -> Result<(), 
             item.last_opened_at = row.last_opened_at;
         }
     }
-    crate::metadata::enrich(state, user, items).await?;
     crate::progress::enrich(state, user, items).await?;
+    Ok(())
+}
+async fn enrich(state: &AppState, user: Uuid, items: &mut [Item]) -> Result<(), AppError> {
+    enrich_personal(state, user, items).await?;
+    crate::metadata::enrich(state, user, items).await?;
     Ok(())
 }
 // Recheck after filesystem work so revocation during a long scan cannot expose metadata.
@@ -150,7 +174,11 @@ pub async fn discover(
 ) -> Result<Json<Catalog>, AppError> {
     let sources = sqlx::query_as::<_, MediaSource>("SELECT s.id,s.name,s.path FROM sources s WHERE s.kind='local_directory' AND (s.owner_id=$1 OR EXISTS(SELECT 1 FROM source_permissions p WHERE p.source_id=s.id AND p.user_id=$1 AND p.can_discover AND p.can_access_media)) ORDER BY s.created_at,s.id LIMIT 33")
         .bind(identity.user.id).fetch_all(&state.db).await.map_err(|_| auth::unavailable())?;
-    let permit = scan_permit(&state).await?;
+    let permit = if sources.is_empty() {
+        None
+    } else {
+        Some(scan_permit(&state).await?)
+    };
     let mut result = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let mut result = Catalog {
@@ -186,6 +214,12 @@ pub async fn discover(
     filter_current_access(&state, identity.user.id, &mut result.items).await?;
     crate::catalog_inventory::observe(&state, &result.items);
     enrich(&state, identity.user.id, &mut result.items).await?;
+    unified_catalog::annotate_local(&state, identity.user.id, &mut result.items).await?;
+    let (mut remote, truncated) =
+        unified_catalog::remote_items(&state, identity.user.id, None, None).await?;
+    enrich_personal(&state, identity.user.id, &mut remote).await?;
+    result.items.extend(remote);
+    result.truncated |= truncated;
     Ok(Json(result))
 }
 
@@ -228,25 +262,59 @@ async fn personal_page(
     } else {
         ("saved_at", "m.saved_at")
     };
-    let sql = format!("SELECT m.file_key,m.source_id,s.name AS source_name,s.path,m.relative_path,extract(epoch from m.saved_at)::float8 AS saved_at,extract(epoch from m.last_opened_at)::float8 AS last_opened_at FROM user_media m JOIN sources s ON s.id=m.source_id WHERE m.user_id=$1 AND s.kind='local_directory' AND m.{column} IS NOT NULL AND (s.owner_id=$1 OR EXISTS(SELECT 1 FROM source_permissions p WHERE p.source_id=s.id AND p.user_id=$1 AND p.can_discover AND p.can_access_media)) ORDER BY {order} DESC,m.file_key LIMIT 101 OFFSET $2");
+    let joins = "JOIN sources s ON s.id=m.source_id
+        LEFT JOIN catalog_remote_page_locations rv ON s.kind='remote_agent'
+             AND rv.source_id=s.id AND rv.viewer_id=$1 AND rv.representation_id::text=m.relative_path";
+    let access = "(s.kind='local_directory' AND (s.owner_id=$1 OR EXISTS(
+        SELECT 1 FROM source_permissions p WHERE p.source_id=s.id AND p.user_id=$1
+          AND p.can_discover AND p.can_access_media))
+        OR s.kind='remote_agent' AND rv.representation_id IS NOT NULL
+          AND (rv.media_granted OR $3=0))";
+    let fields = "m.file_key,m.source_id,s.name AS source_name,s.path,
+                  rv.representation_id AS remote_representation,m.relative_path";
     let sql = if mode == 2 {
-        "SELECT m.file_key,m.source_id,s.name AS source_name,s.path,m.relative_path,extract(epoch from u.saved_at)::float8 AS saved_at,extract(epoch from u.last_opened_at)::float8 AS last_opened_at FROM media_progress m JOIN sources s ON s.id=m.source_id LEFT JOIN user_media u ON u.user_id=m.user_id AND u.file_key=m.file_key WHERE m.user_id=$1 AND s.kind='local_directory' AND (NOT m.completed OR (lower(m.relative_path) NOT LIKE '%.epub' AND lower(m.relative_path) NOT LIKE '%.cbz')) AND (m.position>0 OR m.locator IS NOT NULL) AND (m.total IS NULL OR m.position<m.total) AND (s.owner_id=$1 OR EXISTS(SELECT 1 FROM source_permissions p WHERE p.source_id=s.id AND p.user_id=$1 AND p.can_discover AND p.can_access_media)) ORDER BY m.updated_at DESC,m.file_key LIMIT 101 OFFSET $2".to_string()
+        format!("SELECT {fields},extract(epoch from u.saved_at)::float8 AS saved_at,
+                 extract(epoch from u.last_opened_at)::float8 AS last_opened_at
+                 FROM media_progress m {joins}
+                 LEFT JOIN user_media u ON u.user_id=m.user_id AND u.file_key=m.file_key
+                 WHERE m.user_id=$1 AND {access}
+                 AND (NOT m.completed OR COALESCE(rv.extension NOT IN ('epub','cbz'),
+                      lower(m.relative_path) NOT LIKE '%.epub' AND lower(m.relative_path) NOT LIKE '%.cbz'))
+                 AND (m.position>0 OR m.locator IS NOT NULL) AND (m.total IS NULL OR m.position<m.total)
+                 ORDER BY m.updated_at DESC,m.file_key LIMIT 101 OFFSET $2")
     } else {
-        sql
+        format!("SELECT {fields},extract(epoch from m.saved_at)::float8 AS saved_at,
+                 extract(epoch from m.last_opened_at)::float8 AS last_opened_at
+                 FROM user_media m {joins} WHERE m.user_id=$1 AND m.{column} IS NOT NULL AND {access}
+                 ORDER BY {order} DESC,m.file_key LIMIT 101 OFFSET $2")
     };
     let rows = sqlx::query_as::<_, PersonalRow>(&sql)
         .bind(user)
         .bind(offset)
+        .bind(i32::from(mode))
         .fetch_all(&state.db)
         .await
         .map_err(|_| auth::unavailable())?;
     let has_more = rows.len() > PAGE_SIZE as usize;
-    let permit = scan_permit(&state).await?;
+    let ordering: HashMap<_, _> = rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| (row.file_key.clone(), index))
+        .collect();
+    let (remote_rows, local_rows): (Vec<_>, Vec<_>) = rows
+        .into_iter()
+        .take(PAGE_SIZE as usize)
+        .partition(|row| row.remote_representation.is_some());
+    let permit = if local_rows.is_empty() {
+        None
+    } else {
+        Some(scan_permit(&state).await?)
+    };
     let mut result = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let mut items = Vec::new();
         let mut unavailable_items = 0;
-        for row in rows.into_iter().take(PAGE_SIZE as usize) {
+        for row in local_rows {
             let extension = std::path::Path::new(&row.relative_path)
                 .extension()
                 .and_then(|ext| ext.to_str())
@@ -256,10 +324,13 @@ async fn personal_page(
                 unavailable_items += 1;
                 continue;
             };
-            let metadata =
-                resolve_media_path(std::path::Path::new(&row.path), &row.relative_path, kind)
-                    .ok()
-                    .and_then(|path| path.metadata().ok());
+            let metadata = row
+                .path
+                .as_deref()
+                .and_then(|path| {
+                    resolve_media_path(std::path::Path::new(path), &row.relative_path, kind).ok()
+                })
+                .and_then(|path| path.metadata().ok());
             let available = metadata.is_some();
             if !available {
                 unavailable_items += 1;
@@ -286,6 +357,10 @@ async fn personal_page(
                 available,
                 metadata: None,
                 progress: None,
+                logical_id: None,
+                remote: false,
+                media_url: None,
+                remote_access: None,
             });
         }
         PersonalPage {
@@ -299,6 +374,37 @@ async fn personal_page(
     .map_err(|_| auth::unavailable())?;
     filter_current_access(&state, user, &mut result.items).await?;
     crate::metadata::enrich(&state, user, &mut result.items).await?;
+    unified_catalog::annotate_local(&state, user, &mut result.items).await?;
+    let remote_states: HashMap<_, _> = remote_rows
+        .into_iter()
+        .filter_map(|row| {
+            Some((
+                row.remote_representation?,
+                (row.saved_at, row.last_opened_at),
+            ))
+        })
+        .collect();
+    if !remote_states.is_empty() {
+        let ids: Vec<_> = remote_states.keys().copied().collect();
+        let (mut remote, _) = unified_catalog::remote_items(&state, user, Some(&ids), None).await?;
+        if mode != 0 {
+            remote.retain(|item| item.remote_access == Some(true));
+        }
+        for item in &mut remote {
+            if let Some(&(saved, opened)) = Uuid::parse_str(&item.file.relative_path)
+                .ok()
+                .and_then(|id| remote_states.get(&id))
+            {
+                item.saved_at = saved;
+                item.last_opened_at = opened;
+            }
+        }
+        result.unavailable_items += remote.iter().filter(|item| !item.available).count();
+        result.items.extend(remote);
+        result
+            .items
+            .sort_by_key(|item| ordering.get(&item.file_key).copied().unwrap_or(usize::MAX));
+    }
     crate::progress::enrich(&state, user, &mut result.items).await?;
     Ok(Json(result))
 }
@@ -324,6 +430,44 @@ async fn set_state(
 ) -> Result<Json<PersonalState>, AppError> {
     if reference.relative_path.len() > 4096 || reference.source_id.len() > 128 {
         return Err(crate::bad_request("Invalid media reference."));
+    }
+    if reference
+        .source_id
+        .starts_with(unified_catalog::REMOTE_PREFIX)
+    {
+        let id =
+            Uuid::parse_str(&reference.relative_path).map_err(|_| unified_catalog::missing())?;
+        if id.to_string() != reference.relative_path {
+            return Err(unified_catalog::missing());
+        }
+        let (column, update) = if save {
+            (
+                "saved_at",
+                "COALESCE(user_media.saved_at,EXCLUDED.saved_at)",
+            )
+        } else {
+            ("last_opened_at", "EXCLUDED.last_opened_at")
+        };
+        let sql = format!(
+            "INSERT INTO user_media(user_id,file_key,source_id,relative_path,{column})
+            SELECT $1,$2,v.source_id,$3::uuid::text,now() FROM catalog_remote_page_locations v
+            WHERE v.viewer_id=$1 AND v.source_id=$4 AND v.representation_id=$3
+               AND ($5 OR v.playback_eligible)
+            ON CONFLICT(user_id,file_key) DO UPDATE SET {column}={update}
+            RETURNING file_key,extract(epoch from saved_at)::float8 AS saved_at,
+            extract(epoch from last_opened_at)::float8 AS last_opened_at"
+        );
+        let row = sqlx::query_as::<_, PersonalState>(&sql)
+            .bind(user)
+            .bind(file_key(&reference.source_id, &reference.relative_path))
+            .bind(id)
+            .bind(&reference.source_id)
+            .bind(save)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|_| auth::unavailable())?
+            .ok_or_else(unified_catalog::missing)?;
+        return Ok(Json(row));
     }
     let root = media_root(
         &state,
@@ -427,12 +571,16 @@ pub struct LinkQuery {
 }
 #[derive(Serialize)]
 pub struct LinkContext {
-    item: Option<Item>,
-    members: Vec<Item>,
-    label: Option<String>,
-    artwork: crate::metadata::sidecars::SeriesArtwork,
-    seasons: Vec<crate::metadata::sidecars::Season>,
-    season: Option<String>,
+    pub(crate) item: Option<Item>,
+    pub(crate) members: Vec<Item>,
+    pub(crate) label: Option<String>,
+    pub(crate) artwork: crate::metadata::sidecars::SeriesArtwork,
+    pub(crate) seasons: Vec<crate::metadata::sidecars::Season>,
+    pub(crate) season: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) series_source_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) series_group_id: Option<String>,
 }
 // URLs identify resources, never grant access. Resolve the logged-in viewer's live catalog.
 pub async fn linked(
@@ -454,6 +602,18 @@ pub async fn linked(
     {
         return Err(crate::bad_request("Invalid media link."));
     }
+    if query.source_id.starts_with(unified_catalog::REMOTE_PREFIX) {
+        return unified_catalog::remote_link(
+            &state,
+            identity.user.id,
+            query.source_id,
+            query.path,
+            query.group,
+            query.season,
+        )
+        .await
+        .map(Json);
+    }
     let mut items = source_items(&state, &identity.user, &query.source_id).await?;
     let selected = query.path.as_ref().and_then(|path| {
         items
@@ -466,6 +626,7 @@ pub async fn linked(
             "Media is unavailable or access has not been granted.".into(),
         ));
     }
+    unified_catalog::annotate_local(&state, identity.user.id, &mut items).await?;
     let mut item = selected.map(|index| items.remove(index));
     let group = query.group.or_else(|| {
         item.as_ref()?
@@ -507,11 +668,41 @@ pub async fn linked(
     let label = items
         .first()
         .and_then(|i| i.metadata.as_ref()?.group.as_ref().map(|g| g.label.clone()));
+    let reviewed: HashSet<_> = items
+        .iter()
+        .filter_map(|item| {
+            let metadata = item.metadata.as_ref()?;
+            let id = metadata.provider_id.as_deref()?;
+            (group.is_some()
+                && metadata.provider.as_deref() == Some("tmdb_tv")
+                && metadata.fields.season.is_some()
+                && metadata.fields.episode.is_some())
+            .then(|| id.parse::<u64>().ok())
+            .flatten()
+        })
+        .collect();
+    let mut remote = if reviewed.len() == 1 {
+        let id = reviewed.iter().next().unwrap();
+        let series = auth::digest(&format!("tmdb:series:{id}"));
+        unified_catalog::remote_items(&state, identity.user.id, None, Some(&series))
+            .await?
+            .0
+    } else {
+        Vec::new()
+    };
+    enrich_personal(&state, identity.user.id, &mut remote).await?;
+    let extra_seasons = unified_catalog::seasons(&remote);
+    // Keep the requested local file as the playback and share anchor.
+    let anchor = item.as_ref().map(|item| item.file_key.clone());
+    let mut all = items.clone();
+    all.extend(remote.iter().cloned());
+    unified_catalog::dedup_members(&mut all, anchor.as_deref());
+    let counts = unified_catalog::seasons(&all);
     let root = media_root(&state, &identity.user, &query.source_id).await?;
     let season = query.season;
     let requested = season.clone();
     let is_series = group.is_some();
-    let (item, items, artwork, seasons) = tokio::task::spawn_blocking(move || {
+    let (item, mut items, artwork, mut seasons) = tokio::task::spawn_blocking(move || {
         let (artwork, seasons) = if is_series {
             sidecars::describe(&root, &items)
         } else {
@@ -535,6 +726,24 @@ pub async fn linked(
     })
     .await
     .map_err(|_| auth::unavailable())?;
+    if !remote.is_empty() {
+        for candidate in extra_seasons {
+            if !seasons.iter().any(|current| current.key == candidate.key) {
+                seasons.push(candidate);
+            }
+        }
+        for current in &mut seasons {
+            if let Some(total) = counts.iter().find(|count| count.key == current.key) {
+                current.count = total.count;
+            }
+        }
+        seasons.sort_by_key(|season| season.key.parse::<u32>().ok());
+        if let Some(ref season) = season {
+            remote.retain(|item| sidecars::season_key(item) == *season);
+        }
+        items.extend(remote);
+        unified_catalog::dedup_members(&mut items, anchor.as_deref());
+    }
     if items.is_empty() {
         return Err(AppError(
             StatusCode::NOT_FOUND,
@@ -549,5 +758,7 @@ pub async fn linked(
         artwork,
         seasons,
         season,
+        series_source_id: group.as_ref().map(|_| query.source_id),
+        series_group_id: group,
     }))
 }

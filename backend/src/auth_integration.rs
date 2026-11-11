@@ -6315,7 +6315,7 @@ async fn remote_catalog_revisions_require_node_ownership_and_both_policies(pool:
 
     let state = state(pool.clone());
     let (owner_cookie, _, owner) = register_user(&state, "remote_owner").await;
-    let (viewer_cookie, _, viewer) = register_user(&state, "remote_viewer").await;
+    let (viewer_cookie, viewer_csrf, viewer) = register_user(&state, "remote_viewer").await;
     let owner = Uuid::parse_str(owner["id"].as_str().unwrap()).unwrap();
     let viewer = Uuid::parse_str(viewer["id"].as_str().unwrap()).unwrap();
     let node = Uuid::new_v4();
@@ -6503,6 +6503,77 @@ async fn remote_catalog_revisions_require_node_ownership_and_both_policies(pool:
     assert_eq!(shown["can_access_media"], false);
     assert!(shown["items"][0].get("path").is_none());
 
+    let browse = || {
+        request(
+            &state,
+            Method::GET,
+            "/api/catalog",
+            Some(&viewer_cookie),
+            None,
+            None,
+            None,
+        )
+    };
+    let browse_response = browse().await;
+    assert_eq!(browse_response.status(), StatusCode::OK);
+    let page = body(browse_response).await;
+    let entry = &page["items"][0];
+    assert_eq!(entry["remote"], true);
+    assert_eq!(entry["name"], "Episode.mkv");
+    assert_eq!(entry["available"], false);
+    assert!(entry.get("media_url").is_none());
+    let page_path = entry["relative_path"].as_str().unwrap().to_owned();
+    let link = format!("/api/media/link?source_id=remote%3A{source}&path={page_path}");
+    let write = |method, url, body| {
+        request(
+            &state,
+            method,
+            url,
+            Some(&viewer_cookie),
+            Some(&viewer_csrf),
+            Some(ORIGIN),
+            Some(body),
+        )
+    };
+    let reference = json!({"source_id":source_key,"relative_path":page_path});
+    assert_eq!(
+        write(Method::POST, "/api/activity/open", reference.clone())
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        write(Method::PUT, "/api/library", reference.clone())
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let library = || {
+        request(
+            &state,
+            Method::GET,
+            "/api/library",
+            Some(&viewer_cookie),
+            None,
+            None,
+            None,
+        )
+    };
+    let saved = body(library().await).await;
+    assert_eq!(saved["items"][0]["file_key"], entry["file_key"]);
+    assert_eq!(saved["items"][0]["available"], false);
+    let link_response = request(
+        &state,
+        Method::GET,
+        &link,
+        Some(&viewer_cookie),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(body(link_response).await["item"]["name"], "Episode.mkv");
+
     delta.revision = 3;
     delta.grants.as_mut().unwrap()[0].can_access_media = true;
     assert_eq!(
@@ -6525,6 +6596,92 @@ async fn remote_catalog_revisions_require_node_ownership_and_both_policies(pool:
     assert_eq!(allowed["can_access_media"], true);
     let representation = allowed["items"][0]["representation_id"].as_str().unwrap();
     let delivery = format!("/api/nodes/v1/sources/{source}/representations/{representation}");
+    let rep_id = Uuid::parse_str(&page_path).unwrap();
+    sqlx::query(
+        "INSERT INTO metadata_artwork(id,jpeg) VALUES('remote-art',decode('ffd8ffd9','hex'))",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO catalog_verified_identities
+        (representation_id,namespace,entity_type,identifier,edition,canonical_id,provider_fields,provider_art)
+        VALUES($1,'tmdb_tv','episode','101:1:1','broadcast',$2,$3,'remote-art')")
+        .bind(rep_id).bind(logical_id).bind(json!({"title":"First episode","collection":"Verified series"}))
+        .execute(&pool).await.unwrap();
+    let group = auth::digest("tmdb:series:101");
+    let series = format!("/api/media/link?source_id=remote%3A{source}&group={group}&season=1");
+    let series_response = request(
+        &state,
+        Method::GET,
+        &series,
+        Some(&viewer_cookie),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(series_response.status(), StatusCode::OK);
+    let series_page = body(series_response).await;
+    assert_eq!(series_page["label"], "Verified series");
+    assert_eq!(series_page["seasons"][0]["count"], 1);
+    assert_eq!(
+        series_page["members"][0]["metadata"]["fields"]["title"],
+        "First episode"
+    );
+    let artwork = format!("/api/catalog/v1/artwork/{rep_id}");
+    let art_response = request(
+        &state,
+        Method::GET,
+        &artwork,
+        Some(&viewer_cookie),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(art_response.status(), StatusCode::OK);
+    assert_eq!(art_response.headers()["cache-control"], "private, no-store");
+    let online = body(browse().await).await;
+    assert_eq!(online["items"][0]["available"], true);
+    assert_eq!(online["items"][0]["media_url"], delivery);
+    assert_eq!(
+        write(Method::POST, "/api/activity/open", reference.clone())
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let progress = json!({"source_id":source_key,"relative_path":page_path,"position":17,
+        "total":60,"locator":null,"expected_revision":0,"played_seconds":3});
+    assert_eq!(
+        write(Method::PUT, "/api/progress", progress).await.status(),
+        StatusCode::OK
+    );
+    let continuing = || {
+        request(
+            &state,
+            Method::GET,
+            "/api/continue",
+            Some(&viewer_cookie),
+            None,
+            None,
+            None,
+        )
+    };
+    assert_eq!(
+        body(continuing().await).await["items"][0]["progress"]["position"],
+        17.0
+    );
+    let stats = request(
+        &state,
+        Method::GET,
+        "/api/statistics",
+        Some(&viewer_cookie),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(body(stats).await["watch_seconds"], 3.0);
     let browser_range = Request::builder()
         .uri(&delivery)
         .header("cookie", &viewer_cookie)
@@ -6584,10 +6741,42 @@ async fn remote_catalog_revisions_require_node_ownership_and_both_policies(pool:
     assert_eq!(response.headers()["content-range"], "bytes 10-13/1234");
     assert_eq!(to_bytes(response.into_body(), 4).await.unwrap(), &bytes[..]);
 
+    sqlx::query("UPDATE source_nodes SET last_seen=now()-interval '91 seconds' WHERE id=$1")
+        .bind(node)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let offline = body(continuing().await).await;
+    assert_eq!(offline["items"][0]["available"], false);
+    assert_eq!(offline["items"][0]["progress"]["position"], 17.0);
+    assert!(offline["items"][0].get("media_url").is_none());
+    sqlx::query("UPDATE source_nodes SET last_seen=now() WHERE id=$1")
+        .bind(node)
+        .execute(&pool)
+        .await
+        .unwrap();
     assert!(projected().await.unwrap().unwrap().3);
     sqlx::query("UPDATE source_permissions SET can_discover=false,can_access_media=false WHERE source_id=$1 AND user_id=$2")
         .bind(&source_key).bind(viewer).execute(&pool).await.unwrap();
     assert!(projected().await.unwrap().is_none());
+    assert_eq!(
+        request(
+            &state,
+            Method::GET,
+            &artwork,
+            Some(&viewer_cookie),
+            None,
+            None,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(body(browse().await).await["items"], json!([]));
+    assert_eq!(body(library().await).await["items"], json!([]));
+    assert_eq!(body(continuing().await).await["items"], json!([]));
+
     sqlx::query("UPDATE source_permissions SET can_discover=true,can_access_media=true WHERE source_id=$1 AND user_id=$2")
         .bind(&source_key).bind(viewer).execute(&pool).await.unwrap();
     sqlx::query("UPDATE source_nodes SET revoked_at=now() WHERE id=$1")

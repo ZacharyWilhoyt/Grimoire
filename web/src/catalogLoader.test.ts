@@ -31,5 +31,5 @@ it('requests only the relevant sections for Discover and My library', async () =
   const read = async <T>(url: string): Promise<T> => { calls.push(url); return (url === '/api/catalog' ? catalog : personal) as T }
   await loadCatalogPage('Discover', new AbortController().signal, read)
   await loadCatalogPage('My library', new AbortController().signal, read)
-  expect(calls).toEqual(['/api/catalog', '/api/library'])
+  expect(calls).toEqual(['/api/catalog', '/api/library', '/api/catalog'])
 })

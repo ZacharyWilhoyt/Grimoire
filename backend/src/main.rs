@@ -27,6 +27,7 @@ mod statistics;
 mod subtitles;
 mod subtitles_mkv;
 mod transcode;
+mod unified_catalog;
 mod video_audio;
 
 use serde::{Deserialize, Serialize};
@@ -741,6 +742,10 @@ fn app(state: AppState) -> Router {
             axum::routing::post(metadata::cancel_scan),
         )
         .route("/api/catalog", get(catalog::discover))
+        .route(
+            "/api/catalog/v1/artwork/{representation}",
+            get(unified_catalog::artwork),
+        )
         .route("/api/continue", get(catalog::continue_media))
         .route(
             "/api/library",

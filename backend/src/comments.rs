@@ -107,6 +107,7 @@ async fn authorized_write<'a>(
     state: &'a AppState,
     user_id: uuid::Uuid,
     source_id: &str,
+    path: &str,
 ) -> Result<sqlx::Transaction<'a, sqlx::Postgres>, AppError> {
     let mut tx = state.db.begin().await.map_err(|_| auth::unavailable())?;
     // Lock before checking access again, so a concurrent permission change cannot race the insert.
@@ -130,6 +131,9 @@ async fn authorized_write<'a>(
             StatusCode::NOT_FOUND,
             "Media access not granted.".into(),
         ));
+    }
+    if source_id.starts_with(crate::unified_catalog::REMOTE_PREFIX) {
+        crate::unified_catalog::authorized(&mut tx, user_id, source_id, path, true).await?;
     }
     Ok(tx)
 }
@@ -162,7 +166,7 @@ pub async fn post(
     )
     .await?;
 
-    let mut tx = authorized_write(&state, identity.user.id, &input.source_id).await?;
+    let mut tx = authorized_write(&state, identity.user.id, &input.source_id, &input.path).await?;
     let key = catalog::file_key(&input.source_id, &input.path);
     // Allocate IDs in commit order for each item, so cursor pagination cannot miss a late insert.
     lock_discussion(&mut tx, &key).await?;
@@ -211,7 +215,7 @@ pub async fn remove(
         ));
     }
     progress::validate_media(&state, &identity.user, &item.source_id, &item.path).await?;
-    let mut tx = authorized_write(&state, identity.user.id, &item.source_id).await?;
+    let mut tx = authorized_write(&state, identity.user.id, &item.source_id, &item.path).await?;
     let key = catalog::file_key(&item.source_id, &item.path);
     lock_discussion(&mut tx, &key).await?;
     let result = sqlx::query(

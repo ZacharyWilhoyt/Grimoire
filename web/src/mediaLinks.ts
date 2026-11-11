@@ -8,6 +8,8 @@ export type LinkContext = {
   artwork?: SeriesArtwork
   seasons?: SeriesSeason[]
   season?: string | null
+  series_source_id?: string
+  series_group_id?: string
 }
 export function mediaLink(source: string, path: string) { return `/?${new URLSearchParams({ source, item: path })}` }
 export function detailLink(source:string,path:string){return `/?${new URLSearchParams({source,details:path})}`}

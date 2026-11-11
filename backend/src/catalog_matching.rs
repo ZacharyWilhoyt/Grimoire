@@ -726,6 +726,10 @@ async fn verify(
             "The provider did not confirm the requested entity.",
         ));
     }
+    let artwork = match verified.art {
+        Some(ref art) => metadata::providers::artwork(&state, art).await.ok(),
+        None => None,
+    };
     let mut tx = transaction(&state).await?;
     let current = location(&mut tx, actor, input.location_id, false).await?;
     if before.representation_id != current.representation_id || before.revision != current.revision
@@ -745,6 +749,17 @@ async fn verify(
     .await;
     match canonical {
         Ok(id) => {
+            let artwork_id = metadata::store_art(&mut tx, artwork).await?;
+            sqlx::query(
+                "UPDATE catalog_verified_identities SET provider_fields=$2,
+                         provider_art=COALESCE($3,provider_art) WHERE representation_id=$1",
+            )
+            .bind(current.representation_id)
+            .bind(serde_json::to_value(&verified.fields).map_err(|_| auth::unavailable())?)
+            .bind(artwork_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| auth::unavailable())?;
             tx.commit().await.map_err(|_| auth::unavailable())?;
             Ok(private(serde_json::json!({"id":id})))
         }
@@ -854,7 +869,8 @@ async fn attest(
          VALUES ($1,$2,$3,$4,$5,$6,$7)
          ON CONFLICT(representation_id) DO UPDATE SET namespace=EXCLUDED.namespace,
             entity_type=EXCLUDED.entity_type,identifier=EXCLUDED.identifier,edition=EXCLUDED.edition,
-            canonical_id=EXCLUDED.canonical_id,evidence_id=EXCLUDED.evidence_id",
+            canonical_id=EXCLUDED.canonical_id,evidence_id=EXCLUDED.evidence_id,
+            provider_fields=NULL,provider_art=NULL",
     )
     .bind(current.representation_id).bind(provider).bind(entity).bind(identifier)
     .bind(edition).bind(id).bind(evidence_id).execute(&mut *tx).await.map_err(|_| auth::unavailable())?;

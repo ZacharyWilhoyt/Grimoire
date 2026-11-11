@@ -4,7 +4,7 @@ export type MetadataView = { group?: GroupView | null; individual_genres?: strin
 export const displayTitle = (item: { name: string; metadata?: MetadataView | null }) => item.metadata?.fields.title?.trim() || item.name
 export type GroupBy = 'none' | 'collection' | 'creator'
 export type MediaKind = 'video' | 'music' | 'book'
-export type MediaItem = { progress?: { position: number; total: number | null; updated_at: number; completed?:boolean } | null; metadata?: MetadataView | null; file_key: string; available: boolean; source_id: string; source_name: string; name: string; relative_path: string; kind: MediaKind; extension: string; size_bytes: number; modified_at: number | null; saved_at: number | null; last_opened_at: number | null }
+export type MediaItem = { logical_id?: string; remote?: boolean; media_url?: string; remote_access?: boolean; progress?: { position: number; total: number | null; updated_at: number; completed?:boolean } | null; metadata?: MetadataView | null; file_key: string; available: boolean; source_id: string; source_name: string; name: string; relative_path: string; kind: MediaKind; extension: string; size_bytes: number; modified_at: number | null; saved_at: number | null; last_opened_at: number | null }
 export type PersonalState = Pick<MediaItem, 'file_key' | 'saved_at' | 'last_opened_at'>
 export type PageName = 'For you' | 'Discover' | 'My library' | 'Music'
 export type Sort = 'title' | 'modified' | 'saved' | 'source'
@@ -17,10 +17,24 @@ export function filterMedia(items: MediaItem[], query: string, kind: string, sou
     return order || a.file_key.localeCompare(b.file_key)
   })
 }
+export const logicalKey = (item: MediaItem) => item.logical_id ?? item.file_key
+export function logicalItems(items: MediaItem[], mode: 'browse' | 'progress' | 'saved' = 'browse') {
+  const chosen = new Map<string, MediaItem>()
+  for (const item of items) {
+    const key = logicalKey(item), current = chosen.get(key)
+    const freshness = (candidate: MediaItem) => mode === 'progress' ? candidate.progress?.updated_at ?? 0 : mode === 'saved' ? candidate.saved_at ?? 0 : 0
+    const preference = current && (freshness(item) - freshness(current) ||
+      Number(item.available) - Number(current.available) ||
+      Number(!item.remote) - Number(!current.remote) ||
+      Number(!!item.metadata) - Number(!!current.metadata))
+    if (!current || preference && preference > 0) chosen.set(key, item)
+  }
+  return [...chosen.values()]
+}
 // Rotate through available media types so each remains first class. These are
 // transparent discovery suggestions, not an inferred taste/recommendation model.
 export function suggestions(items: MediaItem[], excluded: Set<string>, limit = 9) {
-  const pools = (['video', 'music', 'book'] as const).map(kind => items.filter(item => item.kind === kind && !excluded.has(item.file_key)))
+  const pools = (['video', 'music', 'book'] as const).map(kind => items.filter(item => item.kind === kind && !excluded.has(logicalKey(item)) && !excluded.has(item.file_key)))
   const result: MediaItem[] = []
   while (result.length < limit && pools.some(pool => pool.length)) {
     for (const pool of pools) { const item = pool.shift(); if (item && result.length < limit) result.push(item) }

@@ -51,6 +51,17 @@ pub(crate) async fn validate_media(
     if source_id.len() > 128 || relative_path.len() > 4096 {
         return Err(crate::bad_request("Invalid media reference."));
     }
+    if source_id.starts_with(crate::unified_catalog::REMOTE_PREFIX) {
+        let mut connection = state.db.acquire().await.map_err(|_| auth::unavailable())?;
+        return crate::unified_catalog::authorized(
+            &mut connection,
+            user.id,
+            source_id,
+            relative_path,
+            true,
+        )
+        .await;
+    }
     let root = crate::media_root(state, user, source_id).await?;
     let extension = std::path::Path::new(relative_path)
         .extension()
@@ -145,6 +156,19 @@ pub async fn put(
             "Media access not granted.".into(),
         ));
     }
+    if update
+        .source_id
+        .starts_with(crate::unified_catalog::REMOTE_PREFIX)
+    {
+        crate::unified_catalog::authorized(
+            &mut tx,
+            identity.user.id,
+            &update.source_id,
+            &update.relative_path,
+            true,
+        )
+        .await?;
+    }
     let key = catalog::file_key(&update.source_id, &update.relative_path);
     // Serialize first writes as well as updates, without creating personal library state.
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
@@ -219,7 +243,11 @@ pub async fn enrich(
     items: &mut [catalog::Item],
 ) -> Result<(), AppError> {
     let keys: Vec<_> = items.iter().map(|item| item.file_key.as_str()).collect();
-    let rows=sqlx::query_as::<_,SummaryRow>("SELECT p.file_key,p.position,p.total,p.completed,extract(epoch from p.updated_at)::float8 AS updated_at FROM media_progress p JOIN sources s ON s.id=p.source_id WHERE p.user_id=$1 AND p.file_key=ANY($2) AND (s.owner_id=$1 OR EXISTS(SELECT 1 FROM source_permissions a WHERE a.source_id=s.id AND a.user_id=$1 AND a.can_discover AND a.can_access_media))").bind(user).bind(keys).fetch_all(&state.db).await.map_err(|_|auth::unavailable())?;
+    let rows=sqlx::query_as::<_,SummaryRow>("SELECT p.file_key,p.position,p.total,p.completed,extract(epoch from p.updated_at)::float8 AS updated_at FROM media_progress p JOIN sources s ON s.id=p.source_id WHERE p.user_id=$1 AND p.file_key=ANY($2)
+        AND (s.kind='local_directory' AND (s.owner_id=$1 OR EXISTS(SELECT 1 FROM source_permissions a
+              WHERE a.source_id=s.id AND a.user_id=$1 AND a.can_discover AND a.can_access_media))
+             OR s.kind='remote_agent' AND EXISTS(SELECT 1 FROM catalog_remote_page_locations v
+                 WHERE v.viewer_id=$1 AND v.source_id=p.source_id AND v.representation_id::text=p.relative_path AND v.media_granted))").bind(user).bind(keys).fetch_all(&state.db).await.map_err(|_|auth::unavailable())?;
     let mut rows: std::collections::HashMap<_, _> = rows
         .into_iter()
         .map(|row| {

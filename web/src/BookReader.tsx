@@ -10,8 +10,8 @@ import {readSettings,isSpread,spreadMembers,type ReaderKind} from './readerSetti
 import ReaderPage from './ReaderPage'
 import {apiFetch} from './api'
 import type {LinkContext} from './mediaLinks'
-type Props={mediaUrl?:string;userId?:string;sourceId:string;sourceName:string;file:{metadata?:MetadataView|null;name:string;relative_path:string;extension:string};onClose:()=>void;onNext?:(item:MediaItem)=>void}
-export default function BookReader({mediaUrl,userId,sourceId,sourceName,file,onClose,onNext}:Props){
+type Props={mediaUrl?:string;remoteProgress?:boolean;userId?:string;sourceId:string;sourceName:string;file:{metadata?:MetadataView|null;name:string;relative_path:string;extension:string};onClose:()=>void;onNext?:(item:MediaItem)=>void}
+export default function BookReader({mediaUrl,remoteProgress,userId,sourceId,sourceName,file,onClose,onNext}:Props){
  const comic=file.extension.toLowerCase()==='cbz'
  const storage=`grimoire:reader:v1:${userId??'local'}`
  const [kind,setKind]=useState<ReaderKind>(()=>{try{const v=localStorage.getItem(`${storage}:kind:${sourceId}:${file.relative_path}`)??localStorage.getItem(`${storage}:last:${comic?'cbz':'epub'}`);return ['Novel','Comic','Manga','Manhua'].includes(v??'')?v as ReaderKind:comic?'Comic':'Novel'}catch{return comic?'Comic':'Novel'}})
@@ -41,7 +41,7 @@ export default function BookReader({mediaUrl,userId,sourceId,sourceName,file,onC
     const controller = new AbortController()
     let opened: BookArchive | undefined
     const load = async () => {
-      const session = mediaUrl ? null : new ProgressSession(sourceId, file.relative_path, message => { if (!controller.signal.aborted) setProgressError(message) })
+      const session = mediaUrl && !remoteProgress ? null : new ProgressSession(sourceId, file.relative_path, message => { if (!controller.signal.aborted) setProgressError(message) })
       progress.current = session
       const saved = await session?.load()
       if (controller.signal.aborted) return
@@ -66,18 +66,18 @@ export default function BookReader({mediaUrl,userId,sourceId,sourceName,file,onC
     }
     load().catch(error => { if (!controller.signal.aborted) { setError(error instanceof Error ? error.message : 'Could not open this book.'); setLoading(false) } })
     return () => { controller.abort(); void opened?.close().catch(() => {}) }
-  }, [sourceId, file.relative_path, comic, mediaUrl])
+  }, [sourceId, file.relative_path, comic, mediaUrl, remoteProgress])
  useEffect(()=>{
-   if(mediaUrl)return
+   if(mediaUrl&&!remoteProgress)return
    const abort=new AbortController()
    void apiFetch(`/api/media/link?${new URLSearchParams({source_id:sourceId,path:file.relative_path})}`,{signal:abort.signal}).then(async response=>{
      if(!response.ok)return
      const context=await response.json() as LinkContext
-     const current=context.members.findIndex(item=>item.relative_path===file.relative_path)
-     if(!abort.signal.aborted)setNext(current>=0?context.members[current+1]??null:null)
+     const current=context.members.findIndex(item=>item.source_id===sourceId&&item.relative_path===file.relative_path)
+     if(!abort.signal.aborted)setNext(current>=0?context.members.slice(current+1).find(item=>item.available)??null:null)
    }).catch(()=>{})
    return()=>abort.abort()
- },[sourceId,file.relative_path,mediaUrl])
+ },[sourceId,file.relative_path,mediaUrl,remoteProgress])
  const save=useCallback((page:number)=>{if(ready.current.has(page)&&chapters[page])progress.current?.save({position:page,total:chapters.length,locator:chapters[page].path})},[chapters])
  const [bookFinished,setBookFinished]=useState(false)
  const finishedUnits=useRef(new Set<number>()),currentUnit=useRef(index)
@@ -172,7 +172,7 @@ export default function BookReader({mediaUrl,userId,sourceId,sourceName,file,onC
    view.scrollTop+=rect.top+rect.height*anchor.y-anchor.clientY
  },[settings.zoom])
  const toggleCozy=useCallback(()=>{clearTimeout(marginTimer.current);setCozy(value=>!value)},[])
- return <section className={`watch-page book-watch reader-revamp ${cozy||mediaUrl?'watch-cozy':''}`} aria-label="Book reading page">
+ return <section className={`watch-page book-watch reader-revamp ${cozy||(mediaUrl&&!remoteProgress)?'watch-cozy':''}`} aria-label="Book reading page">
  <main className="watch-main">
  <header className="watch-header"><button className="watch-back" aria-label="Close reader" onClick={onClose}><ArrowLeft/> Back</button><div className="reader-heading"><h1>{displayTitle(file)}</h1><span>{sourceName}</span></div>
  <nav className="reader-navigation" aria-label="Page navigation">
@@ -203,6 +203,6 @@ export default function BookReader({mediaUrl,userId,sourceId,sourceName,file,onC
    ...(spread?{width:`calc(${fittedSpreadWidth} * ${settings.zoom/100})`,gridTemplateColumns:`minmax(0, ${100*firstAspect/spreadAspect}fr) minmax(0, ${100*secondAspect/spreadAspect}fr)`}:{zoom:settings.zoom/100}),
    direction:comic&&settings.layout==='double'?settings.direction:'ltr'}}>{(strip?chapters.map((_,i)=>i):members).map(page=><ReaderPage key={chapters[page].path} archive={archive} path={chapters[page].path} index={page} comic={comic} settings={settings} onReady={pageReady} onVisible={strip?visible:undefined} onCozy={toggleCozy} lazy={strip&&page!==index}/>)}</div>}
  </div></div></main>
- {!cozy&&!mediaUrl&&<div className="reader-related"><WatchSidebar sourceId={sourceId} path={file.relative_path}/></div>}
+ {!cozy&&(!mediaUrl||remoteProgress)&&<div className="reader-related"><WatchSidebar sourceId={sourceId} path={file.relative_path}/></div>}
  </section>
 }

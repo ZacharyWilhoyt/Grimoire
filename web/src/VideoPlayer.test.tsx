@@ -129,8 +129,8 @@ it('keeps the video element mounted when minimized and exposes mini-player actio
 it('offers next episode and advances when playback ends', async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
   const api = await import('./api')
-  const next = {file_key:'next',source_id:'s',relative_path:'two.mkv',name:'Two',kind:'video'}
-  const fetch = vi.spyOn(api,'apiFetch').mockResolvedValue(new Response(JSON.stringify({members:[{relative_path:'one.mkv'},next]}),{status:200}))
+  const next = {file_key:'next',source_id:'remote:other',relative_path:'two.mkv',name:'Two',kind:'video',available:true}
+  const fetch = vi.spyOn(api,'apiFetch').mockResolvedValue(new Response(JSON.stringify({members:[{source_id:'s',relative_path:'one.mkv'},{source_id:'s',relative_path:'offline.mkv',available:false},next]}),{status:200}))
   const host=document.createElement('div'),root=createRoot(host),advance=vi.fn()
   try {
     await act(async()=>root.render(<VideoPlayer sourceId="s" sourceName="Test" file={{name:'One',relative_path:'one.mkv'}} onClose={()=>{}} onNext={advance}/>))

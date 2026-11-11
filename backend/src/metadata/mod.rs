@@ -348,7 +348,7 @@ async fn ensure_row(
     sqlx::query("INSERT INTO media_metadata(file_key,source_id,relative_path) VALUES ($1,$2,$3) ON CONFLICT(file_key) DO NOTHING").bind(key).bind(source).bind(path).execute(&mut **tx).await.map_err(|_|auth::unavailable())?;
     Ok(())
 }
-async fn store_art(
+pub(crate) async fn store_art(
     tx: &mut Transaction<'_, Postgres>,
     bytes: Option<Vec<u8>>,
 ) -> Result<Option<String>, AppError> {

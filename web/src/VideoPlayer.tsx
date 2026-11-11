@@ -12,6 +12,7 @@ import type { LinkContext } from './mediaLinks'
 import { ArrowLeft, Maximize2, X, Play, Pause } from 'lucide-react'
 
 type Props = {
+  mediaUrl?: string
   mini?: boolean
   onRestore?: () => void
   onDismiss?: () => void
@@ -24,16 +25,16 @@ type Props = {
 }
 
 export default function VideoPlayer(props:Props){return <PlayerPreferences key={props.userId} userId={props.userId}><Player {...props}/></PlayerPreferences>}
-function Player({ sourceId, sourceName, file, onClose, mini, onRestore, onDismiss, onNext }: Props) {
+function Player({ mediaUrl, sourceId, sourceName, file, onClose, mini, onRestore, onDismiss, onNext }: Props) {
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
-  const { media, progressError, retry, retryKey } = useMediaProgress<HTMLVideoElement>(sourceId, file.relative_path, audioUrl ?? '')
+  const { media, progressError, retry, retryKey } = useMediaProgress<HTMLVideoElement>(sourceId, file.relative_path, mediaUrl ?? audioUrl ?? '')
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null)
   const attachVideo = useCallback((element: HTMLVideoElement | null) => { media.current = element; setVideoElement(element) }, [media])
   const stage = useRef<HTMLDivElement>(null)
   const [cozy, setCozy] = useState(false)
   const [failed, setFailed] = useState(false)
   const closeButton = useRef<HTMLButtonElement>(null)
-  const url = audioUrl ?? ''
+  const url = mediaUrl ?? audioUrl ?? ''
 
   const [streamError,setStreamError]=useState('')
   const segmented = url.includes('/manifest.m3u8')
@@ -62,8 +63,8 @@ function Player({ sourceId, sourceName, file, onClose, mini, onRestore, onDismis
     void apiFetch(`/api/media/link?${new URLSearchParams({source_id:sourceId,path:file.relative_path})}`, {signal:abort.signal}).then(async r => {
       if (!r.ok) return
       const context = await r.json() as LinkContext
-      const index = context.members.findIndex(item => item.relative_path === file.relative_path)
-      if (!abort.signal.aborted) setNext(index >= 0 ? context.members[index + 1] ?? null : null)
+      const index = context.members.findIndex(item => item.source_id === sourceId && item.relative_path === file.relative_path)
+      if (!abort.signal.aborted) setNext(index >= 0 ? context.members.slice(index + 1).find(item => item.available) ?? null : null)
     }).catch(() => {})
     return () => abort.abort()
   }, [sourceId,file.relative_path])
@@ -89,11 +90,12 @@ function Player({ sourceId, sourceName, file, onClose, mini, onRestore, onDismis
     <main className="watch-main">
       {!cozy && <header className="watch-header"><button ref={closeButton} className="watch-back" aria-label="Close video player" onClick={minimize}><ArrowLeft size={23}/> Back</button><div><h1 id="video-title">{displayTitle(file)}</h1><span>{sourceName}</span></div></header>}
       <div className="video-stage watch-stage" ref={stage}>
-        <video key={`${url}:${retryKey}`} ref={attachVideo} src={undefined} playsInline preload="metadata" onLoadedData={() => setFailed(false)} onError={() => setFailed(true)} />
-        <VideoToolbar onNext={next && onNext ? () => onNext(next) : undefined} onClose={minimize} video={videoElement} sourceId={sourceId} path={file.relative_path} onAudio={setAudioUrl} cozy={cozy} onCozy={() => setCozy(value=>!value)} fullscreen={fullscreen} onFullscreen={() => { if(mini)onRestore?.(); void toggle() }}/>
+        <video key={`${url}:${retryKey}`} ref={attachVideo} src={mediaUrl} controls={!!mediaUrl && !mini} playsInline preload="metadata" onLoadedData={() => setFailed(false)} onError={() => setFailed(true)} />
+        {!mediaUrl && <VideoToolbar onNext={next && onNext ? () => onNext(next) : undefined} onClose={minimize} video={videoElement} sourceId={sourceId} path={file.relative_path} onAudio={setAudioUrl} cozy={cozy} onCozy={() => setCozy(value=>!value)} fullscreen={fullscreen} onFullscreen={() => { if(mini)onRestore?.(); void toggle() }}/>}
         {mini && <div className={`mini-controls ${miniVisible ? 'mini-visible' : ''}`} onPointerMove={revealMini} onPointerDown={revealMini} onFocus={revealMini} onBlur={revealMini} onPointerLeave={()=>{clearTimeout(miniTimer.current);miniTimer.current=setTimeout(()=>setMiniVisible(false),2500)}}><button className="mini-restore" aria-label="Restore video player" onClick={onRestore}><Maximize2/></button><button className="mini-close" aria-label="Stop video" onClick={onDismiss}><X/></button><button className="mini-play" aria-label={playing?'Pause video':'Play video'} onClick={()=>{if(videoElement?.paused) void videoElement.play().catch(()=>{});else videoElement?.pause()}}>{playing?<Pause/>:<Play/>}</button><progress aria-label="Video progress" max={1} value={position}/></div>}
       </div>
-      {!audioUrl && <p className="video-error" role="status">Preparing transcoded playback. Open Settings to retry or change quality.</p>}
+      {mediaUrl && next && !mini && <button className="track-play" onClick={() => onNext?.(next)}>Next episode</button>}
+      {!mediaUrl && !audioUrl && <p className="video-error" role="status">Preparing transcoded playback. Open Settings to retry or change quality.</p>}
       {streamError && <p role="alert" className="video-error">{streamError}</p>}
       {fullscreenError && <p className="video-error" role="status">{fullscreenError}</p>}
       {progressError && <p className="video-error" role="status">{progressError}</p>}

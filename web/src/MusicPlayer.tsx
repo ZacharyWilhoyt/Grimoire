@@ -4,7 +4,7 @@ import { displayTitle, type MetadataView } from './media'
 import { useMemo, useState } from 'react'
 import { Headphones, SkipBack, SkipForward, Shuffle, Repeat, Repeat1, X } from 'lucide-react'
 
-type Track = { metadata?: MetadataView | null; name: string; relative_path: string; source_id: string; source_name: string }
+type Track = { media_url?: string; metadata?: MetadataView | null; name: string; relative_path: string; source_id: string; source_name: string }
 type Props = {
   tracks: Track[]
   busy: boolean
@@ -24,8 +24,8 @@ export default function MusicPlayer({ tracks, index, busy, onIndex, onClose }: P
   const previous = adjacentTrack(order, index, -1, repeat)
   const next = adjacentTrack(order, index, 1, repeat)
   const track = tracks[index]
-  const { media, progressError, retry, retryKey } = useMediaProgress<HTMLAudioElement>(track.source_id, track.relative_path, '', false)
-  const url = `/api/sources/${encodeURIComponent(track.source_id)}/audio?${new URLSearchParams({ path: track.relative_path })}`
+  const { media, progressError, retry, retryKey } = useMediaProgress<HTMLAudioElement>(track.source_id, track.relative_path, track.media_url ?? '', false)
+  const url = track.media_url ?? `/api/sources/${encodeURIComponent(track.source_id)}/audio?${new URLSearchParams({ path: track.relative_path })}`
   const select = (target: number | undefined) => {
     if (target === undefined) return
     if (target === index && media.current) { media.current.currentTime = 0; void media.current.play().catch(() => {}) }

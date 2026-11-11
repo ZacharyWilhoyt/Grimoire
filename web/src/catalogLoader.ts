@@ -23,6 +23,6 @@ export async function loadCatalogPage(page: PageName, signal: AbortSignal, read:
     result.recent = await attempt<PersonalPage>('Recently opened', '/api/activity')
   }
   if (page !== 'Discover' && page !== 'Music') result.library = await attempt<PersonalPage>('Saved library', '/api/library')
-  if (page !== 'My library') result.catalog = await attempt<CatalogResponse>('Source catalog', '/api/catalog')
+  result.catalog = await attempt<CatalogResponse>('Source catalog', '/api/catalog')
   return result
 }

@@ -8,6 +8,7 @@ struct Row {
     file_key: String,
     source_id: String,
     relative_path: String,
+    remote_representation: Option<uuid::Uuid>,
     position: f64,
     total: Option<f64>,
     watched_seconds: Option<f64>,
@@ -45,7 +46,17 @@ pub async fn read(
     State(state): State<AppState>,
     Extension(identity): Extension<auth::Identity>,
 ) -> Result<Json<Statistics>, AppError> {
-    let mut rows=sqlx::query_as::<_,Row>("SELECT p.file_key,p.source_id,p.relative_path,p.position,p.total,p.watched_seconds,cardinality(p.completed_units) AS units,p.completed FROM media_progress p JOIN sources s ON s.id=p.source_id WHERE p.user_id=$1 AND (s.owner_id=$1 OR EXISTS(SELECT 1 FROM source_permissions a WHERE a.source_id=s.id AND a.user_id=$1 AND a.can_discover AND a.can_access_media)) ORDER BY p.updated_at DESC,p.file_key LIMIT 5001").bind(identity.user.id).fetch_all(&state.db).await.map_err(|_|auth::unavailable())?;
+    let mut rows=sqlx::query_as::<_,Row>(
+        "SELECT p.file_key,p.source_id,p.relative_path,p.position,p.total,p.watched_seconds,
+                cardinality(p.completed_units) AS units,p.completed,v.representation_id AS remote_representation
+         FROM media_progress p JOIN sources s ON s.id=p.source_id
+         LEFT JOIN catalog_remote_page_locations v ON s.kind='remote_agent' AND v.source_id=s.id
+             AND v.viewer_id=$1 AND v.representation_id::text=p.relative_path AND v.media_granted
+         WHERE p.user_id=$1 AND (v.representation_id IS NOT NULL OR s.kind='local_directory'
+             AND (s.owner_id=$1 OR EXISTS(SELECT 1 FROM source_permissions a WHERE a.source_id=s.id
+                 AND a.user_id=$1 AND a.can_discover AND a.can_access_media)))
+         ORDER BY p.updated_at DESC,p.file_key LIMIT 5001",
+    ).bind(identity.user.id).fetch_all(&state.db).await.map_err(|_|auth::unavailable())?;
     let truncated = rows.len() > 5000;
     rows.truncate(5000);
     let mut items: Vec<catalog::Item> = rows
@@ -71,10 +82,29 @@ pub async fn read(
                 available: false,
                 metadata: None,
                 progress: None,
+                logical_id: None,
+                remote: false,
+                media_url: None,
+                remote_access: None,
             })
         })
         .collect();
     crate::metadata::enrich(&state, identity.user.id, &mut items).await?;
+    let remote_ids: Vec<_> = rows
+        .iter()
+        .filter_map(|row| row.remote_representation)
+        .collect();
+    if !remote_ids.is_empty() {
+        let (remote, _) =
+            crate::unified_catalog::remote_items(&state, identity.user.id, Some(&remote_ids), None)
+                .await?;
+        items.extend(
+            remote
+                .into_iter()
+                .filter(|item| item.remote_access == Some(true)),
+        );
+    }
+    crate::unified_catalog::annotate_local(&state, identity.user.id, &mut items).await?;
     let by_key: HashMap<_, _> = items
         .iter()
         .map(|item| (item.file_key.as_str(), item))
@@ -92,11 +122,16 @@ pub async fn read(
     };
     let (mut watching, mut reading) = (HashMap::new(), HashMap::new());
     let mut active = HashSet::new();
+    let mut watched = HashSet::new();
+    let mut completed_books = HashSet::new();
     for row in rows.iter() {
         let Some(item) = by_key.get(row.file_key.as_str()) else {
             continue;
         };
         let fields = item.metadata.as_ref().map(|metadata| &metadata.fields);
+        let logical_key = item
+            .logical_id
+            .map_or_else(|| row.file_key.clone(), |id| id.to_string());
         if item.file.kind == "video" {
             if let Some(seconds) = row.watched_seconds {
                 *stats.watch_seconds.get_or_insert(0.0) += seconds;
@@ -106,20 +141,21 @@ pub async fn read(
             }
             if (row.completed || row.total.is_some_and(|total| row.position >= total))
                 && fields.is_some_and(|f| f.episode.is_some())
+                && watched.insert(logical_key.clone())
             {
                 stats.episodes_watched += 1;
             }
         } else if item.file.kind == "book" {
             stats.reading_units += row.units as usize;
             if row.completed {
-                stats.books_completed += 1;
+                stats.books_completed += usize::from(completed_books.insert(logical_key));
             } else {
                 active.insert(
                     item.metadata
                         .as_ref()
                         .and_then(|m| m.group.as_ref())
                         .map(|group| group.id.clone())
-                        .unwrap_or_else(|| row.file_key.clone()),
+                        .unwrap_or(logical_key),
                 );
             }
             for genre in fields.and_then(|f| f.genres.as_ref()).into_iter().flatten() {

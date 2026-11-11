@@ -103,8 +103,8 @@ it('toggles cozy view without replacing content and separates profile preference
 it('continues to the next authorized series entry at the end',async()=>{
  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true)
  const api=await import('./api')
- const next={file_key:'next',source_id:'s',relative_path:'next.cbz',name:'Next',kind:'book'}
- const fetch=vi.spyOn(api,'apiFetch').mockImplementation(async()=>new Response(JSON.stringify({members:[{file_key:'current',relative_path:'comic.cbz'},next]})))
+ const next={file_key:'next',source_id:'s',relative_path:'next.cbz',name:'Next',kind:'book',available:true}
+ const fetch=vi.spyOn(api,'apiFetch').mockImplementation(async()=>new Response(JSON.stringify({members:[{file_key:'current',source_id:'s',relative_path:'comic.cbz'},next]})))
  URL.createObjectURL=vi.fn(()=>'blob:test');URL.revokeObjectURL=vi.fn()
  const host=document.createElement('div'),root=createRoot(host),advance=vi.fn()
  try{
