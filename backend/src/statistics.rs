@@ -83,6 +83,8 @@ pub async fn read(
                 metadata: None,
                 progress: None,
                 logical_id: None,
+                location_id: None,
+                collection_link: None,
                 remote: false,
                 media_url: None,
                 remote_access: None,

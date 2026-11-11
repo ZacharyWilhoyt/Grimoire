@@ -6945,3 +6945,120 @@ async fn remote_catalog_revisions_require_node_ownership_and_both_policies(pool:
         StatusCode::NOT_FOUND
     );
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore]
+async fn collection_links_group_distinct_owned_files_and_hide_private_targets(pool: PgPool) {
+    let state = state(pool.clone());
+    let (cookie, csrf, viewer) = register_user(&state, "collection_owner").await;
+    let (target_cookie, _, target_owner) = register_user(&state, "collection_target").await;
+    let viewer: Uuid = serde_json::from_value(viewer["id"].clone()).unwrap();
+    let target_owner: Uuid = serde_json::from_value(target_owner["id"].clone()).unwrap();
+    let own = shared_media_fixture();
+    let target = shared_media_fixture();
+    for (id, owner, root) in [("own", viewer, &own), ("target", target_owner, &target)] {
+        sqlx::query("INSERT INTO sources(id,owner_id,name,path) VALUES($1,$2,$1,$3)")
+            .bind(id)
+            .bind(owner)
+            .bind(root.to_str().unwrap())
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    sqlx::query("INSERT INTO source_permissions(source_id,user_id,can_discover,can_access_media) VALUES('target',$1,true,true)")
+        .bind(viewer).execute(&pool).await.unwrap();
+    let own_key = catalog::file_key("own", "clip.mp4");
+    let target_key = catalog::file_key("target", "clip.mp4");
+    for (source, key, fields) in [
+        (
+            "own",
+            &own_key,
+            json!({"title":"New episode","season":2,"episode":3}),
+        ),
+        (
+            "target",
+            &target_key,
+            json!({"title":"First episode","collection":"Shared series","season":1,"episode":1}),
+        ),
+    ] {
+        sqlx::query("INSERT INTO media_metadata(file_key,source_id,relative_path,local_data) VALUES($1,$2,'clip.mp4',$3)")
+            .bind(key).bind(source).bind(fields.to_string()).execute(&pool).await.unwrap();
+    }
+    crate::catalog_inventory::record(&pool,json!([
+        {"file_key":own_key,"source_id":"own","path":"clip.mp4","kind":"video","extension":"mp4","size":19},
+        {"file_key":target_key,"source_id":"target","path":"clip.mp4","kind":"video","extension":"mp4","size":19}
+    ])).await.unwrap();
+    let location = |source| {
+        sqlx::query_scalar::<_, Uuid>("SELECT id FROM catalog_locations WHERE source_id=$1")
+            .bind(source)
+            .fetch_one(&pool)
+    };
+    let own_id = location("own").await.unwrap();
+    let target_id = location("target").await.unwrap();
+    let read = |url| request(&state, Method::GET, url, Some(&cookie), None, None, None);
+    let listing = body(read("/api/catalog").await).await;
+    let target_item = listing["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["file_key"] == target_key)
+        .unwrap();
+    let group = target_item["metadata"]["group"]["id"].as_str().unwrap();
+    let post = |data| {
+        request(
+            &state,
+            Method::POST,
+            "/api/catalog/v1/collection-membership",
+            Some(&cookie),
+            Some(&csrf),
+            Some(ORIGIN),
+            Some(data),
+        )
+    };
+    assert_eq!(
+        post(json!({"locations":[target_id]})).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        post(json!({"locations":[own_id],"target":target_id,"group":group}))
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    let url = format!("/api/media/link?source_id=target&group={group}&season=2");
+    let response = read(&url).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let series = body(response).await;
+    let item = &series["members"][0];
+    assert_eq!(item["file_key"], own_key);
+    assert_eq!(item["metadata"]["fields"]["episode"], 3);
+    assert_eq!(item["collection_link"]["label"], "Shared series");
+    assert_ne!(item["logical_id"], target_item["logical_id"]);
+    let target_page = request(
+        &state,
+        Method::GET,
+        &url,
+        Some(&target_cookie),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(target_page.status(), StatusCode::NOT_FOUND);
+    sqlx::query("UPDATE source_permissions SET can_access_media=false WHERE source_id='target' AND user_id=$1")
+        .bind(viewer).execute(&pool).await.unwrap();
+    let listing = body(read("/api/catalog").await).await;
+    let owned = listing["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["file_key"] == own_key)
+        .unwrap();
+    assert!(owned.get("collection_link").is_none());
+    assert_eq!(
+        post(json!({"locations":[own_id]})).await.status(),
+        StatusCode::NO_CONTENT
+    );
+    fs::remove_dir_all(own).unwrap();
+    fs::remove_dir_all(target).unwrap();
+}

@@ -212,3 +212,17 @@
   background: #24212e;
   padding: .3rem .45rem;
 }
+
+.metadata-workspace{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:1rem;margin-top:1rem}
+.metadata-workspace>section{min-width:0;padding:1rem;border:1px solid #ffffff18;border-radius:8px;background:#14141c}
+.metadata-workspace h2{font-size:1.1rem;margin:0 0 .7rem}
+.metadata-file-list{list-style:none;margin:0;padding:0;max-height:60vh;overflow:auto}
+.metadata-file-list li,.metadata-file-list label,.metadata-workspace-actions{display:flex;align-items:center;gap:.6rem}
+.metadata-file-list li{padding:.6rem 0;border-bottom:1px solid #ffffff12;flex-wrap:wrap}
+.metadata-file-list label{flex:1;min-width:0}
+.metadata-file-list label span{display:grid;gap:.2rem;overflow-wrap:anywhere}
+.metadata-file-list small{color:#aaa1b8}
+.metadata-target-search{display:grid;gap:.35rem;margin:.8rem 0}
+.metadata-target-search input,.metadata-target-search select{width:100%;padding:.45rem;background:#24212e;color:#eeedf3;border:1px solid #ffffff22;border-radius:5px}
+.metadata-workspace-actions{flex-wrap:wrap}
+@media(max-width:800px){.metadata-workspace{grid-template-columns:minmax(0,1fr)}}

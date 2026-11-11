@@ -8,7 +8,7 @@ import GroupEditor from './GroupEditor'
 import ArrConnections from './ArrConnections'
 import MetadataCredits from './MetadataCredits'
 import MetadataEditor from './MetadataEditor'
-import SourceMetadataTools from './SourceMetadataTools'
+import MetadataPage from './MetadataPage'
 import MetadataFilters from './MetadataFilters'
 import CatalogViews from './CatalogViews'
 import SeriesDetails from './SeriesDetails'
@@ -131,7 +131,7 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
       if (!controller.signal.aborted && Array.isArray(nodes)) setSidebarAgents(nodes.filter(node => !node.revoked))
     }).catch(() => {})
     void readApi<RemoteSource[]>('/api/nodes/v1/sources', controller.signal).then(sources => {
-      if (!controller.signal.aborted && Array.isArray(sources)) setSharedRemoteSources(sources.filter(source => !source.is_owner))
+      if (!controller.signal.aborted && Array.isArray(sources)) setSharedRemoteSources(sources)
     }).catch(() => {})
     return () => controller.abort()
   }, [sourceRefresh, agentsOpen])
@@ -321,9 +321,9 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
   const closeWatch = () => { clearRoute();setDetailItem(null);setVideo(null); setReading(null); setLinkedSeries(null); setLinkError(''); window.history.pushState(null, '', '/#discover') }
   const showDetails=(item:MediaItem)=>{setDetailItem(item);window.history.pushState(null,'',detailLink(item.source_id,item.relative_path))}
   const showSeries=async(item:MediaItem, season?:string|null, reference?: {source: string; group: string})=>{
-    const group=reference?.group??item.metadata?.group?.id;if(!group)return
+    const group=reference?.group??item.collection_link?.group_id??item.metadata?.group?.id;if(!group)return
     setLinkLoading(true);setLinkError('')
-    const url=seriesLink(reference?.source??item.source_id,group,season)
+    const url=seriesLink(reference?.source??item.collection_link?.source_id??item.source_id,group,season)
     try {
       const context=await readApi<LinkContext>(linkRequest(url.slice(1))!)
       setDetailItem(null)
@@ -409,7 +409,7 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
     return()=>observer?.disconnect()
   },[!!playback,musicActive])
   const nav = [
-    { label: 'For you' as PageName, icon: Sparkles }, { label: 'Discover' as PageName, icon: Compass }, { label: 'My library' as PageName, icon: Library }, {label:'Music' as PageName,icon:Headphones},
+    { label: 'For you' as PageName, icon: Sparkles }, { label: 'Discover' as PageName, icon: Compass }, { label: 'My library' as PageName, icon: Library }, {label:'Music' as PageName,icon:Headphones},{label:'Metadata' as PageName,icon:Settings2},
   ]
 
   const musicPlayer = playback && <MusicPlayer {...routeControls} key="music" tracks={playback.tracks} index={playback.index} busy={actionBusy} onIndex={index => { void openMedia(playback.tracks[index], playback.tracks) }} onClose={() => {clearRoute();setPlayback(null)}}/>
@@ -439,7 +439,7 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
         <span className="source-copy"><strong>{agent.label}</strong><small>{agent.online ? 'Source agent · Online' : 'Source agent · Offline'}</small></span>
         <span className={`source-dot ${agent.online ? 'online' : ''}`}/>
       </button>)}
-      {sharedRemoteSources.map(source => <button key={source.id} className="source-row" onClick={() => openAgents(undefined, source)}>
+      {sharedRemoteSources.filter(source=>!source.is_owner).map(source => <button key={source.id} className="source-row" onClick={() => openAgents(undefined, source)}>
         <span className="source-icon"><Server size={16}/></span>
         <span className="source-copy"><strong>{source.name}</strong><small>Shared remote source</small></span>
         <span className={`source-dot ${source.available ? 'online' : ''}`}/>
@@ -463,13 +463,16 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
           <p className="source-footnote">Acquisition policy: {policyLabel(selectedSource.acquisition_policy)}. Acquisition requests are not available yet.</p>
           {!selectedSource.can_access_media ? <div className="source-empty"><ShieldCheck size={24}/><strong>Source visibility only</strong><span>The owner has not granted access to this source's files. Visibility and acquisition permission do not grant playback or reading access.</span></div> : <>
           <div className="catalog-controls"><div className="filter-row">{(['All', 'Video', 'Music', 'Books'] as MediaKind[]).map(kind => <button key={kind} onClick={() => setFilter(kind)} className={`filter-chip ${filter === kind ? 'active' : ''}`}>{kind === 'Video' && <Film size={14}/ >}{kind === 'Music' && <Headphones size={14}/ >}{kind === 'Books' && <BookOpen size={14}/ >}{kind}</button>)}</div><MetadataFilters items={sourceFiles} genre={genre} groupBy={groupBy} onGenre={setGenre} onGroup={setGroupBy}/></div>{selectedSource.is_owner && <><SourceTranscoding key={`encoding-${selectedSource.id}`} sourceId={selectedSource.id}/><ArrConnections key={`arr-${selectedSource.id}`} sourceId={selectedSource.id}/></>}
-          {selectedSource.is_owner && <SourceMetadataTools key={selectedSource.id} sourceId={selectedSource.id} onUpdated={() => setSourceRefresh(value => value + 1)}/>}
+
           {sourceLoading && <div className="source-message">Scanning this directory…</div>}
           {sourceError && <div className="source-message source-error">{sourceError}</div>}
           {!sourceLoading && !sourceError && filteredFiles.length === 0 && <div className="source-empty"><FolderOpen size={23}/><strong>{query || kind || genre ? 'No matching media' : 'No supported media found'}</strong><span>{query || kind || genre ? 'Try another search or filter.' : 'We look for common video, audio, EPUB, and CBZ files in this directory and its subfolders.'}</span></div>}
-          {!sourceLoading && !sourceError && filteredFiles.length > 0 && <MediaCollection compact onGroupMetadata={setGroupItem} groupBy={groupBy} onMetadata={item=>item.remote?showDetails(item):setMetadataItem(item)} items={filteredFiles} busy={actionBusy} onOpen={(item, queue) => { void openMedia(item, queue) }} onSave={item => { void toggleSaved(item) }}/>}
+          {!sourceLoading && !sourceError && filteredFiles.length > 0 && <MediaCollection compact editEnabled={false} onGroupMetadata={setGroupItem} groupBy={groupBy} onMetadata={showDetails} items={filteredFiles} busy={actionBusy} onOpen={(item, queue) => { void openMedia(item, queue) }} onSave={item => { void toggleSaved(item) }}/>}
           <p className="source-footnote">Select Play for music, Watch for video, or Read for EPUB and CBZ books.</p></>}
-        </section> : page==='Music'?null:<CatalogViews onDetails={showDetails} onSeries={item=>{void showSeries(item)}} continuing={continuing} onGroupMetadata={setGroupItem} genre={genre} groupBy={groupBy} onGenre={setGenre} onGroup={setGroupBy} onMetadata={item=>item.remote?showDetails(item):setMetadataItem(item)} page={page} username={user.username} catalog={catalog} saved={saved} recent={recent} loading={pageLoading} error={pageError} note={pageNote} query={query} kind={kind} source={sourceFilter} sort={sort} sources={[...sources, ...[...new Map([...catalog,...saved,...continuing].filter(item=>item.remote)
+        </section> : page==='Music'?null:page==='Metadata'?
+          <MetadataPage sources={[...sources.filter(source=>source.is_owner),...sharedRemoteSources.filter(source=>source.is_owner).map(source=>({id:`remote:${source.id}`,name:source.name,remote:true}))]}
+            items={catalog} query={query} loading={pageLoading} error={pageError} onRefresh={()=>setSourceRefresh(n=>n+1)} onMetadata={setMetadataItem} onGroup={setGroupItem}/>
+          :<CatalogViews onDetails={showDetails} onSeries={item=>{void showSeries(item)}} continuing={continuing} onGroupMetadata={setGroupItem} genre={genre} groupBy={groupBy} onGenre={setGenre} onGroup={setGroupBy} onMetadata={item=>item.remote?showDetails(item):setMetadataItem(item)} page={page} username={user.username} catalog={catalog} saved={saved} recent={recent} loading={pageLoading} error={pageError} note={pageNote} query={query} kind={kind} source={sourceFilter} sort={sort} sources={[...sources, ...[...new Map([...catalog,...saved,...continuing].filter(item=>item.remote)
           .map(item=>[item.source_id,{id:item.source_id,name:item.source_name,can_access_media:true}])).values()]]} busy={actionBusy} hasMore={hasMore} onKind={setKind} onSource={setSourceFilter} onSort={setSort} onRefresh={() => setSourceRefresh(value => value + 1)} onLoadMore={() => { void loadMore() }} onOpen={(item, queue) => { void openMedia(item, queue) }} onSave={item => { void toggleSaved(item) }} onDiscover={() => navigate('Discover')}/>}
         {!musicActive&&<><MetadataCredits/><footer className="footer"><span>MADE FOR THE MOMENTS BETWEEN</span><span>GRIMOIRE <b>·</b> EARLY ACCESS</span></footer></>}
       </div>

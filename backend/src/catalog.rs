@@ -39,6 +39,10 @@ pub struct Item {
     pub metadata: Option<crate::metadata::View>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logical_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collection_link: Option<crate::collection_membership::Collection>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub remote: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -54,7 +58,7 @@ pub struct PersonalState {
 }
 #[derive(Serialize)]
 pub struct Catalog {
-    items: Vec<Item>,
+    pub(crate) items: Vec<Item>,
     truncated: bool,
     unavailable_sources: usize,
 }
@@ -103,6 +107,8 @@ pub(crate) fn item(source_id: &str, source_name: &str, file: MediaFile) -> Item 
         metadata: None,
         progress: None,
         logical_id: None,
+        location_id: None,
+        collection_link: None,
         remote: false,
         media_url: None,
         remote_access: None,
@@ -223,6 +229,7 @@ pub async fn discover(
         unified_catalog::remote_items(&state, identity.user.id, None, None).await?;
     enrich_personal(&state, identity.user.id, &mut remote).await?;
     result.items.extend(remote);
+    crate::collection_membership::annotate(&state, identity.user.id, &mut result.items).await?;
     result.truncated |= truncated;
     Ok(Json(result))
 }
@@ -249,6 +256,8 @@ pub async fn source_items(
     media_root(state, user, source_id).await?;
     crate::catalog_inventory::observe(state, &items);
     enrich(state, user.id, &mut items).await?;
+    unified_catalog::annotate_local(state, user.id, &mut items).await?;
+    crate::collection_membership::annotate(state, user.id, &mut items).await?;
     Ok(items)
 }
 
@@ -362,6 +371,8 @@ async fn personal_page(
                 metadata: None,
                 progress: None,
                 logical_id: None,
+                location_id: None,
+                collection_link: None,
                 remote: false,
                 media_url: None,
                 remote_access: None,
@@ -410,6 +421,7 @@ async fn personal_page(
             .sort_by_key(|item| ordering.get(&item.file_key).copied().unwrap_or(usize::MAX));
     }
     crate::progress::enrich(&state, user, &mut result.items).await?;
+    crate::collection_membership::annotate(&state, user, &mut result.items).await?;
     Ok(Json(result))
 }
 pub async fn library(
@@ -589,6 +601,26 @@ pub struct LinkContext {
 // URLs identify resources, never grant access. Resolve the logged-in viewer's live catalog.
 pub async fn linked(
     State(state): State<AppState>,
+    Extension(identity): Extension<auth::Identity>,
+    Query(query): Query<LinkQuery>,
+) -> Result<Json<LinkContext>, AppError> {
+    let source = query.source_id.clone();
+    let mut context = linked_native(
+        State(state.clone()),
+        Extension(identity.clone()),
+        Query(query),
+    )
+    .await?
+    .0;
+    crate::collection_membership::extend(&state, &identity, &source, &mut context).await?;
+    if context.members.is_empty() {
+        return Err(unified_catalog::missing());
+    }
+    Ok(Json(context))
+}
+
+async fn linked_native(
+    State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<auth::Identity>,
     Query(query): Query<LinkQuery>,
 ) -> Result<Json<LinkContext>, AppError> {
@@ -747,12 +779,6 @@ pub async fn linked(
         }
         items.extend(remote);
         unified_catalog::dedup_members(&mut items, anchor.as_deref());
-    }
-    if items.is_empty() {
-        return Err(AppError(
-            StatusCode::NOT_FOUND,
-            "This season is unavailable.".into(),
-        ));
     }
     media_root(&state, &identity.user, &query.source_id).await?;
     Ok(Json(LinkContext {

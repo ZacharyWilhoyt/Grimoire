@@ -32,6 +32,7 @@ pub(crate) fn missing() -> AppError {
 
 #[derive(FromRow)]
 struct RemoteRow {
+    location_id: Uuid,
     representation_id: Uuid,
     remote_representation_id: Uuid,
     logical_id: Uuid,
@@ -126,6 +127,8 @@ impl RemoteRow {
             progress: None,
             metadata,
             logical_id: Some(self.logical_id),
+            location_id: Some(self.location_id),
+            collection_link: None,
             remote: true,
             media_url: self.playback_eligible.then_some(stream),
             remote_access: Some(self.media_granted),
@@ -169,8 +172,8 @@ pub(crate) async fn annotate_local(
         return Ok(());
     }
     let keys: Vec<_> = items.iter().map(|item| item.file_key.as_str()).collect();
-    let ids: HashMap<String, Uuid> = sqlx::query_as(
-        "SELECT l.local_file_key,v.logical_id FROM catalog_locations l
+    let ids: HashMap<String, (Uuid, Uuid)> = sqlx::query_as::<_, (String, Uuid, Uuid)>(
+        "SELECT l.local_file_key,v.logical_id,l.id FROM catalog_locations l
          JOIN catalog_matched_locations v ON v.location_id=l.id
          WHERE v.viewer_id=$1 AND l.local_file_key=ANY($2)",
     )
@@ -180,9 +183,13 @@ pub(crate) async fn annotate_local(
     .await
     .map_err(|_| auth::unavailable())?
     .into_iter()
+    .map(|(key, logical, location)| (key, (logical, location)))
     .collect();
     for item in items {
-        item.logical_id = ids.get(&item.file_key).copied();
+        if let Some(&(logical, location)) = ids.get(&item.file_key) {
+            item.logical_id = Some(logical);
+            item.location_id = Some(location);
+        }
     }
     Ok(())
 }
@@ -341,15 +348,15 @@ pub(crate) async fn remote_link(
         item.as_ref().map(|item| item.file_key.as_str()),
     );
     let seasons = seasons(&members);
-    if let Some(ref season) = season {
-        members.retain(|item| sidecars::season_key(item) == *season);
-    }
     let first = members.first().ok_or_else(missing)?;
     let label = first
         .metadata
         .as_ref()
         .and_then(|m| m.group.as_ref())
         .map(|group| group.label.clone());
+    if let Some(ref season) = season {
+        members.retain(|item| sidecars::season_key(item) == *season);
+    }
     Ok(catalog::LinkContext {
         item,
         members,

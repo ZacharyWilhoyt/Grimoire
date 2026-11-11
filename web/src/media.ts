@@ -4,11 +4,11 @@ export type MetadataView = { group?: GroupView | null; individual_genres?: strin
 export const displayTitle = (item: { name: string; metadata?: MetadataView | null }) => item.metadata?.fields.title?.trim() || item.name
 export type GroupBy = 'none' | 'collection' | 'creator'
 export type MediaKind = 'video' | 'music' | 'book'
-export type MediaItem = { logical_id?: string; remote?: boolean; media_url?: string; remote_access?: boolean; progress?: { position: number; total: number | null; updated_at: number; completed?:boolean } | null; metadata?: MetadataView | null; file_key: string; available: boolean; source_id: string; source_name: string; name: string; relative_path: string; kind: MediaKind; extension: string; size_bytes: number; modified_at: number | null; saved_at: number | null; last_opened_at: number | null }
+export type MediaItem = { location_id?:string; collection_link?:{source_id:string;group_id:string;label:string}; logical_id?: string; remote?: boolean; media_url?: string; remote_access?: boolean; progress?: { position: number; total: number | null; updated_at: number; completed?:boolean } | null; metadata?: MetadataView | null; file_key: string; available: boolean; source_id: string; source_name: string; name: string; relative_path: string; kind: MediaKind; extension: string; size_bytes: number; modified_at: number | null; saved_at: number | null; last_opened_at: number | null }
 export type PersonalState = Pick<MediaItem, 'file_key' | 'saved_at' | 'last_opened_at'>
-export type PageName = 'For you' | 'Discover' | 'My library' | 'Music'
+export type PageName = 'For you' | 'Discover' | 'My library' | 'Music' | 'Metadata'
 export type Sort = 'title' | 'modified' | 'saved' | 'source'
-export const pageHashes: Record<PageName, string> = { 'For you': '#for-you', Discover: '#discover', 'My library': '#library', Music: '#music' }
+export const pageHashes: Record<PageName, string> = { 'For you': '#for-you', Discover: '#discover', 'My library': '#library', Music: '#music', Metadata:'#metadata' }
 export const pageFromHash = (hash: string): PageName => (Object.entries(pageHashes).find(([, value]) => value === hash)?.[0] as PageName | undefined) ?? 'For you'
 export function filterMedia(items: MediaItem[], query: string, kind: string, source: string, sort: Sort, genre = '') {
   const search = query.trim().toLowerCase()
@@ -57,8 +57,8 @@ export function groupMedia(items: MediaItem[], mode: GroupBy, preserveOrder = fa
   for (const item of items) {
     const fields = item.metadata?.fields ?? {}
     const collection = fields.collection?.trim(), creator = fields.creator?.trim()
-    const label = mode === 'creator' ? creator : collection ? [item.kind === 'music' || item.kind === 'book' ? creator : null, collection].filter(Boolean).join(' — ') : null
-    const identity = mode === 'collection' ? item.metadata?.group?.id : null
+    const label = mode === 'creator' ? creator : item.collection_link?.label ?? (collection ? [item.kind === 'music' || item.kind === 'book' ? creator : null, collection].filter(Boolean).join(' — ') : null)
+    const identity = mode === 'collection' ? item.collection_link?.group_id ?? item.metadata?.group?.id : null
     const key = label ? identity || JSON.stringify([item.source_id, item.kind, mode, normalized(label)]) : `file:${item.file_key}`
     const group = groups.get(key) ?? { key, label: label || '', items: [], folder: !!label }
     group.items.push(item); groups.set(key, group)

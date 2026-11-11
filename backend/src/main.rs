@@ -12,6 +12,7 @@ mod auth_integration;
 mod catalog;
 mod catalog_inventory;
 mod catalog_matching;
+mod collection_membership;
 mod comments;
 mod image_registry;
 mod metadata;
@@ -594,6 +595,7 @@ fn app(state: AppState) -> Router {
     use axum::{extract::DefaultBodyLimit, middleware};
     let protected = Router::new()
         .merge(catalog_matching::routes())
+        .merge(collection_membership::routes())
         .merge(playback::routes())
         .route(
             "/api/sources/{source_id}/metadata/group-membership",

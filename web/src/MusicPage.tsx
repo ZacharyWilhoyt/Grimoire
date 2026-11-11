@@ -25,8 +25,14 @@ export default function MusicPage(p:Props){
   setSaving(true);setError('')
   try{const r=await apiFetch('/api/music/library',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({expected_revision:snapshot.revision,library})});const data=await r.json();if(!r.ok)throw Error(data.error??'Music library could not be saved.');setSnapshot(data)}catch(e){setError(e instanceof Error?e.message:'Music library could not be saved.')}finally{setSaving(false)}
  }
- const copies=p.items.filter(item=>item.kind==='music'),items=logicalItems(copies),artists=musicGroups(items,artistKey,artistName),albums=musicGroups(items.filter(item=>!artist||artistKey(item)===artist),albumKey,albumName)
- const songs=logicalItems(songsFor(copies,artist,album,p.query,sort,reverse)),library=snapshot?.library,playlist=library?.playlists.find(list=>list.id===selected)
+ const copies=p.items.filter(item=>item.kind==='music'),items=logicalItems(copies)
+ const anchors=new Map(copies.filter(item=>!item.collection_link&&item.metadata?.group).map(item=>[item.metadata!.group!.id,item]))
+ const albumOf=(item:MediaItem)=>{
+  const anchor=item.collection_link&&anchors.get(item.collection_link.group_id)
+  return anchor?albumKey(anchor):item.collection_link?JSON.stringify([item.collection_link.source_id,item.collection_link.group_id]):albumKey(item)
+ }
+ const artists=musicGroups(items,artistKey,artistName),albums=musicGroups(items.filter(item=>!artist||artistKey(item)===artist),albumOf,albumName)
+ const songs=logicalItems(songsFor(copies,artist,album,p.query,sort,reverse,albumOf)),library=snapshot?.library,playlist=library?.playlists.find(list=>list.id===selected)
  const playlistSongs=(playlist?.tracks??[]).flatMap(key=>{const item=copies.find(item=>item.file_key===key);return item?[item]:[]})
  const playlistListing=songsFor(playlistSongs,'','',p.query,sort,reverse)
  const disabled=saving||!snapshot
