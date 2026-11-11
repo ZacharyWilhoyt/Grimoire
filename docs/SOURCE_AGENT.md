@@ -117,10 +117,8 @@ Agent. For the Grimoire deployment at grimoire.devmage.dev, pull with:
 docker pull grimoire.devmage.dev/grimoire/source-agent:latest
 ```
 
-The published preview currently targets Linux amd64. The enrollment panel
-shows a Docker command that keeps the identity in a named volume. Use the
-same volume when running the agent and mount your source configuration and
-media read-only.
+The published preview currently targets Linux amd64. The interactive setup below keeps the identity in a named volume and mounts
+your source configuration and media read-only.
 
 The operator builds and exports the agent image, then runs
 `python3 scripts/publish-source-agent.py <docker-save-archive> <commit-sha>`
@@ -128,3 +126,24 @@ from the checkout. The publisher verifies the OCI digests and updates the
 commit tag and `latest`. The coordinator uses `deploy/compose.registry.yaml`
 alongside its usual Compose configuration. Registry data is stored under
 `deploy/runtime/registry`.
+
+### Interactive Docker setup
+
+On the Linux agent host with Docker and Python 3 installed, run:
+
+```sh
+curl -fsSLO https://grimoire.devmage.dev/setup-source-agent.sh
+bash setup-source-agent.sh
+```
+
+The script displays its GitHub source and asks you to confirm you have
+read and understood it. It then prompts for the agent name and one or
+more local media directories. Create the single-use token from **Source
+Agents** when the script asks for it, then paste it at the hidden terminal
+prompt and press Enter.
+
+Setup writes `sources.json` under
+`${XDG_CONFIG_HOME:-$HOME/.config}/grimoire-source-agent` and starts the
+agent with read-only media mounts. The configured sources are initially
+available only to the enrolling account. The setup refuses to overwrite
+an existing agent or configuration.
