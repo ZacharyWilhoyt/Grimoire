@@ -279,6 +279,14 @@ pub async fn delta(
             .map_err(|_| auth::unavailable())?;
         }
     }
+    let changed: Vec<_> = delta
+        .upserts
+        .iter()
+        .map(|entry| entry.representation_id)
+        .collect();
+    crate::catalog_inventory::project_remote(&mut tx, &source, &changed)
+        .await
+        .map_err(|_| auth::unavailable())?;
     tx.commit().await.map_err(|_| auth::unavailable())?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -96,3 +96,65 @@ pub(crate) async fn record(db: &PgPool, batch: serde_json::Value) -> Result<(), 
     .await?;
     tx.commit().await
 }
+
+/// Seed newly accepted representations and a bounded batch of preexisting
+/// records. The caller holds the source node lock and commits the signed delta.
+pub(crate) async fn project_remote(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    source: &str,
+    changed: &[uuid::Uuid],
+) -> Result<(), sqlx::Error> {
+    let rows: Vec<(uuid::Uuid, String, i64)> = sqlx::query_as(
+        "SELECT id,extension,size_bytes FROM remote_media_representations
+         WHERE source_id=$1 AND id=ANY($2)
+         UNION ALL
+         (SELECT r.id,r.extension,r.size_bytes FROM remote_media_representations r
+          WHERE r.source_id=$1 AND NOT (r.id=ANY($2)) AND NOT EXISTS (
+              SELECT 1 FROM catalog_locations l
+              WHERE l.source_id=r.source_id AND l.remote_representation_id=r.id)
+          ORDER BY r.id LIMIT $3)",
+    )
+    .bind(source)
+    .bind(changed)
+    .bind(BATCH_SIZE as i64)
+    .fetch_all(&mut **tx)
+    .await?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let batch: Vec<_> = rows
+        .iter()
+        .filter_map(|(id, extension, size)| {
+            Some(serde_json::json!({
+                "id":id,"extension":extension,"size":size,
+                "kind":crate::classify_extension(extension)?,
+            }))
+        })
+        .collect();
+    sqlx::query(
+        "WITH incoming AS MATERIALIZED (
+             SELECT o.*,gen_random_uuid() AS item_id,gen_random_uuid() AS representation_id
+             FROM jsonb_to_recordset($2) AS o(id uuid,extension text,size bigint,kind text)
+             LEFT JOIN catalog_locations l ON l.source_id=$1 AND l.remote_representation_id=o.id
+             LEFT JOIN catalog_representations r ON r.id=l.representation_id
+             WHERE r.id IS NULL OR r.extension<>o.extension OR r.size_bytes<>o.size
+         ), created_items AS (
+             INSERT INTO catalog_items(id,kind) SELECT item_id,kind FROM incoming RETURNING id
+         ), created_representations AS (
+             INSERT INTO catalog_representations(id,item_id,extension,size_bytes)
+             SELECT i.representation_id,c.id,i.extension,i.size
+             FROM incoming i JOIN created_items c ON c.id=i.item_id RETURNING id
+         )
+         INSERT INTO catalog_locations(id,representation_id,source_id,remote_representation_id)
+         SELECT gen_random_uuid(),r.id,$1,i.id
+         FROM incoming i JOIN created_representations r ON r.id=i.representation_id
+         ON CONFLICT(source_id,remote_representation_id) DO UPDATE
+             SET representation_id=EXCLUDED.representation_id,last_observed_at=now()",
+    )
+    .bind(source)
+    .bind(serde_json::Value::Array(batch))
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}

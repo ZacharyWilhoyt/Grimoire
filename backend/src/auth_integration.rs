@@ -6384,6 +6384,16 @@ async fn remote_catalog_revisions_require_node_ownership_and_both_policies(pool:
         StatusCode::NOT_FOUND
     );
 
+    // Simulate an already indexed v1 representation at the time of upgrade.
+    let removed_projection = sqlx::query(
+        "DELETE FROM catalog_locations WHERE source_id=$1 AND remote_representation_id IS NOT NULL",
+    )
+    .bind(format!("remote:{source}"))
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(removed_projection.rows_affected(), 1);
+
     delta.revision = 3;
     delta.published = true;
     delta.upserts.clear();
@@ -6417,6 +6427,47 @@ async fn remote_catalog_revisions_require_node_ownership_and_both_policies(pool:
     );
     sqlx::query("INSERT INTO source_permissions(source_id,user_id,can_discover,can_access_media) VALUES($1,$2,true,true)")
         .bind(format!("remote:{source}")).bind(viewer).execute(&pool).await.unwrap();
+    let source_key = format!("remote:{source}");
+    let projected = || {
+        sqlx::query_as::<_, (Uuid, String, bool, bool)>(
+            "SELECT item_id,name,online,playback_eligible FROM catalog_remote_discovery
+             WHERE source_id=$1 AND viewer_id=$2",
+        )
+        .bind(&source_key)
+        .bind(viewer)
+        .fetch_optional(&pool)
+    };
+    let (logical_id, name, online, playable) = projected().await.unwrap().unwrap();
+    assert_eq!(name, "Episode.mkv");
+    assert!(online);
+    assert!(!playable);
+    assert_eq!(
+        submit(&state, node, &key, &delta).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(projected().await.unwrap().unwrap().0, logical_id);
+    sqlx::query("UPDATE source_nodes SET last_seen=now()-interval '91 seconds' WHERE id=$1")
+        .bind(node)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        projected().await.unwrap(),
+        Some((logical_id, name.clone(), false, false))
+    );
+    sqlx::query("UPDATE remote_catalog_state SET last_confirmed=now()-interval '6 minutes' WHERE source_id=$1")
+        .bind(&source_key).execute(&pool).await.unwrap();
+    assert!(projected().await.unwrap().is_none());
+    sqlx::query("UPDATE source_nodes SET last_seen=now() WHERE id=$1")
+        .bind(node)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE remote_catalog_state SET last_confirmed=now() WHERE source_id=$1")
+        .bind(&source_key)
+        .execute(&pool)
+        .await
+        .unwrap();
     let sources_path = "/api/nodes/v1/sources";
     for (cookie, expected_node) in [(&owner_cookie, json!(node)), (&viewer_cookie, Value::Null)] {
         let sources = body(
@@ -6533,7 +6584,32 @@ async fn remote_catalog_revisions_require_node_ownership_and_both_policies(pool:
     assert_eq!(response.headers()["content-range"], "bytes 10-13/1234");
     assert_eq!(to_bytes(response.into_body(), 4).await.unwrap(), &bytes[..]);
 
+    assert!(projected().await.unwrap().unwrap().3);
+    sqlx::query("UPDATE source_permissions SET can_discover=false,can_access_media=false WHERE source_id=$1 AND user_id=$2")
+        .bind(&source_key).bind(viewer).execute(&pool).await.unwrap();
+    assert!(projected().await.unwrap().is_none());
+    sqlx::query("UPDATE source_permissions SET can_discover=true,can_access_media=true WHERE source_id=$1 AND user_id=$2")
+        .bind(&source_key).bind(viewer).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE source_nodes SET revoked_at=now() WHERE id=$1")
+        .bind(node)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(projected().await.unwrap().is_none());
+    sqlx::query("UPDATE source_nodes SET revoked_at=NULL WHERE id=$1")
+        .bind(node)
+        .execute(&pool)
+        .await
+        .unwrap();
     delta.revision = 4;
+    delta.published = false;
+    assert_eq!(
+        submit(&state, node, &key, &delta).await,
+        StatusCode::NO_CONTENT
+    );
+    assert!(projected().await.unwrap().is_none());
+    delta.published = true;
+    delta.revision = 5;
     delta.removed.push(item);
     delta.grants = None;
     assert_eq!(
@@ -6554,6 +6630,15 @@ async fn remote_catalog_revisions_require_node_ownership_and_both_policies(pool:
     )
     .await;
     assert_eq!(emptied["items"], json!([]));
+    assert!(projected().await.unwrap().is_none());
+    assert!(sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM catalog_items WHERE id=$1)"
+    )
+    .bind(logical_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap());
+
     sqlx::query("UPDATE remote_catalog_state SET last_confirmed=now()-interval '91 seconds' WHERE source_id=$1")
         .bind(format!("remote:{source}")).execute(&pool).await.unwrap();
     assert_eq!(
