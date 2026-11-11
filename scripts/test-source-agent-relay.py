@@ -125,13 +125,34 @@ with tempfile.TemporaryDirectory(prefix="grimoire-relay-e2e-") as directory:
             assert response.status==206
             assert response.headers["content-range"]==f"bytes 20-2500000/{len(original)}"
             assert response.read()==original[20:2500001]
+        current = json.loads((root / "identity.json").read_text())
+        running_agent = processes.pop()
+        running_agent.terminate()
+        running_agent.wait(timeout=5)
+        with request(f"/api/nodes/v1/{current['node_id']}", "DELETE", headers=csrf) as revoked:
+            assert revoked.status == 204
+        token = json.load(request("/api/nodes/v1/enrollment-tokens", "POST", headers=csrf))["token"]
+        with pexpect.spawn(str(agent), ["enroll", origin, "Fixture agent"], env=agent_env, cwd=str(root), encoding="utf-8") as child:
+            child.expect_exact("Enrollment token:")
+            child.sendline(token)
+            child.expect_exact("Enrolled Source Agent")
+            child.expect(pexpect.EOF)
+            child.close()
+            assert child.exitstatus == 0
+        renewed = json.loads((root / "identity.json").read_text())
+        assert renewed["node_id"] == current["node_id"]
+        assert renewed["key"] != current["key"]
+        spawn([agent, "run"], agent_env, root, "agent.log")
+        wait_for(lambda: bool(json.load(request(catalog))["items"]))
+        with request(delivery, headers={"range":"bytes=0-31"}) as response:
+            assert response.read() == original[:32]
         config.write_text(json.dumps({"sources":[{"id":source,"name":"Fixture","root":str(media),"published":False}]}))
         try:
             request(delivery,headers={"range":"bytes=0-31"})
             raise AssertionError("Agent local denial failed.")
         except urllib.error.HTTPError as error:
             assert error.code==404,error.code
-        print("Outbound HTTPS agent enrolled, indexed, served an exact multi-chunk seek, and enforced a local deny before catalog sync.")
+        print("Outbound HTTPS agent enrolled, indexed, served an exact multi-chunk seek, re-enrolled with a fresh key and the same source, and enforced a local deny before catalog sync.")
     except Exception:
         for name in ("api.log","caddy.log","agent.log"):
             if (root/name).exists():

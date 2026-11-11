@@ -101,7 +101,13 @@ pub async fn enroll(
     .ok_or_else(rejected)?;
     let created = sqlx::query(
         "INSERT INTO source_nodes(id,owner_id,label,public_key,last_seen)
-         VALUES($1,$2,$3,$4,now()) ON CONFLICT DO NOTHING",
+         VALUES($1,$2,$3,$4,now())
+         ON CONFLICT (id) DO UPDATE
+         SET label=EXCLUDED.label,public_key=EXCLUDED.public_key,last_seen=now(),
+             last_request_ms=NULL,revoked_at=NULL
+         WHERE source_nodes.owner_id=EXCLUDED.owner_id
+           AND source_nodes.revoked_at IS NOT NULL
+           AND source_nodes.public_key IS DISTINCT FROM EXCLUDED.public_key",
     )
     .bind(input.node_id)
     .bind(owner)
@@ -109,11 +115,29 @@ pub async fn enroll(
     .bind(key.as_slice())
     .execute(&mut *tx)
     .await
-    .map_err(|_| auth::unavailable())?
+    .map_err(|error| {
+        if error
+            .as_database_error()
+            .is_some_and(|error| error.is_unique_violation())
+        {
+            rejected()
+        } else {
+            auth::unavailable()
+        }
+    })?
     .rows_affected();
     if created != 1 {
         return Err(rejected());
     }
+    // Require the replacement identity to confirm its current catalog and policy.
+    sqlx::query(
+        "UPDATE remote_catalog_state c SET last_confirmed='-infinity'
+                 FROM sources s WHERE s.id=c.source_id AND s.node_id=$1",
+    )
+    .bind(input.node_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| auth::unavailable())?;
     sqlx::query("INSERT INTO source_node_events(node_id,actor_id,event) VALUES($1,$2,'enrolled')")
         .bind(input.node_id)
         .bind(owner)

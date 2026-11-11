@@ -62,8 +62,9 @@ grimoire-node/rotate/v1
 
 Rotation uses the heartbeat freshness rules and atomically replaces the key
 under the same node ID. The previous key immediately stops authenticating.
-Revocation permanently disables the node ID. Catalog, policy and transport
-operations will extend this document as they are implemented.
+Revocation disables the current key. The owner can re-enroll the same node
+ID using a fresh token and replacement key. Its source bindings stay attached
+to the node. The revoked key cannot be used for re-enrollment.
 
 ## Catalog revisions
 

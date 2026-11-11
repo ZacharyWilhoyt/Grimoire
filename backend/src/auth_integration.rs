@@ -6183,6 +6183,68 @@ async fn source_node_enrollment_authenticates_owner_key_and_rejects_replay(pool:
     .await;
     assert_eq!(owned[0]["online"], false);
     assert_eq!(owned[0]["revoked"], true);
+
+    let new_key = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+    let new_key = Ed25519KeyPair::from_pkcs8(new_key.as_ref()).unwrap();
+    for (cookie, csrf, signer, expected) in [
+        (&other, &other_csrf, &new_key, StatusCode::UNAUTHORIZED),
+        (&owner, &owner_csrf, &replacement, StatusCode::UNAUTHORIZED),
+        (&owner, &owner_csrf, &new_key, StatusCode::CREATED),
+    ] {
+        let token = body(
+            request(
+                &app_state,
+                Method::POST,
+                tokens,
+                Some(cookie),
+                Some(csrf),
+                Some(ORIGIN),
+                None,
+            )
+            .await,
+        )
+        .await;
+        enrollment.token = token["token"].as_str().unwrap().into();
+        enrollment.public_key = hex::encode(signer.public_key().as_ref());
+        enrollment.signature = hex::encode(signer.sign(&enrollment.signed_bytes()).as_ref());
+        let response = request(
+            &app_state,
+            Method::POST,
+            node_protocol::ENROLL,
+            None,
+            None,
+            None,
+            Some(serde_json::to_value(&enrollment).unwrap()),
+        )
+        .await;
+        assert_eq!(response.status(), expected);
+    }
+    for (signer, expected) in [
+        (&replacement, StatusCode::UNAUTHORIZED),
+        (&new_key, StatusCode::NO_CONTENT),
+    ] {
+        let mut pulse = Heartbeat {
+            version: 1,
+            node_id: enrollment.node_id,
+            timestamp_ms: node_protocol::now_ms(),
+            signature: String::new(),
+        };
+        pulse.signature = hex::encode(signer.sign(&pulse.signed_bytes()).as_ref());
+        assert_eq!(
+            request(
+                &app_state,
+                Method::POST,
+                node_protocol::HEARTBEAT,
+                None,
+                None,
+                None,
+                Some(serde_json::to_value(pulse).unwrap())
+            )
+            .await
+            .status(),
+            expected
+        );
+    }
 }
 
 #[sqlx::test(migrations = "./migrations")]

@@ -127,6 +127,13 @@ commit tag and `latest`. The coordinator uses `deploy/compose.registry.yaml`
 alongside its usual Compose configuration. Registry data is stored under
 `deploy/runtime/registry`.
 
+### Re-enroll a revoked agent
+
+Pull the latest image and run enrollment again with the original identity
+volume. Use a new single-use token from the same Grimoire account. You can
+reuse the agent name. The agent installs a replacement key and keeps its
+node ID, catalog journal and source bindings. Restart the agent after enrollment.
+
 ### Interactive Docker setup
 
 On the Linux agent host with Docker and Python 3 installed, run:

@@ -113,7 +113,8 @@ export default function SourceAgents({ onClose, onPermissions, onBook }: {
         <pre>{`curl -fsSLO ${origin}/setup-source-agent.sh
 bash setup-source-agent.sh ${origin}`}</pre>
       </div>
-      {token && <div className="source-agent-token"><label>Single-use token <input readOnly value={token} onFocus={event => event.currentTarget.select()}/></label><button className="theme-button" type="button" onClick={() => { if (!navigator.clipboard) { setError('Select and copy the token manually.'); return } void navigator.clipboard.writeText(token).then(() => setCopied(true)).catch(() => setError('Select and copy the token manually.')) }}><Copy size={14}/> {copied ? 'Copied' : 'Copy'}</button><p>Paste the token when the setup script prompts you. It expires in 10 minutes.</p></div>}
+      {token && <div className="source-agent-token"><label>Single-use token <input readOnly value={token} onFocus={event => event.currentTarget.select()}/></label><button className="theme-button" type="button" onClick={() => { if (!navigator.clipboard) { setError('Select and copy the token manually.'); return } void navigator.clipboard.writeText(token).then(() => setCopied(true)).catch(() => setError('Select and copy the token manually.')) }}><Copy size={14}/> {copied ? 'Copied' : 'Copy'}</button><p>Paste the token when the setup script prompts you. It expires in 10 minutes.</p><details><summary>Re-enroll an existing agent</summary><p>Stop the running agent, then use the same Docker volume and a fresh token from the same account. Restart the agent after enrollment.</p><pre>{`docker pull ${window.location.host}/grimoire/source-agent:latest
+docker run --rm -it -v grimoire-agent:/var/lib/grimoire-agent ${window.location.host}/grimoire/source-agent:latest enroll ${origin} "My agent"`}</pre></details></div>}
       <h3>Your agents</h3>
       {loading && <p role="status">Checking Source Agents…</p>}
       {!loading && nodes.length === 0 && <p>No agents enrolled yet.</p>}

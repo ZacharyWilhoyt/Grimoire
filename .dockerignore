@@ -22,3 +22,4 @@ deploy/media
 **/grimoire-agent.json.catalog
 
 deploy/agent-config
+**/grimoire-agent.json.enroll

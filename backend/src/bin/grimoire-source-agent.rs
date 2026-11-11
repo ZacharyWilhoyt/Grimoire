@@ -115,21 +115,57 @@ async fn enroll(
     label: &str,
 ) -> Result<(), &'static str> {
     let url = coordinator(origin)?;
-    let identity = match fs::symlink_metadata(path) {
-        Ok(_) => read_identity(path)?,
+    let mut pending_path = path.as_os_str().to_owned();
+    pending_path.push(".enroll");
+    let pending_path = Path::new(&pending_path);
+    let (identity, pending) = match fs::symlink_metadata(path) {
+        Ok(_) => {
+            let current = read_identity(path)?;
+            if current.coordinator != url.as_str() {
+                return Err("The node identity is already bound to another coordinator.");
+            }
+            match send_heartbeat(client, &url, &current, &key(&current)?).await {
+                Ok(StatusCode::NO_CONTENT) => {
+                    println!("Source Agent {} is already enrolled.", current.node_id);
+                    return Ok(());
+                }
+                Ok(StatusCode::UNAUTHORIZED) => {}
+                _ => {
+                    return Err(
+                        "Could not verify the existing agent. Check the coordinator and retry.",
+                    )
+                }
+            }
+            let replacement = match fs::symlink_metadata(pending_path) {
+                Ok(_) => read_identity(pending_path)?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    create_identity(pending_path, &url, current.node_id)?
+                }
+                Err(_) => return Err("Could not inspect the pending enrollment key."),
+            };
+            if replacement.node_id != current.node_id
+                || replacement.coordinator != current.coordinator
+            {
+                return Err("The pending enrollment belongs to a different node or coordinator.");
+            }
+            // Recover if the coordinator accepted the key before a previous run lost its response.
+            if send_heartbeat(client, &url, &replacement, &key(&replacement)?).await
+                == Ok(StatusCode::NO_CONTENT)
+            {
+                fs::rename(pending_path, path).map_err(|_| {
+                    "Could not install the accepted key. Retry enrollment to recover."
+                })?;
+                println!("Enrolled Source Agent {}.", replacement.node_id);
+                return Ok(());
+            }
+            (replacement, true)
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            create_identity(path, &url, Uuid::new_v4())?
+            (create_identity(path, &url, Uuid::new_v4())?, false)
         }
         Err(_) => return Err("Could not inspect the node identity file."),
     };
-    if identity.coordinator != url.as_str() {
-        return Err("The node identity is already bound to another coordinator.");
-    }
     let key = key(&identity)?;
-    if send_heartbeat(client, &url, &identity, &key).await == Ok(StatusCode::NO_CONTENT) {
-        println!("Source Agent {} is already enrolled.", identity.node_id);
-        return Ok(());
-    }
     let token = rpassword::prompt_password("Enrollment token: ")
         .map_err(|_| "Could not read the enrollment token.")?;
     if node_protocol::decode_hex::<32>(token.trim()).is_none() {
@@ -155,6 +191,10 @@ async fn enroll(
         .map_err(|_| "Could not contact the coordinator.")?;
     if response.status() != StatusCode::CREATED {
         return Err("Enrollment was rejected. Check the token, label and coordinator settings.");
+    }
+    if pending {
+        fs::rename(pending_path, path)
+            .map_err(|_| "Could not install the accepted key. Retry enrollment to recover.")?;
     }
     println!("Enrolled Source Agent {}.", identity.node_id);
     Ok(())
