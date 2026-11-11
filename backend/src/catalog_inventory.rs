@@ -14,6 +14,7 @@ struct Observation<'a> {
     kind: &'a str,
     extension: &'a str,
     size: i64,
+    modified_at: Option<f64>,
 }
 
 pub(crate) fn observe(state: &AppState, items: &[Item]) {
@@ -36,6 +37,7 @@ pub(crate) fn observe(state: &AppState, items: &[Item]) {
                         kind: item.file.kind,
                         extension: &item.file.extension,
                         size: item.file.size_bytes.try_into().ok()?,
+                        modified_at: item.file.modified_at,
                     })
                 })
                 .collect::<Vec<_>>())
@@ -69,13 +71,17 @@ pub(crate) async fn record(db: &PgPool, batch: serde_json::Value) -> Result<(), 
     sqlx::query(
         "WITH observed AS MATERIALIZED (
              SELECT o.* FROM jsonb_to_recordset($1) AS o(
-                 file_key text, source_id text, path text, kind text, extension text, size bigint)
+                 file_key text, source_id text, path text, kind text, extension text, size bigint,
+                 modified_at double precision)
              JOIN sources s ON s.id=o.source_id AND s.kind='local_directory'
          ), incoming AS MATERIALIZED (
              SELECT o.*, gen_random_uuid() AS location_id, gen_random_uuid() AS representation_id,
                     gen_random_uuid() AS item_id
              FROM observed o LEFT JOIN catalog_locations l ON l.local_file_key=o.file_key
-             WHERE l.id IS NULL
+             LEFT JOIN catalog_representations r ON r.id=l.representation_id
+             WHERE r.id IS NULL OR r.extension<>o.extension OR r.size_bytes<>o.size
+                OR (l.local_modified_at IS NOT NULL AND o.modified_at IS NOT NULL
+                    AND l.local_modified_at<>o.modified_at)
          ), created_items AS (
              INSERT INTO catalog_items(id,kind) SELECT item_id,kind FROM incoming RETURNING id
          ), created_representations AS (
@@ -83,13 +89,20 @@ pub(crate) async fn record(db: &PgPool, batch: serde_json::Value) -> Result<(), 
              SELECT i.representation_id,c.id,i.extension,i.size
              FROM incoming i JOIN created_items c ON c.id=i.item_id RETURNING id
          ), created_locations AS (
-             INSERT INTO catalog_locations(id,representation_id,source_id,local_file_key,local_relative_path)
-             SELECT i.location_id,r.id,i.source_id,i.file_key,i.path
+             INSERT INTO catalog_locations(id,representation_id,source_id,local_file_key,local_relative_path,local_modified_at)
+             SELECT i.location_id,r.id,i.source_id,i.file_key,i.path,i.modified_at
              FROM incoming i JOIN created_representations r ON r.id=i.representation_id
+             ON CONFLICT(local_file_key) DO UPDATE
+                 SET representation_id=EXCLUDED.representation_id,last_observed_at=now(),
+                     local_modified_at=EXCLUDED.local_modified_at
+             RETURNING local_file_key
          )
-         UPDATE catalog_locations l SET last_observed_at=now()
+         UPDATE catalog_locations l SET last_observed_at=now(),
+                                        local_modified_at=COALESCE(o.modified_at,l.local_modified_at)
          FROM observed o WHERE l.local_file_key=o.file_key
-           AND l.last_observed_at < now()-interval '1 minute'",
+           AND (l.last_observed_at < now()-interval '1 minute'
+                OR (l.local_modified_at IS NULL AND o.modified_at IS NOT NULL))
+           AND NOT EXISTS(SELECT 1 FROM created_locations c WHERE c.local_file_key=l.local_file_key)",
     )
     .bind(batch)
     .execute(&mut *tx)

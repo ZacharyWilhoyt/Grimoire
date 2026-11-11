@@ -2,7 +2,7 @@ pub mod arr;
 pub mod groups;
 mod local;
 pub mod model;
-mod providers;
+pub(crate) mod providers;
 pub mod sidecars;
 use crate::{auth, catalog, AppError, AppState};
 use axum::{
@@ -591,7 +591,7 @@ pub struct Review {
     pub fields: Fields,
     pub has_artwork: bool,
 }
-async fn online_guard(
+pub(crate) async fn online_guard(
     state: &AppState,
     user: Uuid,
     provider: Provider,

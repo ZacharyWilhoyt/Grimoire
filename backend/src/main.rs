@@ -11,6 +11,7 @@ mod auth;
 mod auth_integration;
 mod catalog;
 mod catalog_inventory;
+mod catalog_matching;
 mod comments;
 mod image_registry;
 mod metadata;
@@ -589,6 +590,7 @@ async fn not_found() -> (StatusCode, Json<ApiError>) {
 fn app(state: AppState) -> Router {
     use axum::{extract::DefaultBodyLimit, middleware};
     let protected = Router::new()
+        .merge(catalog_matching::routes())
         .route(
             "/api/sources/{source_id}/metadata/group-membership",
             axum::routing::post(metadata::groups::join).layer(DefaultBodyLimit::max(16 * 1024)),
