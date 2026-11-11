@@ -56,8 +56,8 @@ impl RemoteRow {
         let path = self.representation_id.to_string();
         let file_key = catalog::file_key(&self.source_id, &path);
         let stream = format!(
-            "/api/nodes/v1/sources/{source}/representations/{}",
-            self.remote_representation_id
+            "/api/nodes/v1/sources/{source}/representations/{}?version={}",
+            self.remote_representation_id, self.representation_id
         );
         let mut fields: Fields = self
             .provider_fields

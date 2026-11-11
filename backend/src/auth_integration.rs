@@ -5803,7 +5803,7 @@ async fn source_provider_upgrade_preserves_local_identity_and_grants(pool: PgPoo
     baseline.run(&pool).await.unwrap();
     let app_state = state(pool.clone());
     let (owner_cookie, _, owner) = register_user(&app_state, "upgrade_owner").await;
-    let (viewer_cookie, _, viewer) = register_user(&app_state, "upgrade_viewer").await;
+    let (viewer_cookie, viewer_csrf, viewer) = register_user(&app_state, "upgrade_viewer").await;
     let owner = Uuid::parse_str(owner["id"].as_str().unwrap()).unwrap();
     let viewer = Uuid::parse_str(viewer["id"].as_str().unwrap()).unwrap();
     let root = shared_media_fixture();
@@ -5820,6 +5820,17 @@ async fn source_provider_upgrade_preserves_local_identity_and_grants(pool: PgPoo
         .bind(source).bind(viewer).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO media_progress(user_id,file_key,source_id,relative_path,position,revision) VALUES($1,$2,$3,'clip.mp4',42,1)")
         .bind(viewer).bind(&key).bind(source).execute(&pool).await.unwrap();
+
+    sqlx::query(
+        "INSERT INTO user_media(user_id,file_key,source_id,relative_path,saved_at)
+                 VALUES($1,$2,$3,'clip.mp4',now())",
+    )
+    .bind(viewer)
+    .bind(&key)
+    .bind(source)
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let arr = Uuid::new_v4();
     sqlx::query("INSERT INTO arr_connections(id,source_id,name,kind,base_url,remote_root,api_key_encrypted,revision,managed)
@@ -5934,6 +5945,35 @@ async fn source_provider_upgrade_preserves_local_identity_and_grants(pool: PgPoo
     assert_eq!(repeated, (inventory.0, inventory.1));
     assert_eq!(clip["metadata"]["fields"]["title"], "Existing title");
     assert_eq!(clip["progress"]["position"], 42.0);
+    let library = body(
+        request(
+            &app_state,
+            Method::GET,
+            "/api/library",
+            Some(&viewer_cookie),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(library["items"][0]["file_key"], key);
+    assert_eq!(library["items"][0]["logical_id"], json!(inventory.0));
+    let playback = request(
+        &app_state,
+        Method::POST,
+        "/api/playback/v1",
+        Some(&viewer_cookie),
+        Some(&viewer_csrf),
+        Some(ORIGIN),
+        Some(json!({"source_id":source,"relative_path":"clip.mp4"})),
+    )
+    .await;
+    assert_eq!(playback.status(), StatusCode::OK);
+    let playback = body(playback).await;
+    assert_eq!(playback["item"]["file_key"], key);
+    assert_eq!(playback["item"]["progress"]["position"], 42.0);
     let sources = body(
         request(
             &app_state,
@@ -6644,7 +6684,23 @@ async fn remote_catalog_revisions_require_node_ownership_and_both_policies(pool:
     assert_eq!(art_response.headers()["cache-control"], "private, no-store");
     let online = body(browse().await).await;
     assert_eq!(online["items"][0]["available"], true);
-    assert_eq!(online["items"][0]["media_url"], delivery);
+    let versioned = format!("{delivery}?version={rep_id}");
+    assert_eq!(online["items"][0]["media_url"], versioned);
+    let invalid_version = format!("{delivery}?version={}", Uuid::new_v4());
+    assert_eq!(
+        request(
+            &state,
+            Method::HEAD,
+            &invalid_version,
+            Some(&viewer_cookie),
+            None,
+            None,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
     assert_eq!(
         write(Method::POST, "/api/activity/open", reference.clone())
             .await
@@ -6684,7 +6740,7 @@ async fn remote_catalog_revisions_require_node_ownership_and_both_policies(pool:
     .await;
     assert_eq!(body(stats).await["watch_seconds"], 3.0);
     let browser_range = Request::builder()
-        .uri(&delivery)
+        .uri(&versioned)
         .header("cookie", &viewer_cookie)
         .header("range", "bytes=10-13")
         .extension(ConnectInfo(
@@ -6791,6 +6847,49 @@ async fn remote_catalog_revisions_require_node_ownership_and_both_policies(pool:
         .execute(&pool)
         .await
         .unwrap();
+    // A new material observation may reuse the agent's wire identifier.
+    // The previous browser URL must not start serving the replacement.
+    let wire_representation = Uuid::parse_str(representation).unwrap();
+    let mut replacement = pool.begin().await.unwrap();
+    sqlx::query(
+        "UPDATE remote_media_representations SET size_bytes=4321 WHERE source_id=$1 AND id=$2",
+    )
+    .bind(&source_key)
+    .bind(wire_representation)
+    .execute(&mut *replacement)
+    .await
+    .unwrap();
+    crate::catalog_inventory::project_remote(&mut replacement, &source_key, &[wire_representation])
+        .await
+        .unwrap();
+    replacement.commit().await.unwrap();
+    let previous = request(
+        &state,
+        Method::HEAD,
+        &versioned,
+        Some(&viewer_cookie),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(previous.status(), StatusCode::NOT_FOUND);
+    let fresh = body(browse().await).await;
+    let fresh_url = fresh["items"][0]["media_url"].as_str().unwrap();
+    assert_ne!(fresh_url, versioned);
+    let current = request(
+        &state,
+        Method::HEAD,
+        fresh_url,
+        Some(&viewer_cookie),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(current.status(), StatusCode::OK);
+    assert_eq!(current.headers()["content-length"], "4321");
+
     delta.revision = 4;
     delta.published = false;
     assert_eq!(

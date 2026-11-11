@@ -2,7 +2,7 @@
 use crate::{auth, nodes, AppError, AppState};
 use axum::{
     body::{Body, Bytes},
-    extract::{Path, Request, State},
+    extract::{Path, Query, Request, State},
     http::{header, HeaderMap, Method, StatusCode},
     response::{IntoResponse, Response},
     Extension, Json,
@@ -34,6 +34,7 @@ struct Pending {
     grant: RelayGrant,
     reply: oneshot::Sender<Bytes>,
     session_hash: String,
+    version: Option<Uuid>,
 }
 
 pub struct Runtime {
@@ -172,6 +173,7 @@ async fn authorized(
     source: Uuid,
     representation: Uuid,
     session_hash: &str,
+    version: Option<Uuid>,
 ) -> Result<Target, AppError> {
     sqlx::query_as(
         "SELECT n.id AS node_id,s.owner_id=$3 AS owner,r.extension,r.size_bytes
@@ -188,9 +190,11 @@ async fn authorized(
          LEFT JOIN remote_source_grants g ON g.source_id=s.id AND g.user_id=$3
          WHERE s.id=$1 AND r.id=$2 AND c.published AND n.revoked_at IS NULL
            AND c.last_confirmed>now()-interval '90 seconds' AND n.last_seen>now()-interval '90 seconds'
+           AND ($5::uuid IS NULL OR EXISTS(SELECT 1 FROM catalog_locations v
+               WHERE v.source_id=s.id AND v.remote_representation_id=r.id AND v.representation_id=$5))
            AND (s.owner_id=$3 OR (p.can_discover AND p.can_access_media AND g.can_discover AND g.can_access_media))",
     )
-    .bind(format!("remote:{source}")).bind(representation).bind(viewer).bind(session_hash)
+    .bind(format!("remote:{source}")).bind(representation).bind(viewer).bind(session_hash).bind(version)
     .fetch_optional(&state.db).await.map_err(|_| auth::unavailable())?.ok_or_else(missing)
 }
 
@@ -231,6 +235,7 @@ struct Stream {
     state: AppState,
     viewer: Uuid,
     session_hash: String,
+    version: Option<Uuid>,
     source: Uuid,
     representation: Uuid,
     target: Target,
@@ -252,6 +257,7 @@ impl Stream {
             self.source,
             self.representation,
             &self.session_hash,
+            self.version,
         )
         .await?;
         if current.node_id != self.target.node_id || current.size_bytes != self.target.size_bytes {
@@ -282,6 +288,7 @@ impl Stream {
                     grant,
                     reply,
                     session_hash: self.session_hash.clone(),
+                    version: self.version,
                 },
             );
         }
@@ -311,10 +318,16 @@ impl Stream {
     }
 }
 
+#[derive(serde::Deserialize)]
+pub struct ReadQuery {
+    version: Option<Uuid>,
+}
+
 pub async fn read(
     State(state): State<AppState>,
     Extension(identity): Extension<auth::Identity>,
     Path((source, representation)): Path<(Uuid, Uuid)>,
+    Query(query): Query<ReadQuery>,
     request: Request,
 ) -> Result<Response, AppError> {
     let viewer = identity.user.id;
@@ -324,6 +337,7 @@ pub async fn read(
         source,
         representation,
         &identity.session_hash,
+        query.version,
     )
     .await?;
     let size = target.size_bytes as u64;
@@ -389,6 +403,7 @@ pub async fn read(
         state,
         viewer,
         session_hash: identity.session_hash,
+        version: query.version,
         source,
         representation,
         target,
@@ -527,13 +542,13 @@ pub async fn upload(
     let payload = format!("{job}:{digest}");
     let node = authenticate(&state, request.headers(), "upload", &payload).await?;
     auth::rate_limit(&state.db, format!("relay:upload:{node}"), 1600, 60).await?;
-    let (grant, session_hash) = {
+    let (grant, session_hash, version) = {
         let pending = state.relay.pending.lock().unwrap();
         let job = pending
             .get(&job)
             .filter(|job| job.grant.node_id == node && job.grant.expires_ms > wire::now_ms())
             .ok_or_else(missing)?;
-        (job.grant.clone(), job.session_hash.clone())
+        (job.grant.clone(), job.session_hash.clone(), job.version)
     };
     let target = authorized(
         &state,
@@ -541,6 +556,7 @@ pub async fn upload(
         grant.source_id,
         grant.representation_id,
         &session_hash,
+        version,
     )
     .await?;
     if target.node_id != node || target.size_bytes as u64 != grant.size_bytes {
@@ -579,6 +595,7 @@ pub async fn upload(
         grant.source_id,
         grant.representation_id,
         &session_hash,
+        version,
     )
     .await?;
     if current.node_id != node || current.size_bytes as u64 != grant.size_bytes {

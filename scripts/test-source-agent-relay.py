@@ -16,8 +16,9 @@ import getpass
 import pexpect
 
 repo = Path(__file__).resolve().parents[1]
-api = repo / "backend/target/debug/grimoire-api"
-agent = repo / "backend/target/debug/grimoire-source-agent"
+target = Path(os.environ.get("CARGO_TARGET_DIR", repo / "backend/target")).resolve()
+api = target / "debug/grimoire-api"
+agent = target / "debug/grimoire-source-agent"
 caddy = Path(os.environ["GRIMOIRE_TEST_CADDY_BIN"]).resolve()
 pg = Path(os.environ["GRIMOIRE_TEST_POSTGRES_BIN"]).resolve()
 processes = []
@@ -121,7 +122,15 @@ with tempfile.TemporaryDirectory(prefix="grimoire-relay-e2e-") as directory:
         wait_for(lambda: bool(json.load(request(catalog))["items"]))
         item = json.load(request(catalog))["items"][0]
         delivery = f"/api/nodes/v1/sources/{source}/representations/{item['representation_id']}"
-        with request(delivery,headers={"range":"bytes=20-2500000"}) as response:
+        indexed = json.load(request("/api/catalog"))["items"]
+        assert len(indexed)==1 and indexed[0]["remote"] and indexed[0]["media_url"]==f"{delivery}?version={indexed[0]['relative_path']}"
+        ref = {"source_id":indexed[0]["source_id"], "relative_path":indexed[0]["relative_path"]}
+        assert request("/api/library","PUT",ref,csrf).status==200
+        assert request("/api/activity/open","POST",ref,csrf).status==200
+        assert request("/api/progress","PUT",{**ref,"position":17,"total":60,"locator":None,"expected_revision":0},csrf).status==200
+        assert json.load(request("/api/continue"))["items"][0]["progress"]["position"]==17
+        assert json.load(request("/api/library"))["items"][0]["file_key"]==indexed[0]["file_key"]
+        with request(indexed[0]["media_url"],headers={"range":"bytes=20-2500000"}) as response:
             assert response.status==206
             assert response.headers["content-range"]==f"bytes 20-2500000/{len(original)}"
             assert response.read()==original[20:2500001]
@@ -146,13 +155,40 @@ with tempfile.TemporaryDirectory(prefix="grimoire-relay-e2e-") as directory:
         wait_for(lambda: bool(json.load(request(catalog))["items"]))
         with request(delivery, headers={"range":"bytes=0-31"}) as response:
             assert response.read() == original[:32]
+        local = root / "local"
+        local.mkdir()
+        (local / "alternative.mp4").write_bytes(b"fixture replacement")
+        def db(sql):
+            return subprocess.check_output([pg/"psql","-XAt",env["DATABASE_URL"],"-v","ON_ERROR_STOP=1",
+              "-v",f"owner={account['user']['id']}","-v",f"root={local}","-v",f"remote=remote:{source}"],
+              input=sql,text=True).strip()
+        db("INSERT INTO sources(id,owner_id,name,path) VALUES('local',:'owner','Local alternative',:'root');")
+        json.load(request("/api/catalog"))
+        wait_for(lambda: db("SELECT count(*) FROM catalog_locations WHERE source_id='local';")=="1")
+        db("""
+        INSERT INTO catalog_verified_identities(representation_id,namespace,entity_type,identifier,edition,canonical_id)
+        SELECT l.representation_id,'tmdb_movie','movie','42','same-cut',original.item_id
+        FROM catalog_locations l CROSS JOIN (
+            SELECT r.item_id FROM catalog_locations l JOIN catalog_representations r ON r.id=l.representation_id
+            WHERE l.source_id=:'remote'
+        ) original WHERE l.source_id IN ('local',:'remote');
+        """)
+        route=json.load(request("/api/playback/v1","POST",{**ref,"native_formats":["mp4"]},csrf))
+        assert route["item"]["source_id"]==ref["source_id"] and len(route["options"])==2,route
         config.write_text(json.dumps({"sources":[{"id":source,"name":"Fixture","root":str(media),"published":False}]}))
         try:
             request(delivery,headers={"range":"bytes=0-31"})
             raise AssertionError("Agent local denial failed.")
         except urllib.error.HTTPError as error:
             assert error.code==404,error.code
-        print("Outbound HTTPS agent enrolled, indexed, served an exact multi-chunk seek, re-enrolled with a fresh key and the same source, and enforced a local deny before catalog sync.")
+        with request(f"/api/nodes/v1/{renewed['node_id']}", "DELETE", headers=csrf) as revoked:
+            assert revoked.status == 204
+        switched = json.load(request(
+            f"/api/playback/v1/{route['session']}/switch", "POST", {"current": route["location"]}, csrf,
+        ))
+        assert switched["item"]["source_id"] == "local" and not switched["exact"]
+        assert len(switched["options"]) == 1
+        print("HTTPS Source Agent enrollment, re-enrollment, unified catalog, bookmarks, progress, range playback, local denial and failover passed.")
     except Exception:
         for name in ("api.log","caddy.log","agent.log"):
             if (root/name).exists():
