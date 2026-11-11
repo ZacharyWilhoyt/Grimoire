@@ -182,3 +182,4 @@
 .source-agent-list small{display:block;color:#aaa4b3}
 .source-agent-token{margin-top:12px;overflow-wrap:anywhere}
 .source-agent-token label,.source-agent-token input,.source-agent-body video,.source-agent-body audio{display:block;width:100%}
+.source-agent-token pre{overflow:auto;padding:10px;background:#111116;font-size:12px}

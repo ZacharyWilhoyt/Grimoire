@@ -11,6 +11,7 @@ mod auth;
 mod auth_integration;
 mod catalog;
 mod comments;
+mod image_registry;
 mod metadata;
 mod music;
 mod nodes;
@@ -543,6 +544,8 @@ fn scan_directory(root: &Path) -> Result<Vec<MediaFile>, String> {
 async fn frontend(request: Request) -> Response {
     if request.uri().path() == "/api"
         || request.uri().path().starts_with("/api/")
+        || request.uri().path() == "/v2"
+        || request.uri().path().starts_with("/v2/")
         || !matches!(
             *request.method(),
             axum::http::Method::GET | axum::http::Method::HEAD
@@ -817,6 +820,11 @@ fn app(state: AppState) -> Router {
         ));
     Router::new()
         .merge(protected)
+        .route("/v2/", get(image_registry::ping))
+        .route(
+            "/v2/grimoire/source-agent/{kind}/{reference}",
+            get(image_registry::read),
+        )
         .route("/api/health", get(health))
         .route("/api/ready", get(readiness))
         .route("/api/auth/register", axum::routing::post(auth::register))

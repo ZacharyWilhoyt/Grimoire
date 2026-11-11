@@ -27,6 +27,7 @@ export default function SourceAgents({ onClose, onPermissions, onBook }: {
   onBook: (book: RemoteBook) => void
 }) {
   const dialog = useModalDialog()
+  const image = `${window.location.host}/grimoire/source-agent:latest`
   const [nodes, setNodes] = useState<Node[]>([])
   const [sources, setSources] = useState<RemoteSource[]>([])
   const [selected, setSelected] = useState<RemoteSource | null>(null)
@@ -107,7 +108,8 @@ export default function SourceAgents({ onClose, onPermissions, onBook }: {
     <div className="source-agent-body">
       {error && <p role="alert" className="catalog-notice error">{error}</p>}
       <div className="source-agent-actions"><button type="button" onClick={() => { void issue() }} disabled={busy}>Create enrollment token</button><button type="button" onClick={() => setRefresh(value => value + 1)} disabled={loading || busy} aria-label="Refresh Source Agents"><RefreshCw size={16}/></button></div>
-      {token && <div className="source-agent-token"><label>Single-use token <input readOnly value={token} onFocus={event => event.currentTarget.select()}/></label><button type="button" onClick={() => { if (!navigator.clipboard) { setError('Select and copy the token manually.'); return } void navigator.clipboard.writeText(token).then(() => setCopied(true)).catch(() => setError('Select and copy the token manually.')) }}><Copy size={14}/> {copied ? 'Copied' : 'Copy'}</button><p>Run <code>grimoire-source-agent enroll {window.location.origin} "My agent"</code> on the agent host and enter this token. It expires in 10 minutes.</p></div>}
+      {token && <div className="source-agent-token"><label>Single-use token <input readOnly value={token} onFocus={event => event.currentTarget.select()}/></label><button type="button" onClick={() => { if (!navigator.clipboard) { setError('Select and copy the token manually.'); return } void navigator.clipboard.writeText(token).then(() => setCopied(true)).catch(() => setError('Select and copy the token manually.')) }}><Copy size={14}/> {copied ? 'Copied' : 'Copy'}</button><p>On the agent host, pull the image and enroll it. Enter the token when prompted. It expires in 10 minutes.</p><pre>{`docker pull ${image}
+docker run --rm -it -v grimoire-agent:/var/lib/grimoire-agent ${image} enroll ${window.location.origin} "My agent"`}</pre><p>Use the same <code>grimoire-agent</code> volume when starting the agent.</p></div>}
       <h3>Your agents</h3>
       {loading && <p role="status">Checking Source Agents…</p>}
       {!loading && nodes.length === 0 && <p>No agents enrolled yet.</p>}

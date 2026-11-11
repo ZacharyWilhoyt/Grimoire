@@ -107,3 +107,24 @@ Set `GRIMOIRE_TEST_CADDY_BIN` to a verified Caddy binary and
 `GRIMOIRE_TEST_POSTGRES_BIN` to the PostgreSQL server bin directory.
 The test starts its own loopback-only coordinator, CA, proxy, agent and
 temporary database. It does not use the running Grimoire database.
+
+### Pull the published image
+
+The coordinator serves an anonymous, read-only OCI registry for the Source
+Agent. For the Grimoire deployment at grimoire.devmage.dev, pull with:
+
+```sh
+docker pull grimoire.devmage.dev/grimoire/source-agent:latest
+```
+
+The published preview currently targets Linux amd64. The enrollment panel
+shows a Docker command that keeps the identity in a named volume. Use the
+same volume when running the agent and mount your source configuration and
+media read-only.
+
+The operator builds and exports the agent image, then runs
+`python3 scripts/publish-source-agent.py <docker-save-archive> <commit-sha>`
+from the checkout. The publisher verifies the OCI digests and updates the
+commit tag and `latest`. The coordinator uses `deploy/compose.registry.yaml`
+alongside its usual Compose configuration. Registry data is stored under
+`deploy/runtime/registry`.
