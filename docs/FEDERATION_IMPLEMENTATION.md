@@ -83,8 +83,7 @@ eligibility, tombstones and stale catalog expiry.
 The preview does not satisfy the final federation gate. Remaining work
 includes direct HTTPS with verified destination binding and global access
 policy enforcement, directory and item policy scopes, remote playback
-feature parity, and the full deployment acceptance suite. The preview
-has not been deployed to the live coordinator.
+feature parity, and the full deployment acceptance suite.
 
 The preview compatibility checks passed with 119 frontend tests and a
 production build, 34 coordinator unit tests, 2 agent tests, 39 backend
@@ -93,3 +92,8 @@ smoke test, and both Compose config checks passed. The standalone image
 built and ran with UID 10001 and writable private state under a read-only
 root filesystem. The disposable HTTPS relay smoke test passed with the
 actual coordinator and Source Agent binaries.
+
+The preview is deployed at grimoire.devmage.dev. The coordinator passed HTTPS
+readiness checks on the existing database after applying migration `0021`.
+An anonymous Docker pull from the public domain succeeded for the Linux amd64
+Source Agent, and a public upload request was rejected.
