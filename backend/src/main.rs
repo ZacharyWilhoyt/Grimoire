@@ -596,6 +596,7 @@ fn app(state: AppState) -> Router {
     let protected = Router::new()
         .merge(catalog_matching::routes())
         .merge(collection_membership::routes())
+        .merge(unified_catalog::metadata_routes())
         .merge(playback::routes())
         .route(
             "/api/sources/{source_id}/metadata/group-membership",

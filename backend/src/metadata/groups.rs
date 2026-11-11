@@ -27,7 +27,7 @@ fn normalize(value: &str) -> String {
         .join(" ")
         .to_lowercase()
 }
-pub(super) fn identity(source: &str, kind: &str, fields: &Fields) -> Option<GroupView> {
+pub(crate) fn identity(source: &str, kind: &str, fields: &Fields) -> Option<GroupView> {
     let collection = fields.collection.as_deref()?.trim();
     if collection.is_empty() {
         return None;

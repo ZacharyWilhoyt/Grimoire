@@ -16,11 +16,15 @@ If a collection changes identity, select its current group again.
 Metadata edits, poster and tag edits, and metadata scans for local sources
 are available from the same page. For a single local file in the same source
 as its target, **Copy group metadata** uses the existing source-local
-operation. Source Agent files can be assigned to collections. Their
-metadata is still managed through the existing Source Agent and provider
-workflows.
+operation. Owners of published Source Agent files can edit display metadata,
+hide provider artwork, and reset overrides from the same editor. These edits
+apply to the indexed representation and preserve the file, canonical
+identity, and existing collection links. Agent-side tag extraction and
+provider matching use their existing workflows.
 
 Migration 0026 adds the collection membership table. The API validates
 ownership of each changed file, target visibility, and media type before
 applying a batch. Collection membership is independent of deduplication and
 playback routing.
+
+Migration 0027 adds Source Agent metadata overrides.

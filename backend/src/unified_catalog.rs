@@ -48,6 +48,10 @@ struct RemoteRow {
     provider_fields: Option<serde_json::Value>,
     provider_art: Option<String>,
     series_group: Option<String>,
+    owner: bool,
+    custom_fields: Option<serde_json::Value>,
+    custom_group: Option<String>,
+    hide_artwork: bool,
 }
 
 impl RemoteRow {
@@ -85,28 +89,63 @@ impl RemoteRow {
                 synopsis_provider: None,
             })
         });
-        let has_artwork = self.provider_art.is_some();
+        let has_custom = self.custom_fields.is_some();
+        if let Some(custom) = self
+            .custom_fields
+            .and_then(|value| serde_json::from_value(value).ok())
+        {
+            fields = custom;
+        }
+        let group = group
+            .map(|mut group| {
+                if let Some(label) = fields
+                    .collection
+                    .as_ref()
+                    .filter(|label| !label.trim().is_empty())
+                {
+                    group.label = label.clone();
+                }
+                group
+            })
+            .or_else(|| {
+                self.custom_group
+                    .and_then(|_| metadata::groups::identity(&self.source_id, kind, &fields))
+            });
         let artwork_url = self
             .provider_art
+            .filter(|_| !self.hide_artwork)
             .map(|_| format!("/api/catalog/v1/artwork/{}", self.representation_id));
-        let metadata = provider.as_ref().map(|provider| metadata::View {
+        let has_artwork = artwork_url.is_some();
+        let metadata = (provider.is_some() || has_custom || self.owner).then(|| metadata::View {
             group,
             fields,
             artwork_url,
-            origin: "provider_curator".into(),
+            origin: if has_custom {
+                "custom"
+            } else if provider.is_some() {
+                "provider_curator"
+            } else {
+                "agent"
+            }
+            .into(),
             individual_genres: None,
-            credits: match provider.as_str() {
-                "tmdb_movie" | "tmdb_tv" => vec!["tmdb".into()],
-                "musicbrainz" if has_artwork => {
+            credits: match provider.as_deref() {
+                Some("tmdb_movie" | "tmdb_tv") if !has_custom || has_artwork => vec!["tmdb".into()],
+                Some("musicbrainz") if has_artwork => {
                     vec!["musicbrainz".into(), "coverartarchive".into()]
                 }
-                _ => vec![provider.clone()],
+                Some(provider) if !has_custom || has_artwork => vec![provider.into()],
+                _ => vec![],
             },
-            has_custom: false,
+            has_custom,
             thumbnail_url: None,
-            can_edit: false,
-            artwork_preference: Default::default(),
-            provider: Some(provider.clone()),
+            can_edit: self.owner,
+            artwork_preference: if self.hide_artwork {
+                metadata::model::ArtworkPreference::None
+            } else {
+                Default::default()
+            },
+            provider,
             provider_id: self.identifier,
         });
         Some(Item {
@@ -143,10 +182,13 @@ pub(crate) async fn remote_items(
     series: Option<&str>,
 ) -> Result<(Vec<Item>, bool), AppError> {
     let mut rows = sqlx::query_as::<_, RemoteRow>(
-        "SELECT * FROM catalog_remote_page_locations
-         WHERE viewer_id=$1 AND ($2::uuid[] IS NULL OR representation_id=ANY($2))
-           AND ($3::text IS NULL OR series_group=$3)
-         ORDER BY logical_id,playback_eligible DESC,location_id LIMIT $4",
+        "SELECT v.*,s.owner_id=$1 AS owner,o.fields AS custom_fields,
+                o.group_id AS custom_group,COALESCE(o.hide_artwork,false) AS hide_artwork
+         FROM catalog_remote_page_locations v JOIN sources s ON s.id=v.source_id
+         LEFT JOIN catalog_remote_metadata_overrides o ON o.representation_id=v.representation_id
+         WHERE v.viewer_id=$1 AND ($2::uuid[] IS NULL OR v.representation_id=ANY($2))
+           AND ($3::text IS NULL OR COALESCE(v.series_group,o.group_id)=$3)
+         ORDER BY v.logical_id,v.playback_eligible DESC,v.location_id LIMIT $4",
     )
     .bind(viewer)
     .bind(representations)
@@ -229,7 +271,8 @@ pub(crate) async fn artwork(
 ) -> Result<Response, AppError> {
     let bytes: Vec<u8> = sqlx::query_scalar(
         "SELECT a.jpeg FROM catalog_remote_page_locations v JOIN metadata_artwork a ON a.id=v.provider_art
-         WHERE v.viewer_id=$1 AND v.representation_id=$2",
+         WHERE v.viewer_id=$1 AND v.representation_id=$2 AND NOT EXISTS(
+             SELECT 1 FROM catalog_remote_metadata_overrides o WHERE o.representation_id=v.representation_id AND o.hide_artwork)",
     )
     .bind(identity.user.id).bind(representation).fetch_optional(&state.db)
     .await.map_err(|_|auth::unavailable())?.ok_or_else(missing)?;
@@ -320,7 +363,9 @@ pub(crate) async fn remote_link(
     let mut members = if let Some(ref group) = group {
         let allowed: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM catalog_remote_page_locations
-             WHERE viewer_id=$1 AND source_id=$2 AND series_group=$3)",
+             WHERE viewer_id=$1 AND source_id=$2 AND (series_group=$3 OR (series_group IS NULL AND EXISTS(
+                SELECT 1 FROM catalog_remote_metadata_overrides o
+                WHERE o.representation_id=catalog_remote_page_locations.representation_id AND o.group_id=$3))))",
         )
         .bind(viewer)
         .bind(&source)
@@ -367,4 +412,107 @@ pub(crate) async fn remote_link(
         series_source_id: group.as_ref().map(|_| source),
         series_group_id: group,
     })
+}
+
+pub(crate) fn metadata_routes() -> axum::Router<AppState> {
+    axum::Router::new()
+        .route(
+            "/api/catalog/v1/remote-metadata/{id}",
+            axum::routing::get(owner_metadata)
+                .put(save_owner_metadata)
+                .delete(reset_owner_metadata),
+        )
+        .layer(axum::extract::DefaultBodyLimit::max(32 * 1024))
+}
+
+async fn owner_item(state: &AppState, user: Uuid, id: Uuid) -> Result<Item, AppError> {
+    let (items, _) = remote_items(state, user, Some(&[id]), None).await?;
+    items
+        .into_iter()
+        .find(|item| item.metadata.as_ref().is_some_and(|view| view.can_edit))
+        .ok_or_else(missing)
+}
+
+fn metadata_response(item: Item) -> Result<Response, AppError> {
+    Ok((
+        [("cache-control", "private, no-store")],
+        axum::Json(item.metadata.ok_or_else(missing)?),
+    )
+        .into_response())
+}
+
+async fn owner_metadata(
+    State(state): State<AppState>,
+    Extension(identity): Extension<auth::Identity>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, AppError> {
+    metadata_response(owner_item(&state, identity.user.id, id).await?)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OwnerEdit {
+    path: String,
+    fields: Fields,
+    artwork_preference: metadata::model::ArtworkPreference,
+}
+
+const OWNER_CHECK: &str = "SELECT v.representation_id FROM catalog_remote_page_locations v
+    JOIN sources s ON s.id=v.source_id AND s.owner_id=$1 WHERE v.viewer_id=$1 AND v.representation_id=$2";
+
+async fn save_owner_metadata(
+    State(state): State<AppState>,
+    Extension(identity): Extension<auth::Identity>,
+    Path(id): Path<Uuid>,
+    axum::Json(edit): axum::Json<OwnerEdit>,
+) -> Result<Response, AppError> {
+    let user = identity.user.id;
+    let item = owner_item(&state, user, id).await?;
+    if edit.path != item.file.relative_path {
+        return Err(missing());
+    }
+    auth::rate_limit(&state.db, format!("remote-metadata:{user}"), 60, 300).await?;
+    let fields = edit.fields.normalize()?;
+    let group =
+        metadata::groups::identity(&item.source_id, item.file.kind, &fields).map(|group| group.id);
+    let data = serde_json::to_value(fields).map_err(|_| auth::unavailable())?;
+    let sql=format!("INSERT INTO catalog_remote_metadata_overrides(representation_id,fields,group_id,hide_artwork)
+        SELECT eligible.representation_id,$3,$4,$5 FROM ({OWNER_CHECK}) eligible
+        ON CONFLICT(representation_id) DO UPDATE SET fields=excluded.fields,group_id=excluded.group_id,
+            hide_artwork=excluded.hide_artwork");
+    if sqlx::query(&sql)
+        .bind(user)
+        .bind(id)
+        .bind(data)
+        .bind(group)
+        .bind(edit.artwork_preference == metadata::model::ArtworkPreference::None)
+        .execute(&state.db)
+        .await
+        .map_err(|_| auth::unavailable())?
+        .rows_affected()
+        != 1
+    {
+        return Err(missing());
+    }
+    metadata_response(owner_item(&state, user, id).await?)
+}
+
+async fn reset_owner_metadata(
+    State(state): State<AppState>,
+    Extension(identity): Extension<auth::Identity>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, AppError> {
+    let user = identity.user.id;
+    owner_item(&state, user, id).await?;
+    auth::rate_limit(&state.db, format!("remote-metadata:{user}"), 60, 300).await?;
+    let sql = format!(
+        "DELETE FROM catalog_remote_metadata_overrides WHERE representation_id IN ({OWNER_CHECK})"
+    );
+    sqlx::query(&sql)
+        .bind(user)
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .map_err(|_| auth::unavailable())?;
+    metadata_response(owner_item(&state, user, id).await?)
 }

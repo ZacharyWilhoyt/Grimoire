@@ -37,17 +37,17 @@ export default function MetadataEditor({ item, onClose, onUpdated }: { item: Med
   const [searched, setSearched] = useState(false)
   const [review, setReview] = useState<Review | null>(null)
   const [replaceCustom, setReplaceCustom] = useState(false)
-  const endpoint = `/api/sources/${encodeURIComponent(item.source_id)}/metadata`
+  const endpoint = item.remote ? `/api/catalog/v1/remote-metadata/${encodeURIComponent(item.relative_path)}` : `/api/sources/${encodeURIComponent(item.source_id)}/metadata`
   const pathQuery = new URLSearchParams({ path: item.relative_path })
   const accept = (view: MetadataView) => { setView(view); setFields(view.fields); setGenres((view.fields.genres ?? []).join('\n')); setArtwork(view.artwork_preference) }
   useEffect(() => {
     let active = true
     call<MetadataView>(`${endpoint}?${new URLSearchParams({ path: item.relative_path })}`).then(view => { if (active) accept(view) }).catch(error => { if (active) setError(error instanceof Error ? error.message : 'Could not load metadata.') })
-    call<Status[]>('/api/metadata/providers').then(statuses => { if (active) setStatuses(statuses) }).catch(() => {})
+    if (!item.remote) call<Status[]>('/api/metadata/providers').then(statuses => { if (active) setStatuses(statuses) }).catch(() => {})
     return () => { active = false }
   }, [endpoint, item.relative_path])
   useEffect(() => {
-    if (!view?.can_edit || item.kind === 'book') return
+    if (item.remote || !view?.can_edit || item.kind === 'book') return
     let active = true
     call<{ connections: ArrConnection[] }>(`/api/sources/${encodeURIComponent(item.source_id)}/arr`).then(data => { if (active) setArr(data.connections.filter(connection => item.kind === 'music' ? connection.kind === 'lidarr' : connection.kind !== 'lidarr')) }).catch(error => { if (active) setArrError(error instanceof Error ? error.message : 'Could not load Arr connections.') })
     return () => { active = false }
@@ -84,7 +84,7 @@ export default function MetadataEditor({ item, onClose, onUpdated }: { item: Med
   const selected = statuses.find(status => status.provider === provider)
   return <dialog ref={dialog} className="video-backdrop" aria-labelledby="metadata-title" onCancel={event => { event.preventDefault(); onClose() }}><section className="metadata-panel">
     <header className="video-header"><div><h2 id="metadata-title">{view?.can_edit ? 'Edit metadata' : 'Media details'}</h2><span>{displayTitle(item)}</span></div><button aria-label="Close metadata" onClick={onClose}><X size={21}/></button></header>
-    <div className="metadata-content"><p className="metadata-original">Original file: {item.relative_path}</p>
+    <div className="metadata-content"><p className="metadata-original">Original file: {item.remote ? item.name : item.relative_path}</p>
       {!view && !error && <p role="status">Loading metadata…</p>}
       {view && <>
         <div className="metadata-provenance"><span>Active metadata: {providerName(view.origin as Review['provider']) ?? view.origin}</span>{view.artwork_url && <img src={view.artwork_url} alt="Current artwork"/>}{view.thumbnail_url && <img src={view.thumbnail_url} alt="Episode thumbnail" title="Episode thumbnail"/>}</div>
@@ -94,21 +94,21 @@ export default function MetadataEditor({ item, onClose, onUpdated }: { item: Med
           <div className="metadata-numbers">{number('year', 'Year')}{item.kind === 'video' && <>{number('season', 'Season')}{number('episode', 'Episode')}</>}{item.kind === 'music' && <>{number('disc', 'Disc')}{number('track', 'Track')}</>}{item.kind === 'book' && number('volume', 'Volume / series position')}</div>
           <label>Genres / subjects<textarea rows={3} maxLength={1400} value={genres} disabled={busy || !view.can_edit || view.group?.has_custom_genres} onChange={event => setGenres(event.target.value)}/><small>One tag per line. Tags are normalized for browsing and filtering.</small></label>
           <label>Description<textarea rows={4} maxLength={4000} value={fields.description ?? ''} disabled={busy || !view.can_edit} onChange={event => setFields({ ...fields, description: event.target.value })}/></label>
-          {view.can_edit && <><label>Artwork<select value={artwork} disabled={busy} onChange={event => setArtwork(event.target.value)}><option value="auto">Matched artwork, with local fallback</option><option value="local">Local artwork only</option><option value="matched">Matched artwork only</option><option value="none">No artwork</option></select></label><button className="connect-submit" type="submit" disabled={busy}>Save custom metadata</button></>}
+          {view.can_edit && <><label>Artwork<select value={artwork} disabled={busy} onChange={event => setArtwork(event.target.value)}><option value="auto">{item.remote ? "Provider artwork" : "Matched artwork, with local fallback"}</option>{!item.remote&&<option value="local">Local artwork only</option>}{!item.remote&&<option value="matched">Matched artwork only</option>}<option value="none">No artwork</option></select></label><button className="connect-submit" type="submit" disabled={busy}>Save custom metadata</button></>}
         </form>
         {view.can_edit && <>
-          <div className="metadata-local"><button disabled={busy} className="track-play" onClick={extract}><RefreshCw size={13}/> Read local tags and artwork</button>{view.has_custom && <button disabled={busy} className="track-play" onClick={reset}>Use gathered metadata</button>}</div>
+          <div className="metadata-local">{!item.remote&&<button disabled={busy} className="track-play" onClick={extract}><RefreshCw size={13}/> Read local tags and artwork</button>}{view.has_custom && <button disabled={busy} className="track-play" onClick={reset}>Use gathered metadata</button>}</div>
           <p className="metadata-help">Custom metadata is a complete owner-edited version. Local rescans and online matches preserve it until you choose to replace it.</p>
           {!!arr.length && <section className="metadata-online"><h3>From your Arr library</h3><p>Preview metadata for this exact mapped file. Applying a match preserves custom edits unless you explicitly replace them.</p><div className="arr-buttons">{arr.map(connection => <button key={connection.id} className="track-play" disabled={busy || !connection.usable} onClick={() => { void action(async () => { setReview(null); setReplaceCustom(false); setReview(await call<Review>(`/api/sources/${encodeURIComponent(item.source_id)}/arr/${connection.id}/preview`, json({ path: item.relative_path }))) }) }}>Preview from {connection.name}</button>)}</div></section>}
           {arrError && <p className="video-error" role="alert">{arrError}</p>}
             {review && <div className="metadata-review"><h4>Review before applying</h4><strong>{review.fields.title}</strong><p>{[review.fields.creator, review.fields.collection, review.fields.year].filter(Boolean).join(' · ')}</p><p>{(review.fields.genres ?? []).join(', ')}</p><p>{review.fields.description}</p><small>{providerName(review.provider)} · {review.provider_id} · {review.has_artwork ? 'Provider artwork will be requested on apply.' : 'No provider artwork specified.'}</small>{view.has_custom && <label className="grant-toggle"><input type="checkbox" checked={replaceCustom} onChange={event => setReplaceCustom(event.target.checked)}/><span>Replace my custom metadata with this match</span></label>}<button className="connect-submit" disabled={busy} onClick={apply}>Apply reviewed match</button></div>}
-          <section className="metadata-online"><h3>Reviewed online matching</h3><p>Searching sends the query below to the selected provider. Preview a candidate and confirm before applying it. Files are never uploaded.</p>
+          {!item.remote&&<section className="metadata-online"><h3>Reviewed online matching</h3><p>Searching sends the query below to the selected provider. Preview a candidate and confirm before applying it. Files are never uploaded.</p>
             <form className="metadata-form" onSubmit={search}><label>Provider<select value={provider} disabled={busy} onChange={event => { setProvider(event.target.value as Provider); setResults([]); setReview(null); setSearched(false) }}>{providersFor(item.kind).map(provider => <option key={provider} value={provider}>{providerName(provider)}</option>)}</select></label><label>Search query<input value={query} maxLength={200} required disabled={busy} onChange={event => setQuery(event.target.value)}/></label>{selected?.message && <p className="metadata-help">{selected.message}</p>}<button className="track-play" disabled={busy || !selected?.enabled}><Search size={14}/> Search provider</button></form>
             {searched && !results.length && <p>No matching results. Try a different title.</p>}
             <div className="metadata-matches">{results.map(result => <article key={result.id}><div><strong>{result.title}</strong><span>{[result.creator, result.collection, result.year].filter(Boolean).join(' · ')}</span></div><button className="track-play" disabled={busy} onClick={() => preview(result)}>Preview match</button></article>)}</div>
 
 
-          </section>
+          </section>}
         </>}
       </>}
       <MetadataCredits credits={[...new Set([...(view?.credits ?? []), ...(review ? [review.provider.startsWith('tmdb_') ? 'tmdb' : review.provider] : []), ...(searched && results.length ? [provider.startsWith('tmdb_') ? 'tmdb' : provider] : [])])]}/>

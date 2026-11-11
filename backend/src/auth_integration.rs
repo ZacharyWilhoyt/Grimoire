@@ -6355,7 +6355,7 @@ async fn remote_catalog_revisions_require_node_ownership_and_both_policies(pool:
     }
 
     let state = state(pool.clone());
-    let (owner_cookie, _, owner) = register_user(&state, "remote_owner").await;
+    let (owner_cookie, owner_csrf, owner) = register_user(&state, "remote_owner").await;
     let (viewer_cookie, viewer_csrf, viewer) = register_user(&state, "remote_viewer").await;
     let owner = Uuid::parse_str(owner["id"].as_str().unwrap()).unwrap();
     let viewer = Uuid::parse_str(viewer["id"].as_str().unwrap()).unwrap();
@@ -6682,6 +6682,56 @@ async fn remote_catalog_revisions_require_node_ownership_and_both_policies(pool:
     .await;
     assert_eq!(art_response.status(), StatusCode::OK);
     assert_eq!(art_response.headers()["cache-control"], "private, no-store");
+    let editor = format!("/api/catalog/v1/remote-metadata/{rep_id}");
+    let edit = json!({"path":page_path,"fields":{"title":"Owner title","season":1,"episode":1},
+        "artwork_preference":"none"});
+    assert_eq!(
+        write(Method::PUT, &editor, edit.clone()).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    let result = request(
+        &state,
+        Method::PUT,
+        &editor,
+        Some(&owner_cookie),
+        Some(&owner_csrf),
+        Some(ORIGIN),
+        Some(edit),
+    )
+    .await;
+    assert_eq!(result.status(), StatusCode::OK);
+    assert_eq!(body(result).await["fields"]["title"], "Owner title");
+    let edited = body(browse().await).await;
+    assert_eq!(
+        edited["items"][0]["metadata"]["fields"]["title"],
+        "Owner title"
+    );
+    assert_eq!(edited["items"][0]["metadata"]["can_edit"], false);
+    assert_eq!(edited["items"][0]["logical_id"], json!(logical_id));
+    let hidden_art = request(
+        &state,
+        Method::GET,
+        &artwork,
+        Some(&viewer_cookie),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(hidden_art.status(), StatusCode::NOT_FOUND);
+    let reset = request(
+        &state,
+        Method::DELETE,
+        &editor,
+        Some(&owner_cookie),
+        Some(&owner_csrf),
+        Some(ORIGIN),
+        None,
+    )
+    .await;
+    assert_eq!(reset.status(), StatusCode::OK);
+    assert_eq!(body(reset).await["fields"]["title"], "First episode");
+
     let online = body(browse().await).await;
     assert_eq!(online["items"][0]["available"], true);
     let versioned = format!("{delivery}?version={rep_id}");

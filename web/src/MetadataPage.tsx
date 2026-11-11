@@ -74,7 +74,7 @@ export default function MetadataPage(p:Props) {
               onChange={event=>{const id=item.location_id!;setTarget('');setSelected(old=>event.target.checked?[...old,id]:old.filter(value=>value!==id))}}/>
               <span><strong>{displayTitle(item)}</strong><small>{item.collection_link?.label??item.metadata?.group?.label??item.extension.toUpperCase()}</small></span>
             </label>
-            {!item.remote&&item.available&&<button className="theme-button" onClick={()=>p.onMetadata(item)}>Edit metadata</button>}
+            {(item.remote?item.metadata?.can_edit:item.available)&&<button className="theme-button" onClick={()=>p.onMetadata(item)}>Edit metadata</button>}
             {item.metadata?.group?.can_edit&&item.available&&<button className="theme-button" onClick={()=>p.onGroup(item)}>Edit group</button>}
           </li>)}
         </ul>{!shown.length&&!p.loading&&<p className="welcome-copy">No files match in this source.</p>}
