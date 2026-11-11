@@ -128,13 +128,13 @@ export default function MediaComments({ sourceId, path }: { sourceId: string; pa
       {loaded && <span className="comment-count" aria-label={`${visibleCount} comments loaded`}>({visibleCount}{next ? '+' : ''})</span>}
     </header>
     <form className="watch-comment-form" onSubmit={post}>
-      {reply && <div className="comment-reply-context"><span>Replying to {reply.author}</span><button type="button" onClick={() => setReply(null)} disabled={posting}>Cancel reply</button></div>}
+      {reply && <div className="comment-reply-context"><span>Replying to {reply.author}</span><button className="theme-button" type="button" onClick={() => setReply(null)} disabled={posting}>Cancel reply</button></div>}
       <textarea ref={field} aria-label={reply ? 'Write a reply' : 'Write a comment'} placeholder={reply ? 'Write a reply…' : 'Write a comment…'} value={draft} maxLength={COMMENT_LIMIT} disabled={!loaded || posting} onChange={event => setDraft(event.target.value)}/>
       {postError && <p role="alert">{postError}</p>}
       <div className="comment-form-footer">
         <span className="comment-form-note"><Info size={13} aria-hidden="true"/> Plain text</span>
         <span className="comment-character-count" aria-label={`${draft.length} of ${COMMENT_LIMIT} characters`}>{draft.length}/{COMMENT_LIMIT}</span>
-        <button type="submit" disabled={!loaded || posting || removing === reply?.id || !draft.trim()}>{posting ? 'Posting…' : reply ? 'Post reply' : 'Post'}</button>
+        <button className="theme-button theme-button-primary" type="submit" disabled={!loaded || posting || removing === reply?.id || !draft.trim()}>{posting ? 'Posting…' : reply ? 'Post reply' : 'Post'}</button>
       </div>
     </form>
     {removeError && <p role="alert" className="comment-list-status">{removeError}</p>}
@@ -154,6 +154,6 @@ export default function MediaComments({ sourceId, path }: { sourceId: string; pa
     {loading && <p role="status" className="comment-list-status">Loading comments…</p>}
     {loaded && !loading && !comments.length && !loadError && <div className="watch-comments-empty"><strong>No comments yet</strong><p>Start the discussion.</p></div>}
     {loadError && <p role="alert" className="comment-list-status">{loadError}</p>}
-    {!loading && (next || loadError) && <button className="comment-more" type="button" onClick={() => { const signal = requestLifetime.current?.signal; if (signal) void load(signal, next ?? undefined) }}>{loadError ? 'Try again' : 'Load more comments'}</button>}
+    {!loading && (next || loadError) && <button className="theme-button comment-more" type="button" onClick={() => { const signal = requestLifetime.current?.signal; if (signal) void load(signal, next ?? undefined) }}>{loadError ? 'Try again' : 'Load more comments'}</button>}
   </section>
 }

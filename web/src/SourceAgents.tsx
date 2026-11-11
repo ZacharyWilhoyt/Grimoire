@@ -104,30 +104,30 @@ export default function SourceAgents({ onClose, onPermissions, onBook }: {
   const mediaUrl = (source: RemoteSource, item: Item) => `${base}/sources/${source.id}/representations/${item.representation_id}`
 
   return <dialog ref={dialog} className="source-agent-dialog" aria-labelledby="source-agent-heading" onCancel={event => { event.preventDefault(); onClose() }}>
-    <header><h2 id="source-agent-heading"><Server size={20}/> Source Agents</h2><button type="button" aria-label="Close Source Agents" onClick={onClose}><X size={19}/></button></header>
+    <header><h2 id="source-agent-heading"><Server size={20}/> Source Agents</h2><button className="theme-button theme-button-icon" type="button" aria-label="Close Source Agents" onClick={onClose}><X size={19}/></button></header>
     <div className="source-agent-body">
       {error && <p role="alert" className="catalog-notice error">{error}</p>}
-      <div className="source-agent-actions"><button type="button" onClick={() => { void issue() }} disabled={busy}>Create enrollment token</button><button type="button" onClick={() => setRefresh(value => value + 1)} disabled={loading || busy} aria-label="Refresh Source Agents"><RefreshCw size={16}/></button></div>
-      {token && <div className="source-agent-token"><label>Single-use token <input readOnly value={token} onFocus={event => event.currentTarget.select()}/></label><button type="button" onClick={() => { if (!navigator.clipboard) { setError('Select and copy the token manually.'); return } void navigator.clipboard.writeText(token).then(() => setCopied(true)).catch(() => setError('Select and copy the token manually.')) }}><Copy size={14}/> {copied ? 'Copied' : 'Copy'}</button><p>On the agent host, pull the image and enroll it. Enter the token when prompted. It expires in 10 minutes.</p><pre>{`docker pull ${image}
+      <div className="source-agent-actions"><button className="theme-button theme-button-primary" type="button" onClick={() => { void issue() }} disabled={busy}>Create enrollment token</button><button className="theme-button theme-button-icon" type="button" onClick={() => setRefresh(value => value + 1)} disabled={loading || busy} aria-label="Refresh Source Agents"><RefreshCw size={16}/></button></div>
+      {token && <div className="source-agent-token"><label>Single-use token <input readOnly value={token} onFocus={event => event.currentTarget.select()}/></label><button className="theme-button" type="button" onClick={() => { if (!navigator.clipboard) { setError('Select and copy the token manually.'); return } void navigator.clipboard.writeText(token).then(() => setCopied(true)).catch(() => setError('Select and copy the token manually.')) }}><Copy size={14}/> {copied ? 'Copied' : 'Copy'}</button><p>On the agent host, pull the image and enroll it. Enter the token when prompted. It expires in 10 minutes.</p><pre>{`docker pull ${image}
 docker run --rm -it -v grimoire-agent:/var/lib/grimoire-agent ${image} enroll ${window.location.origin} "My agent"`}</pre><p>Use the same <code>grimoire-agent</code> volume when starting the agent.</p></div>}
       <h3>Your agents</h3>
       {loading && <p role="status">Checking Source Agents…</p>}
       {!loading && nodes.length === 0 && <p>No agents enrolled yet.</p>}
-      <ul className="source-agent-list">{nodes.map(node => <li key={node.id}><span><strong>{node.label}</strong><small>{node.revoked ? 'Revoked' : node.online ? 'Online' : 'Offline'}</small></span>{!node.revoked && <button type="button" disabled={busy} onClick={() => { void revoke(node) }}>Revoke</button>}</li>)}</ul>
+      <ul className="source-agent-list">{nodes.map(node => <li key={node.id}><span><strong>{node.label}</strong><small>{node.revoked ? 'Revoked' : node.online ? 'Online' : 'Offline'}</small></span>{!node.revoked && <button className="theme-button" type="button" disabled={busy} onClick={() => { void revoke(node) }}>Revoke</button>}</li>)}</ul>
       <h3>Remote sources</h3>
       {!loading && sources.length === 0 && <p>No remote sources are available.</p>}
-      <ul className="source-agent-list">{sources.map(source => <li key={source.id}><button type="button" disabled={!source.available || busy} onClick={() => { setSelected(source); setCatalog(null); setPlaying(null) }}>{source.name}</button><small>{source.available ? 'Available' : 'Offline or unpublished'}</small>{source.is_owner && <button type="button" onClick={() => onPermissions({ id: `remote:${source.id}`, name: source.name })}>Permissions</button>}</li>)}</ul>
+      <ul className="source-agent-list">{sources.map(source => <li key={source.id}><button className="theme-button" type="button" disabled={!source.available || busy} onClick={() => { setSelected(source); setCatalog(null); setPlaying(null) }}>{source.name}</button><small>{source.available ? 'Available' : 'Offline or unpublished'}</small>{source.is_owner && <button className="theme-button" type="button" onClick={() => onPermissions({ id: `remote:${source.id}`, name: source.name })}>Permissions</button>}</li>)}</ul>
       {selected && catalog && <section aria-label={selected.name}>
         <h3>{selected.name}</h3>
         {!catalog.can_access_media && <p>Discovery access only.</p>}
         {playing && (['mp3','flac','m4a','aac','ogg','opus','wav','aiff','wma'].includes(playing.extension)
           ? <audio key={playing.id} controls autoPlay src={mediaUrl(selected, playing)} onError={() => setError('This audio format could not be played by your browser.')}/>
           : <video key={playing.id} controls autoPlay src={mediaUrl(selected, playing)} onError={() => setError('This video format could not be played by your browser.')}/>)}
-        <ul className="source-agent-list">{catalog.items.map(item => <li key={item.id}><span><strong>{item.name}</strong><small>{formatSize(item.size_bytes)}</small></span>{catalog.can_access_media && <button type="button" onClick={() => {
+        <ul className="source-agent-list">{catalog.items.map(item => <li key={item.id}><span><strong>{item.name}</strong><small>{formatSize(item.size_bytes)}</small></span>{catalog.can_access_media && <button className="theme-button" type="button" onClick={() => {
           if (['cbz','epub'].includes(item.extension)) onBook({ sourceId: selected.id, sourceName: selected.name, item, url: mediaUrl(selected, item) })
           else setPlaying(item)
         }}>{['cbz','epub'].includes(item.extension) ? 'Read' : 'Play'}</button>}</li>)}</ul>
-        {catalog.next && <button type="button" disabled={busy} onClick={() => { void more() }}>Load more</button>}
+        {catalog.next && <button className="theme-button" type="button" disabled={busy} onClick={() => { void more() }}>Load more</button>}
       </section>}
     </div>
   </dialog>

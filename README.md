@@ -663,6 +663,13 @@ in the current SVG. It fails if the source changes to an unsupported structure.
 
 ## Contributing
 
+Frontend changes should reuse the theme variables and existing control styles
+in `web/src/styles.css`. Use `theme-button` for new compact dialog and panel
+buttons, with `theme-button-primary` for the main action and
+`theme-button-icon` for icon-only controls. Check text and icon contrast,
+keyboard focus, and disabled states against the panel background.
+
+
 Contributions, ideas, and discussions are welcome as the project takes
 shape.
 
