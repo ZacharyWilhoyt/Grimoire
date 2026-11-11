@@ -87,7 +87,8 @@ fn unavailable() -> AppError {
 pub fn enabled(state: &AppState, provider: Provider) -> bool {
     state.metadata.online
         && (!matches!(provider, Provider::TmdbMovie | Provider::TmdbTv)
-            || state.metadata.tmdb_token.is_some())
+            || state.metadata.tmdb_token.is_some()
+            || state.metadata.tmdb_api_key.is_some())
         && (provider != Provider::Tvdb || state.metadata.tvdb.enabled())
 }
 pub fn availability(state: &AppState) -> Vec<Availability> {
@@ -109,7 +110,7 @@ pub fn availability(state: &AppState) -> Vec<Availability> {
                 if provider == Provider::Tvdb {
                     "The server operator must configure GRIMOIRE_TVDB_API_KEY."
                 } else {
-                    "The server operator must configure GRIMOIRE_TMDB_TOKEN."
+                    "The server operator must configure GRIMOIRE_TMDB_API_KEY or GRIMOIRE_TMDB_TOKEN."
                 }
                 .into(),
             )
@@ -163,17 +164,26 @@ pub async fn download(
         }
         budget(state).await?;
         let mut request = state.metadata.client.get(url.clone());
-        if url.host_str() == Some("api.themoviedb.org") {
-            request = request.bearer_auth(
-                state
-                    .metadata
-                    .tmdb_token
-                    .as_deref()
-                    .ok_or_else(unavailable)?,
-            );
+        let tmdb_api = url.host_str() == Some("api.themoviedb.org");
+        if tmdb_api {
+            request = if let Some(token) = state.metadata.tmdb_token.as_deref() {
+                request.bearer_auth(token)
+            } else {
+                request.query(&[(
+                    "api_key",
+                    state
+                        .metadata
+                        .tmdb_api_key
+                        .as_deref()
+                        .ok_or_else(unavailable)?,
+                )])
+            };
         }
         let mut response = request.send().await.map_err(|_| unavailable())?;
         if response.status().is_redirection() {
+            if tmdb_api {
+                return Err(unavailable());
+            }
             let location = response
                 .headers()
                 .get(reqwest::header::LOCATION)

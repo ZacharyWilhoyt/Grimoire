@@ -31,6 +31,7 @@ pub struct Runtime {
     pub client: reqwest::Client,
     pub online: bool,
     pub tmdb_token: Option<String>,
+    pub tmdb_api_key: Option<String>,
     tvdb: tvdb::Runtime,
     work: Arc<Semaphore>,
     jobs: Arc<Semaphore>,
@@ -54,6 +55,9 @@ impl Runtime {
                 .expect("Metadata HTTP client configuration failed"),
             online: std::env::var("GRIMOIRE_METADATA_ONLINE").as_deref() != Ok("false"),
             tmdb_token: std::env::var("GRIMOIRE_TMDB_TOKEN")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
+            tmdb_api_key: std::env::var("GRIMOIRE_TMDB_API_KEY")
                 .ok()
                 .filter(|value| !value.trim().is_empty()),
             tvdb: tvdb::Runtime::from_env(),

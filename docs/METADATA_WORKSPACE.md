@@ -51,3 +51,7 @@ The workflow matches individual files. It does not scan or acquire media
 and does not automatically merge independently owned files into a shared
 canonical identity. Migration 0028 stores reviewed TheTVDB matches for
 Source Agent representations.
+
+For TMDB, configure either the v3 key as `GRIMOIRE_TMDB_API_KEY` or the
+API Read Access Token as `GRIMOIRE_TMDB_TOKEN` in the API's private
+environment. The token takes precedence if both are present.
